@@ -293,4 +293,3 @@ async def verify_webhook_api_key(
             detail="Invalid X-API-Key",
         )
     return x_api_key
-

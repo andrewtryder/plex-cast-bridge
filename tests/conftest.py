@@ -75,4 +75,3 @@ def client(test_settings):
 def auth_headers(test_settings):
     tokens = create_token_pair(test_settings)
     return {"Authorization": f"Bearer {tokens['access_token']}"}
-

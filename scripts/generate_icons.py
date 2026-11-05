@@ -5,7 +5,6 @@ Removes the baked-in preview checkerboard pattern and produces anti-aliased,
 high-resolution PNG and ICO assets for README, web apps, and favicons.
 """
 
-import math
 from pathlib import Path
 from PIL import Image
 
@@ -99,4 +98,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

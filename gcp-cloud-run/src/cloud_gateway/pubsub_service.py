@@ -41,4 +41,3 @@ class PubSubService:
 
     async def publish(self, payload: dict[str, Any]) -> str:
         return await run_in_threadpool(self.publish_sync, payload)
-

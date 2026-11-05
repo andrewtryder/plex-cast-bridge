@@ -23,6 +23,8 @@ dev = [
     "pytest>=8",
     "httpx>=0.28",
     "pillow>=11",
+    "ruff>=0.8",
+    "pre-commit>=4",
 ]
 
 [build-system]
@@ -35,3 +37,10 @@ packages = ["src/plex_cast_bridge"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "gcp-cloud-run/src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = ["E501"]

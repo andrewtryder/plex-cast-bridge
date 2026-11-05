@@ -51,7 +51,7 @@ def main():
         return 1
 
     host = getattr(speaker.cast.cast_info, "host", "LAN")
-    print(f"\n[1/4] Connected to Speaker:")
+    print("\n[1/4] Connected to Speaker:")
     print(f"      Name:   {speaker.cast.name}")
     print(f"      Model:  {speaker.cast.model_name}")
     print(f"      Host:   {host}")
@@ -60,7 +60,7 @@ def main():
     # Set 15% volume explicitly
     speaker.set_volume(0.15)
 
-    print(f"[2/4] Parsing intent with Gemini SmartDJ...")
+    print("[2/4] Parsing intent with Gemini SmartDJ...")
     intent = dj.parse(prompt, plex.catalog)
     print(f"      Mode:          {intent.mode}")
     print(f"      Target Artist: {intent.target_artist}")
@@ -69,7 +69,7 @@ def main():
     print(f"      Matched Genres:{intent.matched_genres}")
     print(f"      Seed Artists:  {intent.seed_artists}\n")
 
-    print(f"[3/4] Resolving tracks from Plex library...")
+    print("[3/4] Resolving tracks from Plex library...")
     tracks = plex.resolve(intent)
     if not tracks:
         log.error("No tracks resolved from Plex for intent")
@@ -101,7 +101,7 @@ def main():
         print("\n" + "=" * 65)
         print(" SUCCESS! 'Master Bedroom' is actively streaming Plex music!")
         print(f" Currently Playing: {speaker.current.title} by {getattr(speaker.current, 'grandparentTitle', '')}")
-        print(f" Volume: 15%")
+        print(" Volume: 15%")
         print("=" * 65 + "\n")
         print("Playback is ongoing. Pausing in 5 seconds to avoid disturbing the room...")
         time.sleep(5)
@@ -115,4 +115,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

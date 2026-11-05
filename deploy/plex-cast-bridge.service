@@ -33,4 +33,3 @@ SyslogIdentifier=plex-cast-bridge
 
 [Install]
 WantedBy=multi-user.target
-

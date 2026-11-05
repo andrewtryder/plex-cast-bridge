@@ -253,7 +253,7 @@ def test_pubsub_worker_native_dlq_delegation():
     completed_future = MagicMock()
     completed_future.result.side_effect = RuntimeError("Playback crash")
 
-    def mock_run_coroutine(coro, l):
+    def mock_run_coroutine(coro, _loop):
         fut = MagicMock()
         def mock_add_done(cb):
             cb(completed_future)
@@ -292,7 +292,7 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
         completed_future = MagicMock()
         completed_future.result.side_effect = RuntimeError("Persistent crash")
 
-        def mock_run_coroutine(coro, l):
+        def mock_run_coroutine(coro, _loop):
             fut = MagicMock()
             def mock_add_done(cb):
                 cb(completed_future)
@@ -427,5 +427,3 @@ def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
     queue = cm.get("Kitchen")
     assert queue.cast == mock_cast
     assert mock_cast.wait.called
-
-

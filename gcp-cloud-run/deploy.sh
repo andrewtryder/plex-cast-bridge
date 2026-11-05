@@ -254,4 +254,3 @@ echo " GCP_PROJECT_ID=$PROJECT_ID"
 echo " GCP_PUBSUB_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
 echo " ENABLE_PUBSUB_LISTENER=true"
 echo "============================================================"
-

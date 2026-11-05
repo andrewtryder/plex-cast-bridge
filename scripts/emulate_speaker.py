@@ -14,7 +14,6 @@ Usage:
 """
 
 import logging
-import readline  # Enable arrow keys & history in input()
 import sys
 import time
 
@@ -171,4 +170,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
