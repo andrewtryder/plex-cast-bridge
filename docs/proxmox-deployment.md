@@ -58,25 +58,34 @@ By offloading the 24/7 Cast orchestrator and Google Home Pub/Sub listener to Pro
 
 ---
 
-## 2. Proxmox Virtual Machine Sizing & Setup
+## 2. Proxmox Host Sizing & Setup (VM or Unprivileged LXC)
 
-Per Proxmox best practices, application containers should run inside a dedicated Linux VM rather than directly on the hypervisor host.
+Plex Cast Bridge can be deployed either in a dedicated Linux Virtual Machine (VM) or inside an **unprivileged Linux Container (LXC)** on Proxmox VE.
 
-### Recommended VM Sizing
+### Option A: Dedicated Linux VM
 - **OS:** Debian 12 (Bookworm), Debian 13 (Trixie), or Ubuntu Server 24.04 LTS
 - **vCPU:** 2 Cores
 - **RAM:** 2048 MB (2 GB)
 - **Disk:** 16–20 GB (VirtIO SCSI, discard enabled)
 - **Network Interface:** `vmbr0` (Bridged to your primary home LAN)
 
+### Option B: Unprivileged LXC Container (Lightweight & Recommended)
+Running Docker inside an **unprivileged Debian LXC** provides container isolation with minimal RAM and CPU overhead (~50 MB base RAM):
+1. Create a Debian 12 (Bookworm) or 13 (Trixie) LXC container.
+2. In Proxmox Web UI, navigate to **LXC -> Options -> Features** and enable:
+   - **Nesting** (`nesting=1`) — Required for Docker daemon inside LXC.
+   - **Keyctl** (`keyctl=1`) — Required for Docker credential storage and systemd.
+   *(Alternatively, verify `features: nesting=1,keyctl=1` in `/etc/pve/lxc/<CTID>.conf` on your Proxmox node).*
+3. **Security Note:** You do **not** need to convert the container to privileged (`privileged=1`) or disable AppArmor. On modern Proxmox kernels (PVE 7.x / 8.x / 9.x), Docker Engine with the overlayfs storage driver works cleanly in unprivileged LXC with non-root mapped UIDs.
+
 > [!IMPORTANT]
-> **Host Networking & Bridging:** Ensure the VM's virtual NIC connects to `vmbr0` so it shares the same broadcast domain as your Google Cast devices. The Docker container runs with `network_mode: host` to allow Chromecast mDNS zero-configuration discovery (`_googlecast._tcp.local.`).
+> **Host Networking & Subnet Alignment:** Ensure the VM or LXC network interface connects to `vmbr0` so it shares the same broadcast domain and IP subnet as your Google Cast devices and Plex Media Server. Docker Compose runs with `network_mode: host` to allow zero-configuration Chromecast mDNS discovery (`_googlecast._tcp.local.`) without NAT traversal barriers.
 
 ---
 
-## 3. Install Docker Engine & Compose on the VM
+## 3. Install Docker Engine & Compose on the Host
 
-SSH into your newly created Debian/Ubuntu VM:
+SSH into your newly created Debian/Ubuntu host (VM or LXC):
 
 ```bash
 # Update repositories and install prerequisite tools
@@ -98,7 +107,7 @@ echo \
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Grant your user docker execution rights
+# Grant your user docker execution rights (if not root)
 sudo usermod -aG docker $USER
 newgrp docker
 ```
@@ -273,17 +282,21 @@ Verify that:
 
 ---
 
-## 8. Network Troubleshooting & Multi-VLAN Setup
+## 8. Network Troubleshooting & Resilience
 
 1. **Plex Reachability from Speakers:**
-   - Google Cast speakers fetch audio streams directly from `PLEX_URL`. Ensure your Cast speakers can connect to `http://<PLEX_IP>:32400` across your local firewall.
-2. **mDNS Reflection Across VLANs:**
-   - If your Cast devices reside on an IoT VLAN and the Proxmox VM is on a trusted server VLAN, install an mDNS reflector like `avahi-daemon` on your router/gateway to reflect `_googlecast._tcp.local.` traffic across subnets.
-3. **Static Speaker Host Fallback:**
-   - If mDNS is filtered on your network, set `DEFAULT_SPEAKER_HOST=192.168.1.X` in `.env` to connect directly via IP.
-4. **Dead-Letter Queue Inspection:**
+   - Google Cast speakers fetch audio streams directly from `PLEX_URL`. Ensure your Cast speakers can connect to `http://<PLEX_IP>:32400` across your local firewall and subnet boundaries.
+2. **Resilient Direct IP Fallback (WiFi/Mesh mDNS Filtering):**
+   - Certain home mesh routers, APs, or managed switches filter or drop mDNS multicast packets (`224.0.0.251:5353`) crossing between wired Proxmox bridges and wireless APs.
+   - `CastManager` automatically uses known IP addresses recorded in `data/catalog.json` as a direct fallback whenever dynamic mDNS discovery misses a target speaker, providing instant unicast TCP (`8009`) connections.
+3. **Headless Linux Audio Abstraction:**
+   - On macOS, Plex Cast Bridge uses native `afplay` for the local test speaker.
+   - On Linux hosts (such as your Proxmox Debian LXC), the service operates in headless mode: it never invokes `afplay`, does not clutter speaker discovery with non-existent audio devices, and channels all playback directly to your physical Google Cast speakers. To enable headless simulation testing without physical speakers, set `ENABLE_TEST_SPEAKER=true` in `.env`.
+4. **Static Speaker Host Fallback:**
+   - If a specific speaker cannot be discovered dynamically, set `DEFAULT_SPEAKER_HOST=192.168.88.X` in `.env` to route all unspecified speaker requests directly to that IP.
+5. **Dead-Letter Queue Inspection:**
    - If a voice command fails persistently, inspect `data/dead_letter_queue.jsonl`:
      ```bash
-     cat ~/plex-cast-bridge/data/dead_letter_queue.jsonl
+     cat /opt/plex-cast-bridge/data/dead_letter_queue.jsonl
      ```
 
