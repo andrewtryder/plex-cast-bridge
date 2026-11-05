@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Catalog & Tokens
     catalog_path: str = Field(default="catalog.json", alias="CATALOG_PATH")
-    token_expire_days: int = Field(default=365, alias="TOKEN_EXPIRE_DAYS")
+    token_expire_days: int = Field(default=30, alias="TOKEN_EXPIRE_DAYS")
     auth_code_expire_minutes: int = Field(default=10, alias="AUTH_CODE_EXPIRE_MINUTES")
 
     @field_validator("google_client_secret", "admin_passphrase", "oauth_signing_secret")

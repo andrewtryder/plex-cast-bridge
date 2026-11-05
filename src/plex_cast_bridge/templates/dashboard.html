@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plex Cast Bridge — Local Control & Speaker Manager</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #181b23;
+      --panel-border: #272b38;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #e5a00d;
+      --accent-hover: #f5b01d;
+      --blue: #3b82f6;
+      --green: #10b981;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1024px;
+      margin: 0 auto;
+      padding: 28px 20px 60px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .brand img {
+      width: 48px;
+      height: 48px;
+      border-radius: 11px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+    }
+    .brand p {
+      margin: 2px 0 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 20px;
+    }
+    @media (max-width: 820px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .card-header h2 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .btn {
+      background: #252936;
+      color: var(--text);
+      border: 1px solid #363b4d;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn:hover { background: #313748; }
+    .btn-primary {
+      background: var(--accent);
+      color: #111;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .speaker-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .speaker-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: #13161d;
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      transition: opacity 0.2s;
+    }
+    .speaker-item.disabled {
+      opacity: 0.55;
+    }
+    .speaker-meta {
+      display: flex;
+      flex-direction: column;
+    }
+    .speaker-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 0.72rem;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #262b38;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .badge.room {
+      background: rgba(229, 160, 13, 0.16);
+      color: var(--accent);
+    }
+    .speaker-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #374151;
+      transition: .2s;
+      border-radius: 24px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    input:checked + .slider { background-color: var(--green); }
+    input:checked + .slider:before { transform: translateX(20px); }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    input[type="text"], select {
+      background: #12151c;
+      border: 1px solid var(--panel-border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    input[type="text"]:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .transport-bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .now-playing {
+      padding: 14px;
+      background: #13161d;
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+    .now-title { font-weight: 600; font-size: 1rem; color: var(--accent); }
+    .now-sub { font-size: 0.85rem; color: var(--muted); }
+    .toast {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <img src="/assets/icon.png" alt="Plex Cast Bridge" onerror="this.style.display='none'" />
+        <div>
+          <h1>Plex Cast Bridge</h1>
+          <p>Local Cast Discovery, Speaker Enable/Disable Manager & Smart DJ Console</p>
+        </div>
+      </div>
+      <div>
+        <button id="rescanBtn" class="btn">Rescan LAN Speakers</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div>
+        <div class="card">
+          <div class="card-header">
+            <h2>Discovered Cast Speakers & Rooms</h2>
+            <span id="speakerCount" class="badge">Scanning...</span>
+          </div>
+          <p style="font-size:0.83rem; color:var(--muted); margin-top:0; margin-bottom:14px;">
+            Toggle speakers on or off. Disabled speakers cannot be cast to and are excluded when syncing rooms to Google Home.
+          </p>
+          <div id="speakerList" class="speaker-list"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="card-header">
+            <h2>Smart DJ & Playback Control</h2>
+          </div>
+          <div class="form-row">
+            <select id="targetSpeakerSelect"></select>
+          </div>
+          <div class="form-row">
+            <input type="text" id="queryInput" placeholder="e.g. DJ Shadow, or DJ Shadow radio, or 90s trip hop" />
+            <button id="playBtn" class="btn btn-primary">Play</button>
+          </div>
+          <div class="transport-bar">
+            <button id="pauseBtn" class="btn">Pause</button>
+            <button id="resumeBtn" class="btn">Resume</button>
+            <button id="prevBtn" class="btn">Prev</button>
+            <button id="nextBtn" class="btn">Next</button>
+            <button id="stopBtn" class="btn">Stop</button>
+            <button id="volDownBtn" class="btn">Vol -5%</button>
+            <button id="volUpBtn" class="btn">Vol +5%</button>
+          </div>
+          <div id="actionStatus" class="toast">Ready. Saying an artist name plays 100% that artist; add "radio" for a 50/50 station mix.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Active Speaker Sessions</h2>
+            <button id="refreshStatusBtn" class="btn">Refresh</button>
+          </div>
+          <div id="activeSessions">
+            <div class="now-sub">No active streams yet.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let speakers = [];
+
+    // Safely retrieve optional local API key from URL parameter ?api_key= or localStorage
+    const urlParams = new URLSearchParams(window.location.search);
+    const localApiKey = urlParams.get('api_key') || localStorage.getItem('plex_cast_api_key') || '';
+    if (urlParams.get('api_key')) {
+      localStorage.setItem('plex_cast_api_key', urlParams.get('api_key'));
+    }
+
+    function authHeaders(extra = {}) {
+      const h = { 'Content-Type': 'application/json', ...extra };
+      if (localApiKey) {
+        h['X-API-Key'] = localApiKey;
+      }
+      return h;
+    }
+
+    async function scanSpeakers(forceScan = false) {
+      const countEl = document.getElementById('speakerCount');
+      countEl.textContent = forceScan ? 'Scanning LAN...' : 'Loading...';
+      try {
+        const res = await fetch(`/api/speakers?scan=${forceScan}`, { headers: authHeaders() });
+        if (res.status === 401) {
+          countEl.textContent = 'Auth Required';
+          document.getElementById('actionStatus').textContent = 'Unauthorized: Provide ?api_key=<your_local_key> in URL.';
+          return;
+        }
+        speakers = await res.json();
+        renderSpeakers();
+      } catch (err) {
+        countEl.textContent = 'Error';
+      }
+    }
+
+    function renderSpeakers() {
+      const list = document.getElementById('speakerList');
+      const select = document.getElementById('targetSpeakerSelect');
+      const prevSelected = select.value;
+      list.textContent = '';
+      select.textContent = '';
+
+      document.getElementById('speakerCount').textContent = `${speakers.length} Devices`;
+
+      speakers.forEach(spk => {
+        const item = document.createElement('div');
+        item.className = 'speaker-item' + (spk.enabled ? '' : ' disabled');
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'speaker-meta';
+
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'speaker-name';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = spk.name || 'Unknown Speaker';
+        nameDiv.appendChild(nameSpan);
+
+        const roomBadge = document.createElement('span');
+        roomBadge.className = 'badge room';
+        roomBadge.textContent = spk.room || spk.name || 'Room';
+        nameDiv.appendChild(roomBadge);
+        metaDiv.appendChild(nameDiv);
+
+        const subDiv = document.createElement('div');
+        subDiv.className = 'speaker-sub';
+        const modelStr = spk.model || 'Google Cast';
+        const hostStr = spk.host ? `${spk.host}${spk.port ? ':' + spk.port : ''}` : 'Local';
+        subDiv.textContent = `${modelStr} • ${hostStr}`;
+        metaDiv.appendChild(subDiv);
+
+        item.appendChild(metaDiv);
+
+        const switchLabel = document.createElement('label');
+        switchLabel.className = 'switch';
+        switchLabel.title = spk.enabled ? 'Enabled' : 'Disabled';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = Boolean(spk.enabled);
+        checkbox.addEventListener('change', () => toggleSpeaker(spk.name, checkbox.checked));
+
+        const sliderSpan = document.createElement('span');
+        sliderSpan.className = 'slider';
+
+        switchLabel.appendChild(checkbox);
+        switchLabel.appendChild(sliderSpan);
+        item.appendChild(switchLabel);
+
+        list.appendChild(item);
+
+        if (spk.enabled) {
+          const opt = document.createElement('option');
+          opt.value = spk.name;
+          opt.textContent = `${spk.room || spk.name} (${spk.name})`;
+          if (String(spk.name).toLowerCase().includes('master bedroom')) opt.selected = true;
+          select.appendChild(opt);
+        }
+      });
+
+      if (prevSelected && Array.from(select.options).some(o => o.value === prevSelected)) {
+        select.value = prevSelected;
+      }
+    }
+
+    async function toggleSpeaker(name, enabled) {
+      const statusEl = document.getElementById('actionStatus');
+      statusEl.textContent = `${enabled ? 'Enabling' : 'Disabling'} '${name}'...`;
+      try {
+        const res = await fetch('/api/speakers/toggle', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ speaker: name, enabled })
+        });
+        const data = await res.json();
+        speakers = data.speakers || speakers;
+        renderSpeakers();
+        statusEl.textContent = `'${name}' is now ${enabled ? 'enabled' : 'disabled'} (saved to catalog.json).`;
+      } catch (err) {
+        statusEl.textContent = `Error toggling speaker: ${err}`;
+      }
+    }
+
+    async function sendPlay() {
+      const query = document.getElementById('queryInput').value.trim();
+      const speaker = document.getElementById('targetSpeakerSelect').value;
+      if (!query) return;
+      const statusEl = document.getElementById('actionStatus');
+      statusEl.textContent = `Routing '${query}' to ${speaker}...`;
+      try {
+        const res = await fetch('/api/command', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ query, speaker })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Command failed');
+        const mode = data.intent?.mode || 'artist';
+        const track = data.playback?.current_track;
+        statusEl.textContent = `Playing (${mode}): ${track ? track.title + ' — ' + track.artist : 'Started'} on ${speaker}`;
+        refreshStatus();
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function sendTransport(action) {
+      const speaker = document.getElementById('targetSpeakerSelect').value;
+      const statusEl = document.getElementById('actionStatus');
+      statusEl.textContent = `Sending '${action}' to ${speaker}...`;
+      try {
+        const res = await fetch('/api/transport', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ action, speaker })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Transport failed');
+        statusEl.textContent = `Transport '${action}' executed on ${speaker}.`;
+        refreshStatus();
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function sendVolume(delta) {
+      const speaker = document.getElementById('targetSpeakerSelect').value;
+      const statusEl = document.getElementById('actionStatus');
+      try {
+        const res = await fetch('/api/transport', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ action: 'volume', speaker, relative_volume: delta })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Volume change failed');
+        const volPct = data.volume != null ? Math.round(data.volume * 100) + '%' : 'updated';
+        statusEl.textContent = `Volume on ${speaker}: ${volPct}`;
+        refreshStatus();
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function refreshStatus() {
+      try {
+        const res = await fetch('/api/status', { headers: authHeaders() });
+        const data = await res.json();
+        const container = document.getElementById('activeSessions');
+        const keys = Object.keys(data);
+        if (keys.length === 0) {
+          container.textContent = '';
+          const sub = document.createElement('div');
+          sub.className = 'now-sub';
+          sub.textContent = 'No active streams yet.';
+          container.appendChild(sub);
+          return;
+        }
+
+        container.textContent = '';
+        keys.forEach(k => {
+          const s = data[k];
+          const t = s.current_track;
+          const vol = s.volume != null ? Math.round(s.volume * 100) + '%' : '—';
+
+          const card = document.createElement('div');
+          card.className = 'now-playing';
+
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
+
+          const spkTitle = document.createElement('strong');
+          spkTitle.textContent = s.speaker || 'Cast Device';
+          row.appendChild(spkTitle);
+
+          const badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.textContent = `${s.state || 'UNKNOWN'} • Vol ${vol}`;
+          row.appendChild(badge);
+          card.appendChild(row);
+
+          const trackTitle = document.createElement('div');
+          trackTitle.className = 'now-title';
+          trackTitle.style.marginTop = '6px';
+          trackTitle.textContent = t ? t.title : 'Idle';
+          card.appendChild(trackTitle);
+
+          const trackSub = document.createElement('div');
+          trackSub.className = 'now-sub';
+          const artistAlbum = t ? `${t.artist}${t.album ? ' — ' + t.album : ''}` : 'No track loaded';
+          trackSub.textContent = `${artistAlbum} • ${s.queue_length || 0} in queue`;
+          card.appendChild(trackSub);
+
+          container.appendChild(card);
+        });
+      } catch (err) {}
+    }
+
+    // Attach event listeners safely without inline handlers
+    document.getElementById('rescanBtn').addEventListener('click', () => scanSpeakers(true));
+    document.getElementById('playBtn').addEventListener('click', sendPlay);
+    document.getElementById('queryInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendPlay();
+    });
+    document.getElementById('pauseBtn').addEventListener('click', () => sendTransport('pause'));
+    document.getElementById('resumeBtn').addEventListener('click', () => sendTransport('resume'));
+    document.getElementById('prevBtn').addEventListener('click', () => sendTransport('previous'));
+    document.getElementById('nextBtn').addEventListener('click', () => sendTransport('next'));
+    document.getElementById('stopBtn').addEventListener('click', () => sendTransport('stop'));
+    document.getElementById('volDownBtn').addEventListener('click', () => sendVolume(-0.05));
+    document.getElementById('volUpBtn').addEventListener('click', () => sendVolume(0.05));
+    document.getElementById('refreshStatusBtn').addEventListener('click', refreshStatus);
+
+    scanSpeakers(false);
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -149,6 +150,72 @@ def test_transport_volume_actions():
     assert resp.status_code == 200
     mock_cast.get.assert_called_once_with("Master Bedroom")
     mock_speaker.adjust_volume.assert_called_once_with(-0.05)
+
+
+def test_local_api_key_authentication():
+    from pydantic import SecretStr
+
+    mock_speaker = MagicMock()
+    mock_speaker.status.return_value = {"speaker": "Master Bedroom", "state": "IDLE"}
+    mock_cast = MagicMock()
+    mock_cast.get.return_value = mock_speaker
+
+    app.state.cast = mock_cast
+    app.state.settings = SimpleNamespace(
+        default_speaker_name="Master Bedroom",
+        local_api_key=SecretStr("super-secret-local-key"),
+    )
+
+    client = TestClient(app)
+
+    # 1. Unauthenticated request rejected
+    resp = client.post("/api/transport", json={"action": "pause", "speaker": "Master Bedroom"})
+    assert resp.status_code == 401
+
+    # 2. Authenticated with X-API-Key succeeds
+    resp = client.post(
+        "/api/transport",
+        headers={"X-API-Key": "super-secret-local-key"},
+        json={"action": "pause", "speaker": "Master Bedroom"},
+    )
+    assert resp.status_code == 200
+
+    # 3. Authenticated with query param ?api_key= succeeds
+    resp = client.post(
+        "/api/transport?api_key=super-secret-local-key",
+        json={"action": "resume", "speaker": "Master Bedroom"},
+    )
+    assert resp.status_code == 200
+
+    # Restore settings without local_api_key
+    app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
+
+
+def test_speaker_queue_load_media_failed_and_previous():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    track1 = track("song1")
+    track2 = track("song2")
+    track3 = track("song3")
+    queue.replace([track1, track2, track3], repeat=False)
+
+    assert queue.current.title == "song1"
+
+    # Simulate load_media_failed -> should automatically skip to track2
+    queue.load_media_failed(queue_item_id=1, error_code="LOAD_FAILED")
+    queue.executor.shutdown(wait=True)
+    assert queue.current.title == "song2"
+
+    # Advance to track3
+    queue.executor = ThreadPoolExecutor(max_workers=1)
+    queue.skip()
+    assert queue.current.title == "song3"
+
+    # Call previous -> should go back to track2
+    queue.previous()
+    assert queue.current.title == "song2"
+    queue.executor.shutdown(wait=True)
+
 
 
 

@@ -111,6 +111,7 @@ class SpeakerQueue(MediaStatusListener):
         self.cast = cast
         self.default_volume = default_volume
         self.queue = deque()
+        self.history = deque(maxlen=20)
         self.original = []
         self.current = None
         self.repeat = False
@@ -132,28 +133,19 @@ class SpeakerQueue(MediaStatusListener):
         with self.lock:
             self.generation += 1
             self.queue = deque(tracks)
+            self.history.clear()
             self.original = list(tracks)
             self.repeat = repeat
             self.armed = False
             self._next()
 
-    def _next(self):
-        while True:
-            if not self.queue and self.repeat and self.original:
-                items = self.original[:]
-                random.shuffle(items)
-                self.queue.extend(items)
-            if not self.queue:
-                self.current = None
-                self.armed = False
-                return
-            track = self.queue.popleft()
-            media_list = getattr(track, "media", None) or []
-            parts_list = (getattr(media_list[0], "parts", None) or []) if media_list else []
-            if not parts_list:
-                log.warning("Skipping track '%s' with missing media parts", getattr(track, "title", "Unknown"))
-                continue
-            break
+    def _play_track(self, track):
+        media_list = getattr(track, "media", None) or []
+        parts_list = (getattr(media_list[0], "parts", None) or []) if media_list else []
+        if not parts_list:
+            log.warning("Skipping track '%s' with missing media parts", getattr(track, "title", "Unknown"))
+            self._next()
+            return
 
         self.current = track
         self.armed = False
@@ -200,6 +192,44 @@ class SpeakerQueue(MediaStatusListener):
             metadata=metadata,
         )
 
+    def _next(self):
+        if self.current is not None:
+            self.history.append(self.current)
+
+        while True:
+            if not self.queue and self.repeat and self.original:
+                items = self.original[:]
+                random.shuffle(items)
+                self.queue.extend(items)
+            if not self.queue:
+                self.current = None
+                self.armed = False
+                return
+            track = self.queue.popleft()
+            break
+
+        self._play_track(track)
+
+    def previous(self):
+        with self.lock:
+            self.generation += 1
+            self.armed = False
+            # Check playback position if available
+            status = getattr(self.cast.media_controller, "status", None)
+            pos = getattr(status, "adjusted_current_time", None)
+            if isinstance(pos, (int, float)) and pos > 4.0:
+                if self.current:
+                    self._play_track(self.current)
+                return
+            if not self.history:
+                if self.current:
+                    self._play_track(self.current)
+                return
+            prev_track = self.history.pop()
+            if self.current:
+                self.queue.appendleft(self.current)
+            self._play_track(prev_track)
+
     def new_media_status(self, status):
         with self.lock:
             if self.current is None:
@@ -221,7 +251,8 @@ class SpeakerQueue(MediaStatusListener):
                 log.exception("Could not advance the Cast queue")
 
     def load_media_failed(self, queue_item_id, error_code):
-        log.error("Cast media load failed on '%s': item=%s code=%s", self.cast.name, queue_item_id, error_code)
+        log.error("Cast media load failed on '%s': item=%s code=%s. Automatically advancing to next track.", self.cast.name, queue_item_id, error_code)
+        self.executor.submit(self._advance, self.generation)
 
     def pause(self):
         self.cast.media_controller.pause()

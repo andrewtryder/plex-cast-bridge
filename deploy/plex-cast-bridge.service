@@ -6,9 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# User/Group under which the service runs; adjust to your system user (e.g., plexbridge or root in an LXC)
-User=root
-Group=root
+# Dedicated unprivileged system user (sudo useradd -r -s /bin/false plexbridge)
+User=plexbridge
+Group=plexbridge
 
 WorkingDirectory=/opt/plex-cast-bridge
 EnvironmentFile=/opt/plex-cast-bridge/.env
@@ -16,6 +16,11 @@ Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/plex-cast-bridge/gcp-credential
 Environment="PYTHONUNBUFFERED=1"
 
 ExecStart=/opt/plex-cast-bridge/.venv/bin/uvicorn plex_cast_bridge.main:app --host 0.0.0.0 --port 8000
+
+# Security sandboxing
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
 
 # Reliability and auto-recovery
 Restart=always

@@ -21,8 +21,11 @@ class PubSubService:
                 self._topic_path = self._publisher.topic_path(self.project_id, self.topic_id)
                 log.info(f"Initialized Pub/Sub publisher for topic: {self._topic_path}")
             except Exception as exc:
-                log.warning(f"Could not initialize Google Pub/Sub client ({exc}). Falling back to mock mode.")
-                self.mock = True
+                log.error(f"Failed to initialize Google Pub/Sub publisher for topic '{self.project_id}/{self.topic_id}': {exc}")
+                raise RuntimeError(
+                    f"Pub/Sub publisher initialization failed for topic '{self.topic_id}'. "
+                    "Refusing to silently drop commands in production. (Set MOCK_PUBSUB=true for offline testing)."
+                ) from exc
 
     def publish_sync(self, payload: dict[str, Any]) -> str:
         if self.mock or not self._publisher or not self._topic_path:

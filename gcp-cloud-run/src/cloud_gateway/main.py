@@ -1,6 +1,7 @@
 import base64
 import logging
 import secrets
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from .auth import (
     create_authorization_code,
     create_token_pair,
+    validate_redirect_uri,
     verify_authorization_code,
     verify_bearer_token,
     verify_refresh_token,
@@ -89,6 +91,30 @@ async def health(settings: Annotated[Settings, Depends(get_settings)]):
 # ============================================================================
 
 
+# In-memory rate limiting for OAuth login attempts: {client_ip: [timestamp, ...]}
+_FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+MAX_FAILED_LOGINS = 5
+LOCKOUT_WINDOW_SECONDS = 300.0
+
+
+def _check_rate_limit(client_ip: str):
+    now = time.time()
+    attempts = [t for t in _FAILED_LOGIN_ATTEMPTS.get(client_ip, []) if now - t < LOCKOUT_WINDOW_SECONDS]
+    _FAILED_LOGIN_ATTEMPTS[client_ip] = attempts
+    if len(attempts) >= MAX_FAILED_LOGINS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed authorization attempts. Please wait 5 minutes before trying again.",
+        )
+
+
+def _record_failed_attempt(client_ip: str):
+    now = time.time()
+    attempts = [t for t in _FAILED_LOGIN_ATTEMPTS.get(client_ip, []) if now - t < LOCKOUT_WINDOW_SECONDS]
+    attempts.append(now)
+    _FAILED_LOGIN_ATTEMPTS[client_ip] = attempts
+
+
 @app.get("/oauth/authorize", response_class=HTMLResponse)
 async def oauth_authorize_get(
     request: Request,
@@ -99,6 +125,7 @@ async def oauth_authorize_get(
     scope: str = "",
     settings: Settings = Depends(get_settings),
 ):
+    validate_redirect_uri(redirect_uri, allow_local=settings.mock_pubsub)
     if client_id != settings.google_client_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -130,6 +157,10 @@ async def oauth_authorize_post(
     scope: str = Form(""),
     settings: Settings = Depends(get_settings),
 ):
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(client_ip)
+
+    validate_redirect_uri(redirect_uri, allow_local=settings.mock_pubsub)
     if client_id != settings.google_client_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -138,6 +169,7 @@ async def oauth_authorize_post(
 
     expected_passphrase = settings.admin_passphrase.get_secret_value()
     if not secrets.compare_digest(passphrase, expected_passphrase):
+        _record_failed_attempt(client_ip)
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -151,6 +183,9 @@ async def oauth_authorize_post(
             },
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+
+    # Clear rate limit on successful authorization
+    _FAILED_LOGIN_ATTEMPTS.pop(client_ip, None)
 
     auth_code = create_authorization_code(
         client_id=client_id,
@@ -224,7 +259,13 @@ async def oauth_token(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"error": "invalid_request", "error_description": "Missing authorization code"},
             )
-        verify_authorization_code(code, expected_cid, settings, redirect_uri)
+        try:
+            verify_authorization_code(code, expected_cid, settings, redirect_uri)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": "invalid_grant", "error_description": str(exc.detail)},
+            )
         token_data = create_token_pair(settings)
         return JSONResponse(
             content=token_data,

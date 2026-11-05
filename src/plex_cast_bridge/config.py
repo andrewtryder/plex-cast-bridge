@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     default_speaker_host: str = ""
     default_cast_volume: float = 0.20
     gemini_api_key: SecretStr = SecretStr("")
+    local_api_key: SecretStr | None = None
     gcp_project_id: str = ""
     gcp_pubsub_subscription_id: str = ""
     enable_pubsub_listener: bool = False

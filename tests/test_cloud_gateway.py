@@ -183,7 +183,7 @@ def test_fulfillment_query(client, auth_headers):
     dev_status = data["payload"]["devices"]["plex-jukebox:Kitchen"]
     assert dev_status["online"] is True
     assert dev_status["status"] == "SUCCESS"
-    assert dev_status["playbackState"] == "PLAYING"
+    assert dev_status["playbackState"] == "STOPPED"
 
 
 def test_fulfillment_execute_commands(client, auth_headers):
@@ -295,4 +295,177 @@ def test_custom_webhook_query(client):
     assert data["speaker"] == "Office"
     assert len(published) == 1
     assert published[0]["action"] == "play"
+
+
+def test_oauth_security_controls(client):
+    # 1. Reject untrusted redirect_uri (open redirect prevention)
+    res = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://evil-attacker.com/steal-code",
+            "state": "xyz",
+            "response_type": "code",
+        },
+    )
+    assert res.status_code == 400
+    assert "Unauthorized redirect_uri" in res.text
+
+    # 2. Complete a legitimate authorization
+    res = client.post(
+        "/oauth/authorize",
+        data={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "state-security",
+            "response_type": "code",
+            "passphrase": "test-passphrase",
+        },
+        follow_redirects=False,
+    )
+    assert res.status_code == 302
+    parsed = urllib.parse.urlsplit(res.headers["location"])
+    auth_code = dict(urllib.parse.parse_qsl(parsed.query))["code"]
+
+    # 3. First exchange succeeds
+    token_res = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+        },
+    )
+    assert token_res.status_code == 200
+
+    # 4. Single-use enforcement: Attempting to reuse the same authorization code MUST fail
+    reuse_res = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+        },
+    )
+    assert reuse_res.status_code == 400
+    assert "already been redeemed" in reuse_res.text
+
+
+def test_smart_home_command_key_translation_and_fail_closed(client, auth_headers):
+    published = []
+
+    def mock_pub(payload):
+        published.append(payload)
+        return "msg-key-test"
+
+    client.app.state.pubsub.publish_sync = mock_pub
+
+    # 1. Test SetInput translates input_kitchen -> Kitchen
+    cmd_set_input = {
+        "requestId": "exec-setinput",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {
+                                    "command": "action.devices.commands.SetInput",
+                                    "params": {"newInput": "input_kitchen"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_set_input)
+    assert res.status_code == 200
+    assert published[0]["action"] == "resume"
+    assert published[0]["speaker"] == "Kitchen"
+
+    # 2. Test appSelect translates app_genre_rock -> Rock
+    cmd_app_select = {
+        "requestId": "exec-appselect",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {
+                                    "command": "action.devices.commands.appSelect",
+                                    "params": {"newApplication": "app_genre_rock"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_app_select)
+    assert res.status_code == 200
+    assert published[1]["action"] == "play"
+    assert published[1]["query"] == "Rock"
+
+    # 3. Test mediaPrevious emits previous
+    cmd_prev = {
+        "requestId": "exec-prev",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaPrevious", "params": {}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_prev)
+    assert res.status_code == 200
+    assert published[2]["action"] == "previous"
+
+    # 4. Test Pub/Sub failure fails closed (returns status: ERROR to Google Home)
+    client.app.state.pubsub.publish_sync = lambda p: (_ for _ in ()).throw(RuntimeError("Pub/Sub outage"))
+    cmd_fail = {
+        "requestId": "exec-fail",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaNext", "params": {}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_fail)
+    assert res.status_code == 200
+    data = res.json()
+    cmd_result = data["payload"]["commands"][0]
+    assert cmd_result["status"] == "ERROR"
+    assert cmd_result["errorCode"] == "transientError"
+
 

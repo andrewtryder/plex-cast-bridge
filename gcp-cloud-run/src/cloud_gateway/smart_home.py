@@ -245,51 +245,88 @@ def extract_speaker_from_device_id(device_id: str | None, default_speaker: str |
     return default_speaker
 
 
-def parse_execute_command(command: str, params: dict[str, Any], target_speaker: str | None) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
+def resolve_input_key(raw_input: str | None, catalog_inputs: list[str]) -> str | None:
+    if not raw_input:
+        return None
+    val = raw_input.strip()
+    if val.startswith("input_"):
+        slug = val[len("input_"):]
+        for inp in catalog_inputs:
+            if slugify(inp) == slug:
+                return inp
+        return slug.replace("_", " ").title()
+    return val
 
-    if command == "action.devices.commands.selectChannel":
+
+def resolve_app_key(raw_app: str | None) -> str:
+    if not raw_app:
+        return "music"
+    val = raw_app.strip()
+    if val.startswith("app_genre_"):
+        return val[len("app_genre_"):].replace("_", " ").title()
+    if val.startswith("app_theme_"):
+        return val[len("app_theme_"):].replace("_", " ").title()
+    return val
+
+
+def parse_execute_command(
+    command: str,
+    params: dict[str, Any],
+    target_speaker: str | None,
+    catalog_inputs: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    cmd_lower = command.lower().strip()
+    inputs_list = catalog_inputs or []
+
+    if cmd_lower == "action.devices.commands.selectchannel":
         channel_name = params.get("channelName") or params.get("channelCode") or params.get("channelNumber")
         query = str(channel_name) if channel_name else "radio"
+        if query.startswith("artist_"):
+            query = query[len("artist_"):].replace("_", " ").title()
+        elif query.startswith("theme_"):
+            query = query[len("theme_"):].replace("_", " ").title()
         payload = {"action": "play", "query": query}
 
-    elif command == "action.devices.commands.appSearch":
-        query = params.get("query") or "music"
+    elif cmd_lower == "action.devices.commands.appsearch":
+        query = params.get("query") or params.get("category") or params.get("application") or "music"
         payload = {"action": "play", "query": str(query)}
 
-    elif command == "action.devices.commands.appSelect":
-        app_name = params.get("newApplicationName") or params.get("newApplication") or "music"
-        payload = {"action": "play", "query": str(app_name)}
+    elif cmd_lower == "action.devices.commands.appselect":
+        raw_app = params.get("newApplicationName") or params.get("newApplication") or "music"
+        query = resolve_app_key(str(raw_app))
+        payload = {"action": "play", "query": query}
 
-    elif command == "action.devices.commands.setInput":
-        speaker = params.get("newInput")
+    elif cmd_lower in ("action.devices.commands.setinput",):
+        raw_input = params.get("newInput")
+        speaker = resolve_input_key(raw_input, inputs_list) or target_speaker
         payload = {"action": "resume", "speaker": speaker}
 
-    elif command == "action.devices.commands.mediaNext":
+    elif cmd_lower == "action.devices.commands.medianext":
         payload = {"action": "next"}
 
-    elif command in ("action.devices.commands.mediaPrevious", "action.devices.commands.mediaPrev"):
-        payload = {"action": "next"}
+    elif cmd_lower in ("action.devices.commands.mediaprevious", "action.devices.commands.mediaprev"):
+        payload = {"action": "previous"}
 
-    elif command == "action.devices.commands.mediaPause":
+    elif cmd_lower == "action.devices.commands.mediapause":
         payload = {"action": "pause"}
 
-    elif command == "action.devices.commands.mediaResume":
+    elif cmd_lower == "action.devices.commands.mediaresume":
         payload = {"action": "resume"}
 
-    elif command == "action.devices.commands.mediaStop":
+    elif cmd_lower == "action.devices.commands.mediastop":
         payload = {"action": "stop"}
 
-    elif command == "action.devices.commands.OnOff":
+    elif cmd_lower == "action.devices.commands.onoff":
         is_on = params.get("on", True)
         payload = {"action": "resume" if is_on else "pause"}
 
-    elif command == "action.devices.commands.setVolume":
+    elif cmd_lower == "action.devices.commands.setvolume":
         vol = params.get("volumeLevel", 20)
         vol_float = round(max(0.0, min(100.0, float(vol))) / 100.0, 2)
         payload = {"action": "volume", "volume": vol_float}
 
-    elif command == "action.devices.commands.volumeRelative":
+    elif cmd_lower == "action.devices.commands.volumerelative":
         rel = params.get("volumeRelativeLevel", 5)
         rel_float = round(float(rel) / 100.0, 2)
         payload = {"action": "volume", "relative_volume": rel_float}
@@ -339,8 +376,8 @@ async def handle_smart_home_request(
             dev_id: {
                 "online": True,
                 "status": "SUCCESS",
-                "playbackState": "PLAYING",
-                "on": True,
+                "playbackState": "STOPPED",
+                "on": False,
                 "currentVolume": 20,
                 "isMuted": False,
             }
@@ -354,8 +391,13 @@ async def handle_smart_home_request(
         }
 
     elif intent == "action.devices.EXECUTE":
+        catalog_path = settings.get_catalog_file()
+        catalog_data = load_catalog(catalog_path)
+        catalog_inputs = catalog_data.get("inputs", [])
+
         commands_input = inputs[0].get("payload", {}).get("commands", [])
-        device_ids: list[str] = []
+        success_ids: list[str] = []
+        error_commands: list[dict[str, Any]] = []
 
         for cmd_entry in commands_input:
             devices = cmd_entry.get("devices", [])
@@ -363,10 +405,8 @@ async def handle_smart_home_request(
 
             target_dev_ids = [d.get("id") for d in devices if d.get("id")] or [DEVICE_ID]
             for dev_id in target_dev_ids:
-                if dev_id not in device_ids:
-                    device_ids.append(dev_id)
-
                 target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
+                dev_success = True
                 for exec_item in executions:
                     cmd_name = exec_item.get("command", "")
                     params = exec_item.get("params", {})
@@ -374,30 +414,44 @@ async def handle_smart_home_request(
                         cmd_name,
                         params,
                         target_speaker,
+                        catalog_inputs,
                     )
                     log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
                     try:
                         await pubsub_service.publish(pubsub_payload)
                     except Exception as exc:
                         log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
+                        dev_success = False
 
-        if not device_ids:
-            device_ids = [DEVICE_ID]
+                if dev_success:
+                    if dev_id not in success_ids:
+                        success_ids.append(dev_id)
+                else:
+                    error_commands.append({
+                        "ids": [dev_id],
+                        "status": "ERROR",
+                        "errorCode": "transientError",
+                    })
+
+        response_commands = []
+        if success_ids:
+            response_commands.append({
+                "ids": success_ids,
+                "status": "SUCCESS",
+                "states": {
+                    "online": True,
+                    "playbackState": "PLAYING",
+                    "on": True,
+                },
+            })
+        response_commands.extend(error_commands)
+        if not response_commands:
+            response_commands = [{"ids": [DEVICE_ID], "status": "SUCCESS"}]
 
         return {
             "requestId": request_id,
             "payload": {
-                "commands": [
-                    {
-                        "ids": device_ids,
-                        "status": "SUCCESS",
-                        "states": {
-                            "online": True,
-                            "playbackState": "PLAYING",
-                            "on": True,
-                        },
-                    }
-                ]
+                "commands": response_commands,
             },
         }
 

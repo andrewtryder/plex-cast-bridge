@@ -1,4 +1,5 @@
 import secrets
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
@@ -10,6 +11,46 @@ from .config import Settings
 
 security = HTTPBearer(auto_error=False)
 
+# In-memory store for redeemed authorization code JTIs: {jti: exp_timestamp}
+_REDEEMED_JTIS: dict[str, int] = {}
+
+ALLOWED_REDIRECT_DOMAINS = {
+    "oauth-redirect.googleusercontent.com",
+    "oauth-redirect-sandbox.googleusercontent.com",
+}
+
+
+def _cleanup_expired_jtis():
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    expired = [jti for jti, exp in _REDEEMED_JTIS.items() if exp < now_ts]
+    for jti in expired:
+        _REDEEMED_JTIS.pop(jti, None)
+
+
+def validate_redirect_uri(redirect_uri: str, allow_local: bool = False):
+    """
+    Ensure OAuth redirect URI belongs strictly to approved Google OAuth destinations.
+    Prevents open redirect and authorization code interception attacks.
+    """
+    if not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing redirect_uri",
+        )
+    parsed = urllib.parse.urlsplit(redirect_uri)
+    if allow_local and parsed.netloc in ("localhost", "127.0.0.1", "testserver"):
+        return
+    if parsed.scheme != "https":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OAuth redirect_uri must use HTTPS scheme",
+        )
+    if parsed.netloc.lower() not in ALLOWED_REDIRECT_DOMAINS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unauthorized redirect_uri domain '{parsed.netloc}'. Must match Google OAuth redirect domains.",
+        )
+
 
 def create_authorization_code(
     client_id: str,
@@ -18,6 +59,7 @@ def create_authorization_code(
     scope: str = "smart-home",
 ) -> str:
     now = datetime.now(timezone.utc)
+    exp = int((now + timedelta(minutes=settings.auth_code_expire_minutes)).timestamp())
     payload = {
         "sub": "admin",
         "type": "authorization_code",
@@ -25,8 +67,8 @@ def create_authorization_code(
         "redirect_uri": redirect_uri,
         "scope": scope,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=settings.auth_code_expire_minutes)).timestamp()),
-        "jti": secrets.token_hex(8),
+        "exp": exp,
+        "jti": secrets.token_hex(16),
     }
     return jwt.encode(payload, settings.oauth_signing_secret.get_secret_value(), algorithm="HS256")
 
@@ -59,11 +101,32 @@ def verify_authorization_code(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Client ID mismatch in authorization code",
         )
-    if expected_redirect_uri and payload.get("redirect_uri") and payload.get("redirect_uri") != expected_redirect_uri:
+    if not expected_redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing redirect_uri in token request",
+        )
+    if payload.get("redirect_uri") and payload.get("redirect_uri") != expected_redirect_uri:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Redirect URI mismatch in authorization code",
         )
+
+    # Enforce single-use authorization code
+    jti = payload.get("jti")
+    if not jti:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authorization code missing jti identifier",
+        )
+    _cleanup_expired_jtis()
+    if jti in _REDEEMED_JTIS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authorization code has already been redeemed (single-use violated)",
+        )
+    _REDEEMED_JTIS[jti] = payload.get("exp", int(datetime.now(timezone.utc).timestamp()) + 600)
+
     return payload
 
 

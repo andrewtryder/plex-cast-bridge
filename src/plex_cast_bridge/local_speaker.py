@@ -26,6 +26,7 @@ class LocalSpeaker:
         self.directory = Path(directory)
         self.lock = threading.RLock()
         self.queue = deque()
+        self.history = deque(maxlen=20)
         self.original = []
         self.current = None
         self.repeat = False
@@ -58,6 +59,9 @@ class LocalSpeaker:
         self._proc = None
 
     def _next(self):
+        if self.current is not None:
+            self.history.append(self.current)
+
         if not self.queue and self.repeat and self.original:
             tracks = self.original[:]
             random.shuffle(tracks)
@@ -70,6 +74,9 @@ class LocalSpeaker:
             return
 
         track = self.queue.popleft()
+        self._play_track(track)
+
+    def _play_track(self, track):
         media = track.media[0]
         part = media.parts[0]
         url = track._server.url(part.key, includeToken=True)
@@ -109,6 +116,18 @@ class LocalSpeaker:
             self._start_playback(destination, self.generation)
         else:
             self.state = "READY"
+
+    def previous(self):
+        with self.lock:
+            self.generation += 1
+            self._stop_process()
+            if self.history:
+                prev_track = self.history.pop()
+                if self.current:
+                    self.queue.appendleft(self.current)
+                self._play_track(prev_track)
+            elif self.current:
+                self._play_track(self.current)
 
     def _start_playback(self, audio_path: Path, current_gen: int):
         self._stop_process()
