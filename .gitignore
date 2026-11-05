@@ -45,3 +45,8 @@ gcp-cloud-run/catalog.json
 .vscode/
 *.swp
 *.swo
+
+# Dead-letter logs and mutable container data
+data/
+dead_letter_queue.jsonl
+*.jsonl

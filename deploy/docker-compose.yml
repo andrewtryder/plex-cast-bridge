@@ -3,25 +3,24 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: plex-cast-bridge:latest
+    image: ghcr.io/andrewtryder/plex-cast-bridge:latest
     container_name: plex-cast-bridge
     restart: unless-stopped
-    # host networking is mandatory for Chromecast mDNS discovery on the local LAN
+    # host networking is required for Chromecast mDNS discovery on the local subnet
     network_mode: host
     env_file:
       - ../.env
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
       - PORT=8000
+      - DATA_DIR=/data
     volumes:
       # Mount Google Cloud Service Account key for Pub/Sub authentication
       - ../gcp-credentials.json:/app/gcp-credentials.json:ro
       # Mount .env for runtime configuration
       - ../.env:/app/.env:ro
-      # Mount canonical catalog.json (read-write to persist dashboard speaker toggles)
-      - ../catalog.json:/app/catalog.json
-      # Mount local dead-letter queue log to persist unprocessable messages across container updates
-      - ../dead_letter_queue.jsonl:/app/dead_letter_queue.jsonl
+      # Persistent mutable data directory (catalog.json, dead_letter_queue.jsonl)
+      - ../data:/data
     logging:
       driver: "json-file"
       options:

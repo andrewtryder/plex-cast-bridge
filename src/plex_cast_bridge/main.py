@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import secrets
 import shutil
 from contextlib import asynccontextmanager
@@ -21,17 +22,53 @@ from .pubsub_worker import PubSubWorker
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = Path(
+    os.getenv("DATA_DIR")
+    or (
+        "/data"
+        if Path("/data").is_dir()
+        else (PROJECT_ROOT / "data" if (PROJECT_ROOT / "data").is_dir() else PROJECT_ROOT)
+    )
+)
 CANONICAL_CATALOG = PROJECT_ROOT / "catalog.json"
 CLOUD_RUN_CATALOG = PROJECT_ROOT / "gcp-cloud-run" / "catalog.json"
 ICON_PATH = PROJECT_ROOT / "assets" / "icon.png"
 DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 
 
+def get_catalog_path(for_writing: bool = False) -> Path:
+    env_cat = os.getenv("CATALOG_PATH")
+    if env_cat:
+        p = Path(env_cat)
+        if for_writing:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    data_cat = DATA_DIR / "catalog.json"
+    bundled_cat = PROJECT_ROOT / "catalog.json"
+
+    if for_writing:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if not data_cat.exists() and bundled_cat.exists() and DATA_DIR != PROJECT_ROOT:
+            try:
+                shutil.copyfile(bundled_cat, data_cat)
+            except Exception:
+                pass
+        return data_cat if (DATA_DIR != PROJECT_ROOT or data_cat.exists()) else bundled_cat
+
+    if data_cat.exists():
+        return data_cat
+    if bundled_cat.exists():
+        return bundled_cat
+    return data_cat
+
+
 def _load_disabled_speakers_from_catalog() -> set[str]:
     disabled: set[str] = set()
-    if CANONICAL_CATALOG.exists():
+    cat_path = get_catalog_path(for_writing=False)
+    if cat_path.exists():
         try:
-            with open(CANONICAL_CATALOG, "r", encoding="utf-8") as f:
+            with open(cat_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for spk in data.get("speakers", []):
                     if not spk.get("enabled", True):
@@ -40,16 +77,17 @@ def _load_disabled_speakers_from_catalog() -> set[str]:
                         if spk.get("roomHint"):
                             disabled.add(spk["roomHint"].casefold())
         except Exception as exc:
-            log.warning("Could not read disabled speakers from %s: %s", CANONICAL_CATALOG, exc)
+            log.warning("Could not read disabled speakers from %s: %s", cat_path, exc)
     return disabled
 
 
 def _persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: CastManager):
     """Persist discovered LAN speakers and their enabled/disabled flags into catalog.json."""
     try:
+        read_path = get_catalog_path(for_writing=False)
         data = {}
-        if CANONICAL_CATALOG.exists():
-            with open(CANONICAL_CATALOG, "r", encoding="utf-8") as f:
+        if read_path.exists():
+            with open(read_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
         existing_by_room = {
@@ -94,11 +132,16 @@ def _persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: Ca
         if speakers_list:
             data["speakers"] = speakers_list
             data["inputs"] = [s["roomHint"] for s in speakers_list if s.get("enabled", True)]
-            with open(CANONICAL_CATALOG, "w", encoding="utf-8") as f:
+            write_path = get_catalog_path(for_writing=True)
+            write_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(write_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             if CLOUD_RUN_CATALOG.parent.exists():
-                shutil.copyfile(CANONICAL_CATALOG, CLOUD_RUN_CATALOG)
+                try:
+                    shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
+                except Exception:
+                    pass
     except Exception as exc:
         log.warning("Could not persist speaker states to catalog.json: %s", exc)
 

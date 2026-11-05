@@ -217,14 +217,17 @@ Once linked, speak directly to any Google Home speaker, Nest Hub, or Google Pixe
 
 ## Production Deployment
 
-### Option A: Proxmox LXC with Docker Compose
+### Option A: Proxmox VE (Dedicated Linux VM with Docker Compose)
 
-Host networking is required for Chromecast mDNS discovery on local LAN:
+For 24/7 always-on playback orchestration, see the comprehensive **[Proxmox VE Deployment Guide](docs/proxmox-deployment.md)**.
+
+Quick launch on your Proxmox Debian/Ubuntu VM using pre-built multi-arch images from GHCR:
 
 ```bash
-# 1. Place service account key at ./gcp-credentials.json
-# 2. Launch container using deploy/docker-compose.yml
-docker compose -f deploy/docker-compose.yml up -d --build
+# 1. Place service account key at ./gcp-credentials.json and configure .env
+# 2. Launch container with persistent /data volume and host networking:
+docker compose -f deploy/docker-compose.yml pull
+docker compose -f deploy/docker-compose.yml up -d
 docker compose -f deploy/docker-compose.yml logs -f
 ```
 

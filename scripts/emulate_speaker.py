@@ -148,6 +148,7 @@ def main():
                     if val > 1.0:
                         val = val / 100.0
                     speaker.set_volume(val)
+                    print(f"Volume set to {int(speaker.volume * 100)}% (afplay applies to each new track).")
                 except ValueError:
                     print("Usage: vol 20 (for 20%)")
             else:

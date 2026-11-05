@@ -300,3 +300,23 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
             record = json.loads(lines[0])
             assert record["message_id"] == "msg-poison-pill"
             assert "Persistent crash" in record["error"]
+
+
+def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):
+    from plex_cast_bridge.main import get_catalog_path
+    from plex_cast_bridge.pubsub_worker import get_dead_letter_log_path
+    import plex_cast_bridge.main as main_mod
+
+    test_data = tmp_path / "custom_data"
+    monkeypatch.setattr(main_mod, "DATA_DIR", test_data)
+    monkeypatch.delenv("CATALOG_PATH", raising=False)
+    monkeypatch.setenv("DATA_DIR", str(test_data))
+
+    # Writing path seeds catalog into custom DATA_DIR
+    write_p = get_catalog_path(for_writing=True)
+    assert write_p == test_data / "catalog.json"
+    assert test_data.exists()
+
+    # DLQ path defaults to DATA_DIR
+    dlq_p = get_dead_letter_log_path()
+    assert dlq_p == test_data / "dead_letter_queue.jsonl"

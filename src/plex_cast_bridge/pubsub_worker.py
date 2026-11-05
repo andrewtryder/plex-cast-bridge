@@ -8,22 +8,32 @@ from pathlib import Path
 from collections import Counter
 from google.cloud import pubsub_v1
 
-DEAD_LETTER_LOG = Path(
-    os.getenv("DEAD_LETTER_LOG") or (Path(__file__).resolve().parent.parent.parent / "dead_letter_queue.jsonl")
-)
+
+def get_dead_letter_log_path() -> Path:
+    env_dlq = os.getenv("DEAD_LETTER_LOG")
+    if env_dlq:
+        return Path(env_dlq)
+    root = Path(__file__).resolve().parent.parent.parent
+    data_dir = Path(os.getenv("DATA_DIR") or ("/data" if Path("/data").is_dir() else (root / "data" if (root / "data").is_dir() else root)))
+    return data_dir / "dead_letter_queue.jsonl"
+
+
+DEAD_LETTER_LOG = get_dead_letter_log_path()
+
 
 def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
     try:
+        target = DEAD_LETTER_LOG or get_dead_letter_log_path()
         record = {
             "timestamp": int(time.time()),
             "message_id": msg_id,
             "payload": payload,
             "error": str(exc),
         }
-        DEAD_LETTER_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(DEAD_LETTER_LOG, "a", encoding="utf-8") as f:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
-        log.warning("Archived permanently failing message %s to %s", msg_id, DEAD_LETTER_LOG)
+        log.warning("Archived permanently failing message %s to %s", msg_id, target)
     except Exception as log_err:
         log.error("Could not write to local dead letter log: %s", log_err)
 

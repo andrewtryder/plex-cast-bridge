@@ -1,0 +1,62 @@
+# Git and version control
+.git/
+.github/
+
+# Environment files and credentials (CRITICAL: never bake into image)
+.env
+*.env
+**/.env
+**/.env.*
+gcp-credentials.json
+*credentials*.json
+*service-account*.json
+*.pem
+*.key
+*.token
+
+# Python & virtual environment artifacts
+__pycache__/
+**/*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Testing artifacts and caches
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+test-speaker/
+
+# Runtime mutable data and logs
+data/
+dead_letter_queue.jsonl
+*.jsonl
+*.log
+
+# Audio and media assets
+*.mp3
+*.m4a
+*.flac
+*.wav
+assets/*.jpg
+assets/*.jpeg
+
+# GCP Cloud Run subproject
+gcp-cloud-run/
+
+# Documentation and project notes
+docs/
+*.md
+!README.md
+
+# OS metadata
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
