@@ -15,7 +15,33 @@ def test_settings(tmp_path):
           "genres": ["Rock", "Jazz"],
           "artists": ["Nirvana", "The Beatles", "Kruder & Dorfmeister", "DJ Shadow"],
           "themes": ["Upbeat 90s rock"],
-          "inputs": ["Master Bedroom", "Living Room", "Office"]
+          "inputs": ["Master Bedroom", "Kitchen"],
+          "speakers": [
+            {
+              "id": "plex-jukebox:Master Bedroom",
+              "name": "Plex",
+              "nicknames": ["Master Bedroom Plex", "Plex"],
+              "roomHint": "Master Bedroom",
+              "speaker_name": "Master Bedroom",
+              "enabled": true
+            },
+            {
+              "id": "plex-jukebox:Kitchen",
+              "name": "Plex",
+              "nicknames": ["Kitchen Plex", "Plex"],
+              "roomHint": "Kitchen",
+              "speaker_name": "Kitchen",
+              "enabled": true
+            },
+            {
+              "id": "plex-jukebox:Great Room",
+              "name": "Plex",
+              "nicknames": ["Great Room Plex", "Plex"],
+              "roomHint": "Great Room",
+              "speaker_name": "Great Room",
+              "enabled": false
+            }
+          ]
         }"""
     )
     return Settings(
@@ -48,3 +74,4 @@ def client(test_settings):
 def auth_headers(test_settings):
     tokens = create_token_pair(test_settings)
     return {"Authorization": f"Bearer {tokens['access_token']}"}
+

@@ -75,13 +75,54 @@ def test_artist_radio_pins_track1_and_interleaves_seeds():
     )
     queue = service.resolve(intent)
 
-    # Track 1 must be pinned to DJ Shadow
+    # First 2 tracks must be pinned to DJ Shadow
     assert queue[0].title.startswith("shadow_")
-    # Queue must contain tracks from both target and peer
+    assert queue[1].title.startswith("shadow_")
+    # Queue must contain tracks from both target and peer at ~50/50 ratio
     shadow_count = sum(1 for t in queue if t.title.startswith("shadow_"))
     krush_count = sum(1 for t in queue if t.title.startswith("krush_"))
-    assert shadow_count >= 1
-    assert krush_count >= 1
+    assert shadow_count == 5
+    assert krush_count >= 3
+
+
+def test_fast_path_artist_vs_radio_routing():
+    from plex_cast_bridge.ai_router import SmartDJ
+
+    dj = SmartDJ(api_key="dummy-key")
+    catalog = {"artists": ["DJ Shadow", "Fugazi", "The Herbaliser", "Kruder & Dorfmeister"]}
+
+    # Direct artist queries hit 0ms deterministic fast-path with mode='artist'
+    intent1 = dj.parse("DJ Shadow", catalog)
+    assert intent1.mode == "artist"
+    assert intent1.target_artist == "DJ Shadow"
+
+    intent2 = dj.parse("Play Fugazi on Plex", catalog)
+    assert intent2.mode == "artist"
+    assert intent2.target_artist == "Fugazi"
+
+    intent3 = dj.parse("switch to Herbaliser", catalog)
+    assert intent3.mode == "artist"
+    assert intent3.target_artist == "The Herbaliser"
+
+    # Explicit 'radio' query bypasses fast-path so Gemini selects sonic peers
+    assert dj._try_fast_artist_match("play DJ Shadow radio", catalog["artists"]) is None
+
+
+def test_speaker_disable_toggle():
+    from plex_cast_bridge.cast_manager import CastManager
+
+    mgr = CastManager()
+    assert not mgr.is_disabled("Kitchen display")
+    mgr.set_speaker_enabled("Kitchen display", False)
+    assert mgr.is_disabled("Kitchen display")
+    assert mgr.is_disabled("Kitchen")
+    try:
+        mgr.get("Kitchen")
+        assert False, "Expected ValueError for disabled speaker"
+    except ValueError as exc:
+        assert "disabled" in str(exc).lower()
+    mgr.set_speaker_enabled("Kitchen", True)
+    assert not mgr.is_disabled("Kitchen display")
 
 
 def test_transport_volume_actions():

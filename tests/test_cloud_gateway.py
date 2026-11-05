@@ -149,9 +149,13 @@ def test_fulfillment_sync(client, auth_headers):
     data = res.json()
     assert data["requestId"] == "sync-req-1"
     devices = data["payload"]["devices"]
-    assert len(devices) == 1
+    # Great Room is disabled in test catalog, so only Master Bedroom and Kitchen should sync
+    assert len(devices) == 2
+    assert devices[0]["id"] == "plex-jukebox:Master Bedroom"
+    assert devices[0]["roomHint"] == "Master Bedroom"
+    assert devices[1]["id"] == "plex-jukebox:Kitchen"
+    assert devices[1]["roomHint"] == "Kitchen"
     dev = devices[0]
-    assert dev["id"] == "plex-jukebox"
     assert dev["type"] == "action.devices.types.SETTOP"
 
     attrs = dev["attributes"]
@@ -168,7 +172,7 @@ def test_fulfillment_query(client, auth_headers):
         "inputs": [
             {
                 "intent": "action.devices.QUERY",
-                "payload": {"devices": [{"id": "plex-jukebox"}]},
+                "payload": {"devices": [{"id": "plex-jukebox:Kitchen"}]},
             }
         ],
     }
@@ -176,7 +180,7 @@ def test_fulfillment_query(client, auth_headers):
     assert res.status_code == 200
     data = res.json()
     assert data["requestId"] == "query-req-1"
-    dev_status = data["payload"]["devices"]["plex-jukebox"]
+    dev_status = data["payload"]["devices"]["plex-jukebox:Kitchen"]
     assert dev_status["online"] is True
     assert dev_status["status"] == "SUCCESS"
     assert dev_status["playbackState"] == "PLAYING"
@@ -199,7 +203,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": "plex-jukebox:Kitchen"}],
                             "execution": [
                                 {
                                     "command": "action.devices.commands.selectChannel",
@@ -218,7 +222,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
     assert len(published_messages) == 1
     assert published_messages[0]["action"] == "play"
     assert published_messages[0]["query"] == "Pink Floyd"
-    assert published_messages[0]["speaker"] == "Living Room"
+    assert published_messages[0]["speaker"] == "Kitchen"
 
     cmd_next = {
         "requestId": "exec-req-2",
@@ -291,3 +295,4 @@ def test_custom_webhook_query(client):
     assert data["speaker"] == "Office"
     assert len(published) == 1
     assert published[0]["action"] == "play"
+

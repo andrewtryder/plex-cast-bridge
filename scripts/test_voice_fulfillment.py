@@ -112,7 +112,7 @@ def main():
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": f"plex-jukebox:{speaker}"}],
                             "execution": [
                                 {
                                     "command": "action.devices.commands.selectChannel",

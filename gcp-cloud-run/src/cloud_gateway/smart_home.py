@@ -78,10 +78,20 @@ def load_catalog(catalog_path: Path) -> dict[str, Any]:
         "artists": ["Nirvana", "Pink Floyd", "Radiohead", "The Beatles", "Miles Davis"],
         "themes": ["Upbeat 90s rock", "Relaxing acoustic", "Late night jazz"],
         "inputs": ["Master Bedroom", "Living Room", "Office", "test speaker"],
+        "speakers": [
+            {
+                "id": f"{DEVICE_ID}:Master Bedroom",
+                "name": "Plex",
+                "nicknames": ["Master Bedroom Plex", "Plex", "Plex Jukebox"],
+                "roomHint": "Master Bedroom",
+                "speaker_name": "Master Bedroom",
+                "enabled": True,
+            }
+        ],
     }
 
 
-def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
+def _build_shared_attributes(catalog_data: dict[str, Any]) -> dict[str, Any]:
     genres = catalog_data.get("genres", [])
     artists = catalog_data.get("artists", [])
     themes = catalog_data.get("themes", [])
@@ -147,49 +157,95 @@ def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
         })
 
     return {
-        "id": DEVICE_ID,
-        "type": "action.devices.types.SETTOP",
-        "traits": [
-            "action.devices.traits.AppSelector",
-            "action.devices.traits.Channel",
-            "action.devices.traits.InputSelector",
-            "action.devices.traits.TransportControl",
-            "action.devices.traits.Volume",
-            "action.devices.traits.OnOff",
+        "availableApplications": available_applications,
+        "availableChannels": available_channels,
+        "availableInputs": available_inputs,
+        "transportControlSupportedCommands": [
+            "NEXT",
+            "PREVIOUS",
+            "PAUSE",
+            "RESUME",
+            "STOP",
         ],
-        "name": {
-            "name": "Plex",
-            "nicknames": ["Plex Jukebox", "Plex Radio"],
-            "defaultNames": ["Plex"],
-        },
-        "willReportState": False,
-        "deviceInfo": {
-            "manufacturer": "Plex Bridge",
-            "model": "Plex Jukebox",
-            "hwVersion": "1.0",
-            "swVersion": "2.0",
-        },
-        "attributes": {
-            "availableApplications": available_applications,
-            "availableChannels": available_channels,
-            "availableInputs": available_inputs,
-            "transportControlSupportedCommands": [
-                "NEXT",
-                "PREVIOUS",
-                "PAUSE",
-                "RESUME",
-                "STOP",
-            ],
-            "volumeMaxLevel": 100,
-            "volumeCanMuteAndUnmute": True,
-            "levelStepSize": 5,
-            "commandOnlyOnOff": False,
-            "queryOnlyOnOff": False,
-        },
+        "volumeMaxLevel": 100,
+        "volumeCanMuteAndUnmute": True,
+        "levelStepSize": 5,
+        "commandOnlyOnOff": False,
+        "queryOnlyOnOff": False,
     }
 
 
-def parse_execute_command(command: str, params: dict[str, Any], default_speaker: str | None) -> dict[str, Any]:
+def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Master Bedroom") -> list[dict[str, Any]]:
+    shared_attributes = _build_shared_attributes(catalog_data)
+    raw_speakers = catalog_data.get("speakers") or []
+
+    # Filter to enabled speakers
+    enabled_speakers = [s for s in raw_speakers if s.get("enabled", True)]
+    if not enabled_speakers:
+        fallback_room = default_speaker or "Master Bedroom"
+        enabled_speakers = [
+            {
+                "id": f"{DEVICE_ID}:{fallback_room}",
+                "name": "Plex",
+                "nicknames": [f"{fallback_room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
+                "roomHint": fallback_room,
+                "speaker_name": fallback_room,
+                "enabled": True,
+            }
+        ]
+
+    devices: list[dict[str, Any]] = []
+    for spk in enabled_speakers:
+        speaker_name = spk.get("speaker_name") or spk.get("roomHint") or default_speaker or "Master Bedroom"
+        room_hint = spk.get("roomHint") or speaker_name
+        dev_id = spk.get("id") or f"{DEVICE_ID}:{speaker_name}"
+        dev_name = spk.get("name") or "Plex"
+        nicknames = spk.get("nicknames") or [f"{room_hint} Plex", "Plex", "Plex Jukebox", "Plex Radio"]
+
+        devices.append({
+            "id": dev_id,
+            "type": "action.devices.types.SETTOP",
+            "traits": [
+                "action.devices.traits.AppSelector",
+                "action.devices.traits.Channel",
+                "action.devices.traits.InputSelector",
+                "action.devices.traits.TransportControl",
+                "action.devices.traits.Volume",
+                "action.devices.traits.OnOff",
+            ],
+            "name": {
+                "name": dev_name,
+                "nicknames": nicknames,
+                "defaultNames": ["Plex"],
+            },
+            "roomHint": room_hint,
+            "willReportState": False,
+            "deviceInfo": {
+                "manufacturer": "Plex Bridge",
+                "model": "Plex Jukebox",
+                "hwVersion": "1.0",
+                "swVersion": "2.0",
+            },
+            "attributes": shared_attributes,
+        })
+
+    return devices
+
+
+def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
+    """Backwards-compatible helper returning the primary virtual device."""
+    return build_sync_devices(catalog_data)[0]
+
+
+def extract_speaker_from_device_id(device_id: str | None, default_speaker: str | None) -> str | None:
+    if device_id and ":" in device_id:
+        _, speaker_name = device_id.split(":", 1)
+        if speaker_name.strip():
+            return speaker_name.strip()
+    return default_speaker
+
+
+def parse_execute_command(command: str, params: dict[str, Any], target_speaker: str | None) -> dict[str, Any]:
     payload: dict[str, Any] = {}
 
     if command == "action.devices.commands.selectChannel":
@@ -242,8 +298,8 @@ def parse_execute_command(command: str, params: dict[str, Any], default_speaker:
         log.warning(f"Unrecognized Google Smart Home command: {command}")
         payload = {"action": "resume"}
 
-    if "speaker" not in payload and default_speaker:
-        payload["speaker"] = default_speaker
+    if "speaker" not in payload and target_speaker:
+        payload["speaker"] = target_speaker
 
     return payload
 
@@ -264,29 +320,36 @@ async def handle_smart_home_request(
     if intent == "action.devices.SYNC":
         catalog_path = settings.get_catalog_file()
         catalog_data = load_catalog(catalog_path)
-        device = build_sync_device(catalog_data)
+        devices = build_sync_devices(catalog_data, default_speaker=settings.default_speaker_name)
         return {
             "requestId": request_id,
             "payload": {
                 "agentUserId": "plex-personal-user",
-                "devices": [device],
+                "devices": devices,
             },
         }
 
     elif intent == "action.devices.QUERY":
+        query_devices = inputs[0].get("payload", {}).get("devices", [])
+        requested_ids = [d.get("id") for d in query_devices if d.get("id")]
+        if not requested_ids:
+            requested_ids = [DEVICE_ID]
+
+        device_states = {
+            dev_id: {
+                "online": True,
+                "status": "SUCCESS",
+                "playbackState": "PLAYING",
+                "on": True,
+                "currentVolume": 20,
+                "isMuted": False,
+            }
+            for dev_id in requested_ids
+        }
         return {
             "requestId": request_id,
             "payload": {
-                "devices": {
-                    DEVICE_ID: {
-                        "online": True,
-                        "status": "SUCCESS",
-                        "playbackState": "PLAYING",
-                        "on": True,
-                        "currentVolume": 20,
-                        "isMuted": False,
-                    }
-                }
+                "devices": device_states,
             },
         }
 
@@ -296,25 +359,27 @@ async def handle_smart_home_request(
 
         for cmd_entry in commands_input:
             devices = cmd_entry.get("devices", [])
-            for d in devices:
-                dev_id = d.get("id")
-                if dev_id and dev_id not in device_ids:
+            executions = cmd_entry.get("execution", [])
+
+            target_dev_ids = [d.get("id") for d in devices if d.get("id")] or [DEVICE_ID]
+            for dev_id in target_dev_ids:
+                if dev_id not in device_ids:
                     device_ids.append(dev_id)
 
-            executions = cmd_entry.get("execution", [])
-            for exec_item in executions:
-                cmd_name = exec_item.get("command", "")
-                params = exec_item.get("params", {})
-                pubsub_payload = parse_execute_command(
-                    cmd_name,
-                    params,
-                    settings.default_speaker_name,
-                )
-                log.info(f"Publishing execute payload: {pubsub_payload}")
-                try:
-                    await pubsub_service.publish(pubsub_payload)
-                except Exception as exc:
-                    log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
+                target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
+                for exec_item in executions:
+                    cmd_name = exec_item.get("command", "")
+                    params = exec_item.get("params", {})
+                    pubsub_payload = parse_execute_command(
+                        cmd_name,
+                        params,
+                        target_speaker,
+                    )
+                    log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
+                    try:
+                        await pubsub_service.publish(pubsub_payload)
+                    except Exception as exc:
+                        log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
 
         if not device_ids:
             device_ids = [DEVICE_ID]

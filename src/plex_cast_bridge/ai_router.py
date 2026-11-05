@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Literal
 
 from google import genai
@@ -14,6 +15,19 @@ CANDIDATE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.1-flash-lite",
 ]
+
+RADIO_KEYWORDS = (
+    "radio",
+    "station",
+    "mix",
+    "similar to",
+    "like ",
+)
+
+
+def _normalize_text(text: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 class PlaybackIntent(BaseModel):
@@ -38,13 +52,50 @@ class SmartDJ:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
+    def _try_fast_artist_match(self, query: str, artists: list[str]) -> PlaybackIntent | None:
+        """
+        0ms deterministic fast-path: if the query directly names an artist in the catalog
+        (without asking for a radio/station/mix/album/track), immediately return mode='artist'.
+        """
+        raw_lower = query.lower().strip()
+        if any(kw in raw_lower for kw in RADIO_KEYWORDS):
+            return None
+        if any(w in raw_lower for w in ("album", "track", "song")):
+            return None
+
+        # Strip common leading command verbs and trailing modifiers
+        stripped = re.sub(
+            r"^(?:hey google\s+)?(?:please\s+)?(?:play|switch to|listen to|put on|start|queue)(?:\s+only|\s+some|\s+tracks by|\s+songs by|\s+music by)?\s+",
+            "",
+            raw_lower,
+        )
+        stripped = re.sub(r"\s+(?:only|on plex|from plex)$", "", stripped).strip()
+        norm_query = _normalize_text(stripped)
+        if not norm_query:
+            return None
+
+        for artist in artists:
+            norm_artist = _normalize_text(artist)
+            # Check exact normalized match or leading-article stripped match (e.g. "The Herbaliser" == "Herbaliser")
+            alt_artist = re.sub(r"^(?:the|a)\s+", "", norm_artist)
+            if norm_query in (norm_artist, alt_artist):
+                log.info("Fast-path exact artist match (0ms): '%s' -> mode='artist', target_artist='%s'", query, artist)
+                return PlaybackIntent(mode="artist", target_artist=artist)
+
+        return None
+
     def parse(self, query: str, catalog: dict) -> PlaybackIntent:
+        artists = catalog.get("artists", [])
+        fast_intent = self._try_fast_artist_match(query, artists)
+        if fast_intent is not None:
+            return fast_intent
+
         if not self.api_key or not self._client:
             raise ValueError("GEMINI_API_KEY is required for playback commands")
 
         # Build compact catalog to minimize input token latency
         compact_catalog = {
-            "artists": catalog.get("artists", []),
+            "artists": artists,
             "genres": catalog.get("genres", []),
             "moods": catalog.get("moods", [])[:40],
         }
@@ -57,11 +108,11 @@ class SmartDJ:
             "You are an intelligent music selector and DJ for a personal Plex music library.\n"
             "Interpret the listener request and choose exact artist/album names from the catalog.\n\n"
             "MODES:\n"
-            "- 'artist': Use when the listener requests a specific artist exclusively "
-            "(e.g., 'play only DJ Shadow', 'play tracks by Fugazi', 'listen to Portishead only'). "
-            "Set target_artist. seed_artists can be empty.\n"
-            "- 'artist_radio': Default mode when the listener asks to play an artist or an artist station/radio/mix "
-            "(e.g., 'play DJ Shadow', 'play Fugazi radio', 'stream a mix like DJ Shadow', 'music like Massive Attack'). "
+            "- 'artist': DEFAULT mode whenever the listener names an artist to play "
+            "(e.g., 'DJ Shadow', 'play DJ Shadow', 'switch to Fugazi', 'play only Portishead'). "
+            "Set target_artist to the exact catalog artist name. seed_artists can be empty.\n"
+            "- 'artist_radio': ONLY use when the listener explicitly asks for a radio, station, mix, or music similar to an artist "
+            "(e.g., 'play DJ Shadow radio', 'station for Fugazi', 'stream a mix like DJ Shadow', 'music like Massive Attack'). "
             "Set target_artist. CRITICAL: seed_artists MUST include target_artist PLUS 5 to 8 sonically similar peer artists "
             "chosen strictly from the catalog artists list. Never invent artists not in the catalog.\n"
             "- 'album': When a specific album is requested. Set target_album and target_artist if known.\n"

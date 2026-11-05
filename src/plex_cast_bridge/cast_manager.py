@@ -18,6 +18,16 @@ log = logging.getLogger(__name__)
 DEFAULT_CAST_VOLUME = 0.20
 
 
+def extract_room_name(friendly_name: str) -> str:
+    """Derive a clean Google Home roomHint from a Cast friendly name (e.g. 'Kitchen display' -> 'Kitchen')."""
+    raw = friendly_name.strip()
+    cleaned = re.sub(r"\s+(?:display|speaker|speakers|tv|chromecast|mini|hub|nest|audio)$", "", raw, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        cleaned = raw
+    # Title-case words nicely ("Great room" -> "Great Room")
+    return " ".join(w.capitalize() if w.islower() else w for w in cleaned.split())
+
+
 def _discover_via_dnssd(timeout_sec=2.0):
     """
     Fallback speaker discovery using macOS native dns-sd command.
@@ -37,44 +47,55 @@ def _discover_via_dnssd(timeout_sec=2.0):
         proc.terminate()
         stdout, _ = proc.communicate()
 
-        names = set()
+        instances = set()
         for line in stdout.splitlines():
             if "Add" in line and "_googlecast._tcp" in line:
                 parts = line.split()
                 if len(parts) >= 7:
-                    name = " ".join(parts[6:]).strip()
-                    if name:
-                        names.add(name)
+                    inst = " ".join(parts[6:]).strip()
+                    if inst:
+                        instances.add(inst)
 
-        for name in names:
-            lookup = subprocess.run(
-                ["dns-sd", "-L", name, "_googlecast._tcp", "local."],
+        for inst in sorted(instances):
+            lproc = subprocess.Popen(
+                ["dns-sd", "-L", inst, "_googlecast._tcp", "local."],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=2,
             )
+            time.sleep(0.6)
+            lproc.terminate()
+            lout, _ = lproc.communicate()
+
             host = None
             port = 8009
             model = "Google Cast"
             uuid = ""
-            for line in lookup.stdout.splitlines():
+            friendly_name = inst
+            for line in lout.splitlines():
                 if "can be reached at" in line:
                     match = re.search(r"reached at ([\w\.-]+):(\d+)", line)
                     if match:
                         host = match.group(1)
                         port = int(match.group(2))
                 if "md=" in line:
-                    m = re.search(r"md=([^ \t\n]+)", line)
+                    m = re.search(r"md=([^\n\r]+?)(?:\s+[a-z]{2}=|$)", line)
                     if m:
-                        model = m.group(1).replace("_", " ")
+                        model = m.group(1).replace("\\ ", " ").replace("_", " ").strip()
+                if "fn=" in line:
+                    fn_m = re.search(r"fn=([^\n\r]+?)(?:\s+[a-z]{2}=|$)", line)
+                    if fn_m:
+                        friendly_name = fn_m.group(1).replace("\\ ", " ").strip()
                 if "id=" in line:
-                    u = re.search(r"id=([a-f0-9]+)", line)
+                    u = re.search(r"id=([a-f0-9\-]+)", line)
                     if u:
                         uuid = u.group(1)
             if host:
+                room = extract_room_name(friendly_name)
                 devices.append({
-                    "name": name,
+                    "name": friendly_name,
+                    "room": room,
+                    "instance": inst,
                     "host": host,
                     "port": port,
                     "model": model,
@@ -257,19 +278,69 @@ class SpeakerQueue(MediaStatusListener):
 
 
 class CastManager:
-    def __init__(self, default_volume: float = DEFAULT_CAST_VOLUME, default_speaker_host: str = ""):
+    def __init__(
+        self,
+        default_volume: float = DEFAULT_CAST_VOLUME,
+        default_speaker_host: str = "",
+        disabled_speakers: set[str] | None = None,
+    ):
         self.speakers = {}
         self.lock = threading.RLock()
         self.default_volume = default_volume
         self.default_speaker_host = default_speaker_host.strip()
+        self.disabled_speakers: set[str] = {s.casefold() for s in (disabled_speakers or set())}
+        self.last_discovered: list[dict] = []
+
+    def is_disabled(self, name: str) -> bool:
+        n = name.strip().casefold()
+        r = extract_room_name(name).casefold()
+        return n in self.disabled_speakers or r in self.disabled_speakers
+
+    def set_speaker_enabled(self, name: str, enabled: bool):
+        with self.lock:
+            n = name.strip().casefold()
+            r = extract_room_name(name).casefold()
+            if enabled:
+                to_remove = {
+                    s for s in self.disabled_speakers
+                    if s in (n, r) or extract_room_name(s).casefold() == r
+                }
+                self.disabled_speakers -= to_remove
+            else:
+                self.disabled_speakers.add(n)
+                self.disabled_speakers.add(r)
 
     def discover(self):
-        discovered = [{"name": "test speaker", "uuid": None, "host": "local"}]
+        discovered = [
+            {
+                "name": "test speaker",
+                "room": "Mac Local",
+                "model": "macOS afplay",
+                "uuid": "local-test-speaker",
+                "host": "local",
+                "port": 0,
+                "enabled": not self.is_disabled("test speaker"),
+            }
+        ]
         seen_names = {"test speaker"}
 
-        # 1. Standard pychromecast discovery
+        # 1. Native dns-sd discovery (reliable on macOS multi-homed interfaces)
+        for dev in _discover_via_dnssd():
+            if dev["name"] not in seen_names:
+                seen_names.add(dev["name"])
+                discovered.append({
+                    "name": dev["name"],
+                    "room": dev.get("room") or extract_room_name(dev["name"]),
+                    "model": dev.get("model", "Google Cast"),
+                    "uuid": dev.get("uuid"),
+                    "host": dev["host"],
+                    "port": dev.get("port", 8009),
+                    "enabled": not self.is_disabled(dev["name"]),
+                })
+
+        # 2. Standard pychromecast discovery (Linux / fallback)
         try:
-            casts, browser = pychromecast.get_chromecasts(timeout=3)
+            casts, browser = pychromecast.get_chromecasts(timeout=2)
             try:
                 for c in casts:
                     name = c.cast_info.friendly_name
@@ -277,8 +348,12 @@ class CastManager:
                         seen_names.add(name)
                         discovered.append({
                             "name": name,
+                            "room": extract_room_name(name),
+                            "model": c.cast_info.model_name or "Google Cast",
                             "uuid": str(c.uuid),
                             "host": c.cast_info.host,
+                            "port": c.cast_info.port,
+                            "enabled": not self.is_disabled(name),
                         })
             finally:
                 browser.stop_discovery()
@@ -287,25 +362,20 @@ class CastManager:
         except Exception as exc:
             log.debug("pychromecast get_chromecasts error: %s", exc)
 
-        # 2. Native dns-sd fallback (essential on macOS multi-homed interfaces)
-        for dev in _discover_via_dnssd():
-            if dev["name"] not in seen_names:
-                seen_names.add(dev["name"])
-                discovered.append({
-                    "name": dev["name"],
-                    "uuid": dev.get("uuid"),
-                    "host": dev["host"],
-                })
-
+        with self.lock:
+            self.last_discovered = discovered
         return discovered
 
     def get(self, name):
         if not name:
             raise ValueError("Specify a speaker or configure DEFAULT_SPEAKER_NAME")
 
+        if self.is_disabled(name):
+            raise ValueError(f"Speaker '{name}' is currently disabled in Plex Cast Bridge settings")
+
         with self.lock:
             # Check local test speaker sink
-            if name.casefold() in ("test speaker", "mac speaker", "local speaker"):
+            if name.casefold() in ("test speaker", "mac speaker", "local speaker", "mac local"):
                 return self.speakers.setdefault("test speaker", LocalSpeaker(enable_playback=True))
 
             if name in self.speakers:

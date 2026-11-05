@@ -57,13 +57,13 @@ class PlexService:
             if not artist:
                 raise ValueError(f"Artist '{intent.target_artist}' not found in the Plex library")
 
-            # Pin Track 1: Always start with the requested target_artist
+            # Pin first 2 tracks to the requested target_artist
             artist_tracks = list(artist.tracks())
             if not artist_tracks:
                 raise ValueError(f"No tracks found for artist '{intent.target_artist}'")
             random.shuffle(artist_tracks)
-            first_track = artist_tracks.pop(0)
-            remaining_artist = artist_tracks
+            pinned_tracks = artist_tracks[:2]
+            remaining_artist = artist_tracks[2:]
 
             # Curated Pool: Drawn from Gemini's peer seed_artists (excluding target_artist)
             peer_artists = [
@@ -84,26 +84,25 @@ class PlexService:
                 ]
                 peer_tracks.extend([t for a in fallback_artists for t in a.tracks()])
 
-            # Weighted Interleaving: ~25% target_artist, ~75% seed_artists (cap at ~100 tracks)
+            # Weighted Interleaving: 50% target_artist, 50% seed_artists (cap at ~100 tracks)
             random.shuffle(remaining_artist)
             random.shuffle(peer_tracks)
 
-            total_remaining = min(99, len(remaining_artist) + len(peer_tracks))
-            if total_remaining == 0:
-                return [first_track]
+            total_remaining = min(100 - len(pinned_tracks), len(remaining_artist) + len(peer_tracks))
+            if total_remaining <= 0:
+                return pinned_tracks
 
-            artist_quota = min(len(remaining_artist), max(0, int(total_remaining * 0.25)))
+            artist_quota = min(len(remaining_artist), max(0, int(total_remaining * 0.50)))
             peer_quota = min(len(peer_tracks), total_remaining - artist_quota)
 
             selected_artist = remaining_artist[:artist_quota]
             selected_peers = peer_tracks[:peer_quota]
 
-            # Interleave: 1 target artist track every ~3 peer tracks
-            queue = [first_track]
+            # Interleave 1:1 (50/50 ratio) after the 2 pinned target_artist tracks
+            queue = list(pinned_tracks)
             while selected_artist or selected_peers:
-                for _ in range(3):
-                    if selected_peers:
-                        queue.append(selected_peers.pop(0))
+                if selected_peers:
+                    queue.append(selected_peers.pop(0))
                 if selected_artist:
                     queue.append(selected_artist.pop(0))
 
