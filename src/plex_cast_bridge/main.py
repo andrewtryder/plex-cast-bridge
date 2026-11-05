@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
     settings = Settings()
     app.state.settings = settings
     if not settings.local_api_key or not settings.local_api_key.get_secret_value():
-        log.warning("Security Notice: LOCAL_API_KEY is not configured in .env. Local endpoints are unauthenticated on LAN.")
+        log.info("Local control API running in local LAN mode (no API key required).")
     else:
         log.info("LOCAL_API_KEY authentication enabled for local API control endpoints.")
 

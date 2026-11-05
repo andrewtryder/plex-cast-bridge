@@ -173,23 +173,21 @@ DEFAULT_CAST_VOLUME=0.20
 # Google Gemini SmartDJ API Key
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Local API & Web Dashboard Authentication
-LOCAL_API_KEY=generate_with_openssl_rand_hex_32
+# Optional Local API Authentication (leave blank/omit for open LAN access)
+# LOCAL_API_KEY=
 
 # Google Cloud Platform Pub/Sub Settings
 GCP_PROJECT_ID=plex-cast-bridge-home
 GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
 
-# Operational listener flag (keep false until manual verification passes)
-ENABLE_PUBSUB_LISTENER=false
+# Operational listener flag (set to true on Proxmox host)
+ENABLE_PUBSUB_LISTENER=true
 EOF
 chmod 600 ~/plex-cast-bridge/.env
 ```
 
-Generate a secure random key for `LOCAL_API_KEY`:
-```bash
-openssl rand -hex 32
-```
+> [!NOTE]
+> **Local Access Without API Keys:** By default, Plex Cast Bridge allows unauthenticated control on your trusted home LAN without requiring an API key. If you wish to enforce API key authentication across all local endpoints, uncomment `LOCAL_API_KEY` and set a 32-byte hex key (`openssl rand -hex 32`).
 
 ### 3. Copy GCP Service Account Credentials
 From your **Mac terminal**, securely copy `gcp-credentials.json` to the VM:
@@ -246,18 +244,18 @@ plex-cast-bridge    ghcr.io/andrewtryder/plex-cast-bridge:latest   "uvicorn plex
 ### Step 1: Open the Web Dashboard
 From any browser on your home LAN, open:
 ```
-http://<PROXMOX_VM_IP>:8000/?api_key=<LOCAL_API_KEY>
+http://<PROXMOX_HOST_IP>:8000/
 ```
+*(If you enabled `LOCAL_API_KEY`, append `?api_key=<YOUR_KEY>`)*
 
 - Confirm your Google Cast speakers (e.g. `Kitchen`, `Master Bedroom`) appear in the active speaker list.
 - Try toggling a speaker on/off and confirm the change persists to `data/catalog.json`.
 
 ### Step 2: Trigger a Direct Test Command via API
-From your terminal, test direct playback on your Kitchen speaker:
+From your terminal, test direct playback on your Kitchen speaker without an API key:
 
 ```bash
-curl -X POST "http://<PROXMOX_VM_IP>:8000/api/command" \
-  -H "X-API-Key: <LOCAL_API_KEY>" \
+curl -X POST "http://<PROXMOX_HOST_IP>:8000/api/command" \
   -H "Content-Type: application/json" \
   -d '{"query":"DJ Shadow","speaker":"Kitchen"}'
 ```
