@@ -420,8 +420,9 @@ class CastManager:
         # 1. Native dns-sd discovery (reliable on macOS multi-homed interfaces)
         if sys.platform == "darwin":
             for dev in _discover_via_dnssd():
-                if dev["name"] not in seen_names:
-                    seen_names.add(dev["name"])
+                dev_fold = dev["name"].casefold()
+                if dev_fold not in seen_names:
+                    seen_names.add(dev_fold)
                     discovered.append({
                         "name": dev["name"],
                         "room": dev.get("room") or extract_room_name(dev["name"]),
@@ -434,12 +435,13 @@ class CastManager:
 
         # 2. Standard pychromecast discovery (Linux / fallback)
         try:
-            casts, browser = pychromecast.get_chromecasts(timeout=2)
+            casts, browser = pychromecast.get_chromecasts(timeout=3)
             try:
                 for c in casts:
                     name = c.cast_info.friendly_name
-                    if name not in seen_names:
-                        seen_names.add(name)
+                    name_fold = name.casefold()
+                    if name_fold not in seen_names:
+                        seen_names.add(name_fold)
                         discovered.append({
                             "name": name,
                             "room": extract_room_name(name),
@@ -455,6 +457,37 @@ class CastManager:
                     c.disconnect()
         except Exception as exc:
             log.debug("pychromecast get_chromecasts error: %s", exc)
+
+        # 3. Known / catalog speaker merge & reachability probe
+        for spk in self._get_catalog_speakers():
+            name = spk.get("name")
+            if not name:
+                continue
+            name_fold = name.casefold()
+            if name_fold in seen_names:
+                continue
+            host = spk.get("host")
+            port = spk.get("port", 8009)
+            if host and host != "local":
+                reachable = True
+                try:
+                    # Test TCP reachability to speaker host (using 8009 for Cast or configured port)
+                    probe_port = port if port == 8009 else 8009
+                    with socket.create_connection((host, probe_port), timeout=0.8):
+                        pass
+                except Exception:
+                    reachable = False
+                if reachable:
+                    seen_names.add(name_fold)
+                    discovered.append({
+                        "name": name,
+                        "room": spk.get("room") or extract_room_name(name),
+                        "model": spk.get("model", "Google Cast"),
+                        "uuid": spk.get("uuid"),
+                        "host": host,
+                        "port": port,
+                        "enabled": not self.is_disabled(name),
+                    })
 
         with self.lock:
             self.last_discovered = discovered
