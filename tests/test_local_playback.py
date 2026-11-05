@@ -380,3 +380,38 @@ def test_local_speaker_platform_status(monkeypatch, tmp_path):
     assert sp_linux.enable_playback is False
     assert sp_linux.status()["speaker"] == "Headless Simulation Speaker"
 
+
+def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
+    import json
+    import pychromecast
+    from plex_cast_bridge.cast_manager import CastManager
+
+    # Simulate dynamic discovery returning nothing
+    monkeypatch.setattr(pychromecast, "get_listed_chromecasts", lambda friendly_names, discovery_timeout: ([], MagicMock()))
+
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps({
+        "speakers": [
+            {
+                "speaker_name": "Kitchen display",
+                "roomHint": "Kitchen",
+                "host": "192.168.88.83",
+                "port": 8009,
+                "model": "Google Nest Hub",
+                "uuid": "test-kitchen-uuid",
+                "enabled": True,
+            }
+        ]
+    }), encoding="utf-8")
+
+    mock_cast = MagicMock()
+    mock_cast.name = "Kitchen display"
+    mock_cast.wait = MagicMock()
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda args: mock_cast)
+
+    cm = CastManager(catalog_path=catalog_file)
+    queue = cm.get("Kitchen")
+    assert queue.cast == mock_cast
+    assert mock_cast.wait.called
+
+

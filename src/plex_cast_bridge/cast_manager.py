@@ -1,14 +1,17 @@
+import json
 import logging
 import os
 import random
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pychromecast
 from pychromecast.controllers.media import MediaStatusListener
@@ -93,6 +96,13 @@ def _discover_via_dnssd(timeout_sec=2.0):
                     if u:
                         uuid = u.group(1)
             if host:
+                if host.endswith(".local") or host.endswith(".local."):
+                    try:
+                        resolved_ip = socket.gethostbyname(host)
+                        if resolved_ip:
+                            host = resolved_ip
+                    except Exception:
+                        pass
                 room = extract_room_name(friendly_name)
                 devices.append({
                     "name": friendly_name,
@@ -316,6 +326,7 @@ class CastManager:
         default_volume: float = DEFAULT_CAST_VOLUME,
         default_speaker_host: str = "",
         disabled_speakers: set[str] | None = None,
+        catalog_path: Path | str | None = None,
     ):
         self.speakers = {}
         self.lock = threading.RLock()
@@ -323,6 +334,29 @@ class CastManager:
         self.default_speaker_host = default_speaker_host.strip()
         self.disabled_speakers: set[str] = {s.casefold() for s in (disabled_speakers or set())}
         self.last_discovered: list[dict] = []
+        self.catalog_path = Path(catalog_path) if catalog_path else None
+
+    def _get_catalog_speakers(self) -> list[dict]:
+        speakers = []
+        if self.catalog_path and self.catalog_path.exists():
+            try:
+                with open(self.catalog_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for s in data.get("speakers", []):
+                        name = s.get("speaker_name") or s.get("name")
+                        room = s.get("roomHint") or s.get("room") or extract_room_name(name)
+                        speakers.append({
+                            "name": name,
+                            "room": room,
+                            "model": s.get("model", "Google Cast"),
+                            "uuid": s.get("uuid"),
+                            "host": s.get("host"),
+                            "port": s.get("port", 8009),
+                            "enabled": s.get("enabled", True),
+                        })
+            except Exception as exc:
+                log.debug("Could not read speakers from catalog: %s", exc)
+        return speakers
 
     def is_disabled(self, name: str) -> bool:
         n = name.strip().casefold()
@@ -448,28 +482,64 @@ class CastManager:
                 log.debug("pychromecast get_listed_chromecasts error: %s", exc)
 
             # 2. Try native macOS dns-sd discovery & direct host connection
-            dnssd_devices = _discover_via_dnssd()
-            for dev in dnssd_devices:
-                dev_name = dev["name"].casefold()
+            if sys.platform == "darwin":
+                dnssd_devices = _discover_via_dnssd()
+                for dev in dnssd_devices:
+                    dev_name = dev["name"].casefold()
+                    for cand in candidate_names:
+                        cand_fold = cand.casefold()
+                        if cand_fold == dev_name or cand_fold in dev_name or dev_name in cand_fold:
+                            log.info(
+                                "Found speaker '%s' via dns-sd matching '%s' at %s:%s",
+                                dev["name"],
+                                name,
+                                dev["host"],
+                                dev["port"],
+                            )
+                            cast = pychromecast.get_chromecast_from_host(
+                                (dev["host"], dev["port"], dev["uuid"], dev["model"], dev["name"])
+                            )
+                            cast.wait(timeout=10)
+                            sq = SpeakerQueue(cast, default_volume=self.default_volume)
+                            self.speakers[name] = sq
+                            return sq
+
+            # 3. Known / catalog speaker direct connection fallback
+            fallback_candidates = []
+            seen_cand_hosts = set()
+            for spk in (self.last_discovered + self._get_catalog_speakers()):
+                spk_name = (spk.get("name") or "").casefold()
+                spk_room = (spk.get("room") or "").casefold()
                 for cand in candidate_names:
                     cand_fold = cand.casefold()
-                    if cand_fold == dev_name or cand_fold in dev_name or dev_name in cand_fold:
-                        log.info(
-                            "Found speaker '%s' via dns-sd matching '%s' at %s:%s",
-                            dev["name"],
-                            name,
-                            dev["host"],
-                            dev["port"],
-                        )
-                        cast = pychromecast.get_chromecast_from_host(
-                            (dev["host"], dev["port"], dev["uuid"], dev["model"], dev["name"])
-                        )
-                        cast.wait(timeout=10)
-                        sq = SpeakerQueue(cast, default_volume=self.default_volume)
-                        self.speakers[name] = sq
-                        return sq
+                    if cand_fold in (spk_name, spk_room) or spk_name in cand_fold or cand_fold in spk_name:
+                        host = spk.get("host")
+                        port = spk.get("port", 8009)
+                        if host and host != "local" and (host, port) not in seen_cand_hosts:
+                            seen_cand_hosts.add((host, port))
+                            fallback_candidates.append(spk)
 
-            # 3. Configurable static host fallback via DEFAULT_SPEAKER_HOST
+            for spk in fallback_candidates:
+                host = spk["host"]
+                port = spk.get("port", 8009)
+                log.info(
+                    "Attempting direct connection to known speaker '%s' at %s:%s",
+                    spk.get("name"),
+                    host,
+                    port,
+                )
+                try:
+                    cast = pychromecast.get_chromecast_from_host(
+                        (host, port, spk.get("uuid"), spk.get("model", "Google Cast"), spk.get("name", name))
+                    )
+                    cast.wait(timeout=8)
+                    sq = SpeakerQueue(cast, default_volume=self.default_volume)
+                    self.speakers[name] = sq
+                    return sq
+                except Exception as exc:
+                    log.warning("Direct connection to known speaker %s:%s failed: %s", host, port, exc)
+
+            # 4. Configurable static host fallback via DEFAULT_SPEAKER_HOST
             if self.default_speaker_host:
                 host_str = self.default_speaker_host
                 port_int = 8009

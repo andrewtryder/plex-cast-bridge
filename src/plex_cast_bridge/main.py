@@ -212,6 +212,7 @@ async def lifespan(app: FastAPI):
         default_volume=settings.default_cast_volume,
         default_speaker_host=settings.default_speaker_host,
         disabled_speakers=disabled_speakers,
+        catalog_path=get_catalog_path(for_writing=False),
     )
     # Run initial background speaker discovery on daemon startup
     try:
