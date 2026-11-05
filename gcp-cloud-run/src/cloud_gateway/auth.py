@@ -1,3 +1,4 @@
+import logging
 import secrets
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,40 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .config import Settings
 
 security = HTTPBearer(auto_error=False)
+
+log = logging.getLogger(__name__)
+
+try:
+    from google.api_core.exceptions import AlreadyExists
+except ImportError:
+    class AlreadyExists(Exception):
+        pass
+
+_firestore_client = None
+_firestore_checked = False
+
+def get_firestore_client():
+    global _firestore_client, _firestore_checked
+    if not _firestore_checked:
+        _firestore_checked = True
+        try:
+            from google.cloud import firestore
+            _firestore_client = firestore.Client()
+            log.info("Initialized Google Cloud Firestore for distributed OAuth JTI tracking.")
+        except Exception as exc:
+            log.debug("Firestore unavailable for OAuth JTI store (%s); using process-local fallback.", exc)
+            _firestore_client = None
+    return _firestore_client
+
+def _check_local_jti(jti: str, exp: int | None):
+    _cleanup_expired_jtis()
+    if jti in _REDEEMED_JTIS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authorization code has already been redeemed (single-use violated)",
+        )
+    _REDEEMED_JTIS[jti] = exp or (int(datetime.now(timezone.utc).timestamp()) + 600)
+
 
 # In-memory store for redeemed authorization code JTIs: {jti: exp_timestamp}
 _REDEEMED_JTIS: dict[str, int] = {}
@@ -112,20 +147,31 @@ def verify_authorization_code(
             detail="Redirect URI mismatch in authorization code",
         )
 
-    # Enforce single-use authorization code
+    # Enforce single-use authorization code (Distributed via Firestore with atomic create, fallback to local memory)
     jti = payload.get("jti")
     if not jti:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Authorization code missing jti identifier",
         )
-    _cleanup_expired_jtis()
-    if jti in _REDEEMED_JTIS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Authorization code has already been redeemed (single-use violated)",
-        )
-    _REDEEMED_JTIS[jti] = payload.get("exp", int(datetime.now(timezone.utc).timestamp()) + 600)
+
+    db = get_firestore_client()
+    if db is not None:
+        try:
+            from google.cloud import firestore
+            server_ts = getattr(firestore, "SERVER_TIMESTAMP", None)
+            doc_ref = db.collection("oauth_redeemed_codes").document(jti)
+            doc_ref.create({"exp": payload.get("exp"), "redeemed_at": server_ts})
+        except AlreadyExists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Authorization code has already been redeemed (single-use violated)",
+            )
+        except Exception as exc:
+            log.warning("Firestore JTI write failed (%s); enforcing local process single-use check.", exc)
+            _check_local_jti(jti, payload.get("exp"))
+    else:
+        _check_local_jti(jti, payload.get("exp"))
 
     return payload
 
@@ -230,3 +276,4 @@ async def verify_webhook_api_key(
             detail="Invalid X-API-Key",
         )
     return x_api_key
+

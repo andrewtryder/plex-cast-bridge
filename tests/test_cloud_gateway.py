@@ -183,7 +183,7 @@ def test_fulfillment_query(client, auth_headers):
     dev_status = data["payload"]["devices"]["plex-jukebox:Kitchen"]
     assert dev_status["online"] is True
     assert dev_status["status"] == "SUCCESS"
-    assert dev_status["playbackState"] == "STOPPED"
+    assert "playbackState" not in dev_status
 
 
 def test_fulfillment_execute_commands(client, auth_headers):
@@ -469,3 +469,50 @@ def test_smart_home_command_key_translation_and_fail_closed(client, auth_headers
     assert cmd_result["errorCode"] == "transientError"
 
 
+def test_oauth_firestore_distributed_single_use(client):
+    from unittest.mock import MagicMock, patch
+    from google.api_core.exceptions import AlreadyExists
+
+    mock_db = MagicMock()
+    mock_doc = MagicMock()
+    mock_db.collection.return_value.document.return_value = mock_doc
+    mock_doc.create.side_effect = [None, AlreadyExists("Document already exists")]
+
+    res = client.post(
+        "/oauth/authorize",
+        data={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "state-firestore",
+            "response_type": "code",
+            "passphrase": "test-passphrase",
+        },
+        follow_redirects=False,
+    )
+    auth_code = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(res.headers["location"]).query))["code"]
+
+    with patch("cloud_gateway.auth.get_firestore_client", return_value=mock_db):
+        token_res = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            },
+        )
+        assert token_res.status_code == 200
+
+        replay_res = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            },
+        )
+        assert replay_res.status_code == 400
+        assert "already been redeemed" in replay_res.text

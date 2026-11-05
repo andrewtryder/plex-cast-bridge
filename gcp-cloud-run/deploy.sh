@@ -49,16 +49,17 @@ echo "  Authenticated as: $ACTIVE_ACCOUNT"
 gcloud config set project "$PROJECT_ID" >/dev/null
 
 # 2. Enable necessary APIs
-echo "[2/7] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build)..."
+echo "[2/7] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build, Firestore)..."
 gcloud services enable \
     run.googleapis.com \
     pubsub.googleapis.com \
     cloudbuild.googleapis.com \
     iam.googleapis.com \
+    firestore.googleapis.com \
     --project="$PROJECT_ID"
 
-# 3. Provision Pub/Sub Topic
-echo "[3/7] Provisioning Pub/Sub topic '$TOPIC_ID'..."
+# 3. Provision Pub/Sub Topic and Dead-Letter Queue (DLQ) Topic
+echo "[3/7] Provisioning Pub/Sub topics ( and -dlq)..."
 if gcloud pubsub topics describe "$TOPIC_ID" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Topic '$TOPIC_ID' already exists."
 else
@@ -66,16 +67,47 @@ else
     echo "  Created topic '$TOPIC_ID'."
 fi
 
-# 4. Provision Pub/Sub Subscription for local worker
-echo "[4/7] Provisioning Pub/Sub subscription '$SUBSCRIPTION_ID' for local bridge..."
+DLQ_TOPIC="${TOPIC_ID}-dlq"
+if gcloud pubsub topics describe "$DLQ_TOPIC" --project="$PROJECT_ID" >/dev/null 2>&1; then
+    echo "  Topic '$DLQ_TOPIC' already exists."
+else
+    gcloud pubsub topics create "$DLQ_TOPIC" --project="$PROJECT_ID"
+    echo "  Created DLQ topic '$DLQ_TOPIC'."
+fi
+
+# Grant Pub/Sub system agent rights to forward dead-letter messages
+PROJECT_NUM=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)" 2>/dev/null || true)
+if [ -n "$PROJECT_NUM" ]; then
+    PUBSUB_SERVICE_ACCOUNT="service-${PROJECT_NUM}@gcp-sa-pubsub.iam.gserviceaccount.com"
+    gcloud pubsub topics add-iam-policy-binding "$DLQ_TOPIC" \
+        --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
+        --role="roles/pubsub.publisher" \
+        --project="$PROJECT_ID" >/dev/null 2>&1 || true
+fi
+
+# 4. Provision Pub/Sub Subscription for local worker with durable DLQ policy
+echo "[4/7] Provisioning Pub/Sub subscription '$SUBSCRIPTION_ID' with DLQ policy..."
 if gcloud pubsub subscriptions describe "$SUBSCRIPTION_ID" --project="$PROJECT_ID" >/dev/null 2>&1; then
-    echo "  Subscription '$SUBSCRIPTION_ID' already exists."
+    echo "  Subscription '$SUBSCRIPTION_ID' already exists. Updating dead-letter policy..."
+    gcloud pubsub subscriptions update "$SUBSCRIPTION_ID" \
+        --dead-letter-topic="$DLQ_TOPIC" \
+        --max-delivery-attempts=5 \
+        --project="$PROJECT_ID" >/dev/null 2>&1 || true
 else
     gcloud pubsub subscriptions create "$SUBSCRIPTION_ID" \
         --topic="$TOPIC_ID" \
         --ack-deadline=30 \
+        --dead-letter-topic="$DLQ_TOPIC" \
+        --max-delivery-attempts=5 \
         --project="$PROJECT_ID"
-    echo "  Created subscription '$SUBSCRIPTION_ID'."
+    echo "  Created subscription '$SUBSCRIPTION_ID' with dead-letter topic '$DLQ_TOPIC'."
+fi
+
+if [ -n "${PROJECT_NUM:-}" ]; then
+    gcloud pubsub subscriptions add-iam-policy-binding "$SUBSCRIPTION_ID" \
+        --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
+        --role="roles/pubsub.subscriber" \
+        --project="$PROJECT_ID" >/dev/null 2>&1 || true
 fi
 
 # 5. Provision Service Account for Cloud Run
@@ -90,12 +122,19 @@ else
     echo "  Created service account '$SA_EMAIL'."
 fi
 
-# Grant Pub/Sub Publisher role to Service Account
+# Grant Pub/Sub Publisher and Firestore User roles to Service Account
 echo "  Granting roles/pubsub.publisher to $SA_EMAIL..."
 gcloud pubsub topics add-iam-policy-binding "$TOPIC_ID" \
     --member="serviceAccount:$SA_EMAIL" \
     --role="roles/pubsub.publisher" \
     --project="$PROJECT_ID" >/dev/null
+
+echo "  Granting roles/datastore.user to $SA_EMAIL (distributed OAuth JTI single-use)..."
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:$SA_EMAIL" \
+    --role="roles/datastore.user" \
+    --condition=None \
+    --project="$PROJECT_ID" >/dev/null 2>&1 || true
 
 # 6. Check environment variables
 echo "[6/7] Checking environment configuration..."

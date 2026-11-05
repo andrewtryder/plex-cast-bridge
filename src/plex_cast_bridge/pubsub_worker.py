@@ -2,8 +2,27 @@ import asyncio
 import json
 import logging
 
+import time
+from pathlib import Path
 from collections import Counter
 from google.cloud import pubsub_v1
+
+DEAD_LETTER_LOG = Path(__file__).resolve().parent.parent.parent / "dead_letter_queue.jsonl"
+
+def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
+    try:
+        record = {
+            "timestamp": int(time.time()),
+            "message_id": msg_id,
+            "payload": payload,
+            "error": str(exc),
+        }
+        with open(DEAD_LETTER_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        log.warning("Archived permanently failing message %s to %s", msg_id, DEAD_LETTER_LOG)
+    except Exception as log_err:
+        log.error("Could not write to local dead letter log: %s", log_err)
+
 
 log = logging.getLogger(__name__)
 
@@ -37,33 +56,48 @@ class PubSubWorker:
                 try:
                     result.result()
                 except Exception as exc:
-                    self.attempts[msg_id] += 1
-                    attempts = self.attempts[msg_id]
-                    if attempts >= MAX_MESSAGE_RETRIES:
-                        log.error(
-                            "Pub/Sub message %s ('%s') failed %d times (%s). Acknowledging and discarding poison pill.",
-                            msg_id,
-                            data.get("action"),
-                            attempts,
-                            exc,
-                        )
-                        self.attempts.pop(msg_id, None)
-                        message.ack()
-                    else:
+                    native_attempt = getattr(message, "delivery_attempt", None)
+                    if native_attempt is not None:
+                        # GCP Pub/Sub subscription dead-letter policy handles durable retry & routing to DLQ
                         log.warning(
-                            "Pub/Sub message %s failed (attempt %d/%d: %s); requesting redelivery.",
+                            "Pub/Sub message %s failed (native attempt %d, error: %s). Requesting redelivery via subscription DLQ policy.",
                             msg_id,
-                            attempts,
-                            MAX_MESSAGE_RETRIES,
+                            native_attempt,
                             exc,
                         )
                         message.nack()
+                    else:
+                        # Local durable fallback for subscriptions without native DLQ attached
+                        self.attempts[msg_id] += 1
+                        attempts = self.attempts[msg_id]
+                        if attempts >= MAX_MESSAGE_RETRIES:
+                            log.error(
+                                "Pub/Sub message %s ('%s') failed %d times (%s). Retaining in %s before acknowledging.",
+                                msg_id,
+                                data.get("action"),
+                                attempts,
+                                exc,
+                                DEAD_LETTER_LOG,
+                            )
+                            _record_dead_letter(msg_id, data, exc)
+                            self.attempts.pop(msg_id, None)
+                            message.ack()
+                        else:
+                            log.warning(
+                                "Pub/Sub message %s failed (attempt %d/%d: %s); requesting redelivery.",
+                                msg_id,
+                                attempts,
+                                MAX_MESSAGE_RETRIES,
+                                exc,
+                            )
+                            message.nack()
                 else:
                     self.attempts.pop(msg_id, None)
                     message.ack()
 
             future.add_done_callback(complete)
 
+        self._callback = callback
         self.future = self.client.subscribe(path, callback=callback)
 
     def close(self):

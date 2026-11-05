@@ -170,8 +170,12 @@ def _build_shared_attributes(catalog_data: dict[str, Any]) -> dict[str, Any]:
         "volumeMaxLevel": 100,
         "volumeCanMuteAndUnmute": True,
         "levelStepSize": 5,
-        "commandOnlyOnOff": False,
+        "commandOnlyOnOff": True,
         "queryOnlyOnOff": False,
+        "commandOnlyVolume": True,
+        "commandOnlyChannel": True,
+        "commandOnlyInputSelector": True,
+        "commandOnlyAppSelector": True,
     }
 
 
@@ -376,10 +380,6 @@ async def handle_smart_home_request(
             dev_id: {
                 "online": True,
                 "status": "SUCCESS",
-                "playbackState": "STOPPED",
-                "on": False,
-                "currentVolume": 20,
-                "isMuted": False,
             }
             for dev_id in requested_ids
         }
@@ -438,11 +438,6 @@ async def handle_smart_home_request(
             response_commands.append({
                 "ids": success_ids,
                 "status": "SUCCESS",
-                "states": {
-                    "online": True,
-                    "playbackState": "PLAYING",
-                    "on": True,
-                },
             })
         response_commands.extend(error_commands)
         if not response_commands:

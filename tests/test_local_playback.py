@@ -216,6 +216,87 @@ def test_speaker_queue_load_media_failed_and_previous():
     assert queue.current.title == "song2"
     queue.executor.shutdown(wait=True)
 
+def test_pubsub_worker_native_dlq_delegation():
+    from unittest.mock import MagicMock, patch
+    import json
+    from plex_cast_bridge.pubsub_worker import PubSubWorker
+
+    settings = SimpleNamespace(
+        gcp_project_id="test-proj",
+        gcp_pubsub_subscription_id="test-sub"
+    )
+    dispatch = MagicMock()
+    loop = MagicMock()
+
+    with patch("plex_cast_bridge.pubsub_worker.pubsub_v1.SubscriberClient"):
+        worker = PubSubWorker(settings, loop, dispatch)
+
+    mock_msg = MagicMock()
+    mock_msg.message_id = "msg-native-dlq-1"
+    mock_msg.data = json.dumps({"action": "play", "query": "Unknown"}).encode("utf-8")
+    mock_msg.delivery_attempt = 3
+
+    completed_future = MagicMock()
+    completed_future.result.side_effect = RuntimeError("Playback crash")
+
+    def mock_run_coroutine(coro, l):
+        fut = MagicMock()
+        def mock_add_done(cb):
+            cb(completed_future)
+        fut.add_done_callback = mock_add_done
+        return fut
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=mock_run_coroutine):
+        worker._callback(mock_msg)
+
+    mock_msg.nack.assert_called_once()
+    mock_msg.ack.assert_not_called()
 
 
+def test_pubsub_worker_local_dlq_retention(tmp_path):
+    from unittest.mock import MagicMock, patch
+    import json
+    from plex_cast_bridge.pubsub_worker import PubSubWorker, MAX_MESSAGE_RETRIES
+    import plex_cast_bridge.pubsub_worker as pw
 
+    settings = SimpleNamespace(
+        gcp_project_id="test-proj",
+        gcp_pubsub_subscription_id="test-sub"
+    )
+    dispatch = MagicMock()
+    loop = MagicMock()
+
+    with patch("plex_cast_bridge.pubsub_worker.pubsub_v1.SubscriberClient"):
+        worker = PubSubWorker(settings, loop, dispatch)
+
+    test_dlq_file = tmp_path / "dead_letter_test.jsonl"
+    with patch.object(pw, "DEAD_LETTER_LOG", test_dlq_file):
+        mock_msg = MagicMock(spec=["message_id", "data", "ack", "nack"])
+        mock_msg.message_id = "msg-poison-pill"
+        mock_msg.data = json.dumps({"action": "play", "query": "CrashArtist"}).encode("utf-8")
+
+        completed_future = MagicMock()
+        completed_future.result.side_effect = RuntimeError("Persistent crash")
+
+        def mock_run_coroutine(coro, l):
+            fut = MagicMock()
+            def mock_add_done(cb):
+                cb(completed_future)
+            fut.add_done_callback = mock_add_done
+            return fut
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=mock_run_coroutine):
+            for i in range(MAX_MESSAGE_RETRIES - 1):
+                worker._callback(mock_msg)
+                mock_msg.nack.assert_called()
+                mock_msg.ack.assert_not_called()
+                mock_msg.nack.reset_mock()
+
+            worker._callback(mock_msg)
+            mock_msg.ack.assert_called_once()
+            assert test_dlq_file.exists()
+            lines = test_dlq_file.read_text(encoding="utf-8").strip().splitlines()
+            assert len(lines) == 1
+            record = json.loads(lines[0])
+            assert record["message_id"] == "msg-poison-pill"
+            assert "Persistent crash" in record["error"]

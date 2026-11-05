@@ -18,8 +18,8 @@ services:
       - ../gcp-credentials.json:/app/gcp-credentials.json:ro
       # Mount .env for runtime configuration
       - ../.env:/app/.env:ro
-      # Mount canonical catalog.json
-      - ../catalog.json:/app/catalog.json:ro
+      # Mount canonical catalog.json (read-write to persist dashboard speaker toggles)
+      - ../catalog.json:/app/catalog.json
     logging:
       driver: "json-file"
       options:
