@@ -164,6 +164,9 @@ class LocalSpeaker:
             self._stop_process()
             self._next()
 
+    def next(self):
+        self.skip()
+
     def stop(self):
         with self.lock:
             self.generation += 1

@@ -270,7 +270,7 @@ class SpeakerQueue(MediaStatusListener):
         self.cast.media_controller.pause()
 
     def resume(self):
-        self.cast.media_controller.resume()
+        self.cast.media_controller.play()
 
     def set_volume(self, volume: float):
         clamped = max(0.0, min(1.0, float(volume)))
@@ -287,6 +287,9 @@ class SpeakerQueue(MediaStatusListener):
             self.generation += 1
             self.armed = False
             self._next()
+
+    def next(self):
+        self.skip()
 
     def stop(self):
         with self.lock:

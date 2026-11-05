@@ -151,6 +151,20 @@ def test_transport_volume_actions():
     mock_cast.get.assert_called_once_with("Master Bedroom")
     mock_speaker.adjust_volume.assert_called_once_with(-0.05)
 
+    # Test SpeakerQueue transport delegates to MediaController
+    mock_mc = MagicMock()
+    mock_real_cast = SimpleNamespace(media_controller=mock_mc, name="TestCast", status=SimpleNamespace(volume_level=0.5))
+    sq = SpeakerQueue(mock_real_cast)
+
+    sq.pause()
+    mock_mc.pause.assert_called_once()
+
+    sq.resume()
+    mock_mc.play.assert_called_once()
+
+    sq.next()  # should alias to skip
+    assert sq.armed is False
+
 
 def test_local_api_key_authentication():
     from pydantic import SecretStr
