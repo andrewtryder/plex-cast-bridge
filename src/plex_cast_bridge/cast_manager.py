@@ -267,14 +267,23 @@ class SpeakerQueue(MediaStatusListener):
         self.executor.submit(self._advance, self.generation)
 
     def pause(self):
-        self.cast.media_controller.pause()
+        try:
+            self.cast.media_controller.pause()
+        except Exception as exc:
+            log.warning("Media controller pause error on '%s': %s", self.cast.name, exc)
 
     def resume(self):
-        self.cast.media_controller.play()
+        try:
+            self.cast.media_controller.play()
+        except Exception as exc:
+            log.warning("Media controller resume/play error on '%s': %s", self.cast.name, exc)
 
     def set_volume(self, volume: float):
         clamped = max(0.0, min(1.0, float(volume)))
-        self.cast.set_volume(clamped)
+        try:
+            self.cast.set_volume(clamped)
+        except Exception as exc:
+            log.warning("Set volume error on '%s': %s", self.cast.name, exc)
 
     def adjust_volume(self, delta: float):
         current = getattr(getattr(self.cast, "status", None), "volume_level", self.default_volume or 0.20)
@@ -298,7 +307,14 @@ class SpeakerQueue(MediaStatusListener):
             self.original = []
             self.current = None
             self.armed = False
-            self.cast.media_controller.stop()
+            try:
+                self.cast.media_controller.stop()
+            except Exception as exc:
+                log.debug("Media controller stop error on '%s' (ignored): %s", self.cast.name, exc)
+            try:
+                self.cast.quit_app()
+            except Exception as exc:
+                log.debug("Cast quit_app error on '%s' (ignored): %s", self.cast.name, exc)
 
     def status(self):
         with self.lock:
