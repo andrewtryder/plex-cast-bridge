@@ -320,3 +320,10 @@ def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):
     # DLQ path defaults to DATA_DIR
     dlq_p = get_dead_letter_log_path()
     assert dlq_p == test_data / "dead_letter_queue.jsonl"
+
+
+def test_local_bridge_health_endpoint():
+    client = TestClient(app)
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok"}

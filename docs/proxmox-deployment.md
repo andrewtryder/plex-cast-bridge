@@ -189,9 +189,10 @@ From your **Mac terminal**, securely copy `gcp-credentials.json` to the VM:
 scp ~/code/plex-cast-bridge/gcp-credentials.json user@<PROXMOX_VM_IP>:~/plex-cast-bridge/
 ```
 
-On the VM, restrict permissions:
+On the VM, configure permissions so the container's non-root `appuser` (GID `10001`) can read the credentials while preventing world-read:
 ```bash
-chmod 600 ~/plex-cast-bridge/gcp-credentials.json
+sudo chown root:10001 ~/plex-cast-bridge/gcp-credentials.json
+sudo chmod 640 ~/plex-cast-bridge/gcp-credentials.json
 ```
 
 ---
@@ -202,6 +203,9 @@ The project publishes official multi-architecture (`linux/amd64` and `linux/arm6
 
 ```bash
 cd ~/plex-cast-bridge
+
+# If your GHCR package is private, authenticate first with a GitHub Personal Access Token (PAT):
+# echo $GHCR_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
 # Pull the pre-built multi-arch image from GHCR
 docker compose -f deploy/docker-compose.yml pull
@@ -259,9 +263,9 @@ Verify that:
    ```bash
    sed -i 's/ENABLE_PUBSUB_LISTENER=false/ENABLE_PUBSUB_LISTENER=true/' ~/plex-cast-bridge/.env
    ```
-3. Restart the container:
+3. Recreate the container to apply the updated environment variables (note: `restart` does not reload `.env`):
    ```bash
-   docker compose -f deploy/docker-compose.yml restart
+   docker compose -f deploy/docker-compose.yml up -d --force-recreate
    ```
 4. Speak to your Google Home / Nest device:
    > *"Hey Google, play Pink Floyd on Plex in the Kitchen"*
@@ -282,3 +286,4 @@ Verify that:
      ```bash
      cat ~/plex-cast-bridge/data/dead_letter_queue.jsonl
      ```
+

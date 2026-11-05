@@ -17,8 +17,6 @@ services:
     volumes:
       # Mount Google Cloud Service Account key for Pub/Sub authentication
       - ../gcp-credentials.json:/app/gcp-credentials.json:ro
-      # Mount .env for runtime configuration
-      - ../.env:/app/.env:ro
       # Persistent mutable data directory (catalog.json, dead_letter_queue.jsonl)
       - ../data:/data
     logging:

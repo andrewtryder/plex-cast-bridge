@@ -247,6 +247,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plex Cast Bridge", lifespan=lifespan)
 
 
+@app.get("/health", include_in_schema=False)
+async def health():
+    return {"status": "ok"}
+
+
 async def play(app, command: Command):
     def execute():
         intent = app.state.dj.parse(command.query, app.state.plex.catalog)
