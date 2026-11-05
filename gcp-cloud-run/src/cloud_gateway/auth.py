@@ -155,6 +155,10 @@ def verify_authorization_code(
             detail="Authorization code missing jti identifier",
         )
 
+    is_dev = getattr(settings, "environment", "production").lower() in {
+        "development", "dev", "local", "test", "testing"
+    }
+
     db = get_firestore_client()
     if db is not None:
         try:
@@ -168,9 +172,22 @@ def verify_authorization_code(
                 detail="Authorization code has already been redeemed (single-use violated)",
             )
         except Exception as exc:
-            log.warning("Firestore JTI write failed (%s); enforcing local process single-use check.", exc)
+            if not is_dev:
+                log.error("Production Firestore JTI write failed (%s); failing closed.", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Distributed authorization code store write failed. Token exchange failed closed for security.",
+                ) from exc
+            log.warning("Firestore JTI write failed (%s); falling back to local memory in %s mode.", exc, settings.environment)
             _check_local_jti(jti, payload.get("exp"))
     else:
+        if not is_dev:
+            log.error("Production Firestore client unavailable; failing closed.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Distributed authorization code store is unavailable. Token exchange failed closed for security.",
+            )
+        log.warning("Firestore client unavailable; falling back to local memory in %s mode.", settings.environment)
         _check_local_jti(jti, payload.get("exp"))
 
     return payload

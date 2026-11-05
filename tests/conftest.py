@@ -55,6 +55,7 @@ def test_settings(tmp_path):
         DEFAULT_SPEAKER_NAME="Living Room",
         CATALOG_PATH=str(catalog_file),
         MOCK_PUBSUB=True,
+        ENVIRONMENT="test",
     )
 
 

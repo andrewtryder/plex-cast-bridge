@@ -20,6 +20,8 @@ services:
       - ../.env:/app/.env:ro
       # Mount canonical catalog.json (read-write to persist dashboard speaker toggles)
       - ../catalog.json:/app/catalog.json
+      # Mount local dead-letter queue log to persist unprocessable messages across container updates
+      - ../dead_letter_queue.jsonl:/app/dead_letter_queue.jsonl
     logging:
       driver: "json-file"
       options:

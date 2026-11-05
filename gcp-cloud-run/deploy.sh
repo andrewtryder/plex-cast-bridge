@@ -48,7 +48,7 @@ echo "  Authenticated as: $ACTIVE_ACCOUNT"
 # Set project in gcloud
 gcloud config set project "$PROJECT_ID" >/dev/null
 
-# 2. Enable necessary APIs
+# 2. Enable necessary APIs and verify Firestore Native Database
 echo "[2/7] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build, Firestore)..."
 gcloud services enable \
     run.googleapis.com \
@@ -58,8 +58,21 @@ gcloud services enable \
     firestore.googleapis.com \
     --project="$PROJECT_ID"
 
+echo "  Checking Firestore (default) database exists and is active..."
+if gcloud firestore databases describe --database="(default)" --project="$PROJECT_ID" >/dev/null 2>&1; then
+    echo "  Firestore (default) database already exists."
+else
+    echo "  Creating Firestore (default) native database in $REGION..."
+    gcloud firestore databases create \
+        --location="$REGION" \
+        --type=firestore-native \
+        --project="$PROJECT_ID"
+    echo "  Created Firestore (default) native database."
+fi
+
 # 3. Provision Pub/Sub Topic and Dead-Letter Queue (DLQ) Topic
-echo "[3/7] Provisioning Pub/Sub topics ( and -dlq)..."
+DLQ_TOPIC="${TOPIC_ID}-dlq"
+echo "[3/7] Provisioning Pub/Sub topics ( and )..."
 if gcloud pubsub topics describe "$TOPIC_ID" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Topic '$TOPIC_ID' already exists."
 else
@@ -67,7 +80,6 @@ else
     echo "  Created topic '$TOPIC_ID'."
 fi
 
-DLQ_TOPIC="${TOPIC_ID}-dlq"
 if gcloud pubsub topics describe "$DLQ_TOPIC" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Topic '$DLQ_TOPIC' already exists."
 else
@@ -76,14 +88,13 @@ else
 fi
 
 # Grant Pub/Sub system agent rights to forward dead-letter messages
-PROJECT_NUM=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)" 2>/dev/null || true)
-if [ -n "$PROJECT_NUM" ]; then
-    PUBSUB_SERVICE_ACCOUNT="service-${PROJECT_NUM}@gcp-sa-pubsub.iam.gserviceaccount.com"
-    gcloud pubsub topics add-iam-policy-binding "$DLQ_TOPIC" \
-        --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
-        --role="roles/pubsub.publisher" \
-        --project="$PROJECT_ID" >/dev/null 2>&1 || true
-fi
+PROJECT_NUM=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+PUBSUB_SERVICE_ACCOUNT="service-${PROJECT_NUM}@gcp-sa-pubsub.iam.gserviceaccount.com"
+echo "  Configuring Pub/Sub service agent IAM on DLQ topic..."
+gcloud pubsub topics add-iam-policy-binding "$DLQ_TOPIC" \
+    --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
+    --role="roles/pubsub.publisher" \
+    --project="$PROJECT_ID" >/dev/null
 
 # 4. Provision Pub/Sub Subscription for local worker with durable DLQ policy
 echo "[4/7] Provisioning Pub/Sub subscription '$SUBSCRIPTION_ID' with DLQ policy..."
@@ -92,7 +103,7 @@ if gcloud pubsub subscriptions describe "$SUBSCRIPTION_ID" --project="$PROJECT_I
     gcloud pubsub subscriptions update "$SUBSCRIPTION_ID" \
         --dead-letter-topic="$DLQ_TOPIC" \
         --max-delivery-attempts=5 \
-        --project="$PROJECT_ID" >/dev/null 2>&1 || true
+        --project="$PROJECT_ID"
 else
     gcloud pubsub subscriptions create "$SUBSCRIPTION_ID" \
         --topic="$TOPIC_ID" \
@@ -103,12 +114,29 @@ else
     echo "  Created subscription '$SUBSCRIPTION_ID' with dead-letter topic '$DLQ_TOPIC'."
 fi
 
-if [ -n "${PROJECT_NUM:-}" ]; then
-    gcloud pubsub subscriptions add-iam-policy-binding "$SUBSCRIPTION_ID" \
-        --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
-        --role="roles/pubsub.subscriber" \
-        --project="$PROJECT_ID" >/dev/null 2>&1 || true
+echo "  Configuring Pub/Sub service agent subscriber role on subscription..."
+gcloud pubsub subscriptions add-iam-policy-binding "$SUBSCRIPTION_ID" \
+    --member="serviceAccount:$PUBSUB_SERVICE_ACCOUNT" \
+    --role="roles/pubsub.subscriber" \
+    --project="$PROJECT_ID" >/dev/null
+
+# Verify effective DLQ subscription configuration (fail fast if mismatch)
+echo "  Verifying effective subscription DLQ policy..."
+EFFECTIVE_DLQ=$(gcloud pubsub subscriptions describe "$SUBSCRIPTION_ID" \
+    --project="$PROJECT_ID" \
+    --format="value(deadLetterPolicy.deadLetterTopic)")
+EFFECTIVE_ATTEMPTS=$(gcloud pubsub subscriptions describe "$SUBSCRIPTION_ID" \
+    --project="$PROJECT_ID" \
+    --format="value(deadLetterPolicy.maxDeliveryAttempts)")
+
+EXPECTED_DLQ="projects/${PROJECT_ID}/topics/${DLQ_TOPIC}"
+if [ "$EFFECTIVE_DLQ" != "$EXPECTED_DLQ" ] || [ "${EFFECTIVE_ATTEMPTS:-0}" -lt 5 ]; then
+    echo "ERROR: Pub/Sub DLQ policy verification failed!"
+    echo "  Expected DLQ Topic: $EXPECTED_DLQ, Got: $EFFECTIVE_DLQ"
+    echo "  Expected Attempts:  >= 5, Got: $EFFECTIVE_ATTEMPTS"
+    exit 1
 fi
+echo "  ✓ Subscription DLQ verified: topic=$EFFECTIVE_DLQ, maxDeliveryAttempts=$EFFECTIVE_ATTEMPTS"
 
 # 5. Provision Service Account for Cloud Run
 echo "[5/7] Provisioning Service Account '$SA_NAME'..."
@@ -134,7 +162,7 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:$SA_EMAIL" \
     --role="roles/datastore.user" \
     --condition=None \
-    --project="$PROJECT_ID" >/dev/null 2>&1 || true
+    --project="$PROJECT_ID" >/dev/null
 
 # 6. Check environment variables
 echo "[6/7] Checking environment configuration..."

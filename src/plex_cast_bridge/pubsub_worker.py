@@ -2,12 +2,15 @@ import asyncio
 import json
 import logging
 
+import os
 import time
 from pathlib import Path
 from collections import Counter
 from google.cloud import pubsub_v1
 
-DEAD_LETTER_LOG = Path(__file__).resolve().parent.parent.parent / "dead_letter_queue.jsonl"
+DEAD_LETTER_LOG = Path(
+    os.getenv("DEAD_LETTER_LOG") or (Path(__file__).resolve().parent.parent.parent / "dead_letter_queue.jsonl")
+)
 
 def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
     try:
@@ -17,6 +20,7 @@ def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
             "payload": payload,
             "error": str(exc),
         }
+        DEAD_LETTER_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEAD_LETTER_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
         log.warning("Archived permanently failing message %s to %s", msg_id, DEAD_LETTER_LOG)

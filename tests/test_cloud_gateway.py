@@ -516,3 +516,54 @@ def test_oauth_firestore_distributed_single_use(client):
         )
         assert replay_res.status_code == 400
         assert "already been redeemed" in replay_res.text
+
+
+def test_oauth_firestore_fails_closed_in_production(client):
+    from unittest.mock import MagicMock, patch
+
+    client.app.state.settings.environment = "production"
+
+    res = client.post(
+        "/oauth/authorize",
+        data={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "state-prod-fail",
+            "response_type": "code",
+            "passphrase": "test-passphrase",
+        },
+        follow_redirects=False,
+    )
+    auth_code = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(res.headers["location"]).query))["code"]
+
+    with patch("cloud_gateway.auth.get_firestore_client", return_value=None):
+        token_res = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            },
+        )
+        assert token_res.status_code == 503
+        assert "unavailable" in token_res.text
+
+    mock_db = MagicMock()
+    mock_db.collection.return_value.document.return_value.create.side_effect = RuntimeError("Firestore network error")
+    with patch("cloud_gateway.auth.get_firestore_client", return_value=mock_db):
+        token_res = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            },
+        )
+        assert token_res.status_code == 503
+        assert "failed closed" in token_res.text
+
+    client.app.state.settings.environment = "test"
