@@ -1,0 +1,31 @@
+[Unit]
+Description=Plex Cast Bridge - Smart Radio Bridge for Plex and Google Cast
+Documentation=https://github.com/your-username/plex-cast-bridge
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User/Group under which the service runs; adjust to your system user (e.g., plexbridge or root in an LXC)
+User=root
+Group=root
+
+WorkingDirectory=/opt/plex-cast-bridge
+EnvironmentFile=/opt/plex-cast-bridge/.env
+Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/plex-cast-bridge/gcp-credentials.json"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/opt/plex-cast-bridge/.venv/bin/uvicorn plex_cast_bridge.main:app --host 0.0.0.0 --port 8000
+
+# Reliability and auto-recovery
+Restart=always
+RestartSec=5s
+
+# Standard output and error logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plex-cast-bridge
+
+[Install]
+WantedBy=multi-user.target
+

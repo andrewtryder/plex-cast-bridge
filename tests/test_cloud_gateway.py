@@ -1,0 +1,293 @@
+import base64
+import urllib.parse
+
+from cloud_gateway.smart_home import generate_voice_synonyms
+
+
+def test_voice_synonyms_generation():
+    syns = generate_voice_synonyms("Kruder & Dorfmeister")
+    assert "Kruder and Dorfmeister" in syns
+    assert "Kruder & Dorfmeister Radio" in syns
+
+    dj_syns = generate_voice_synonyms("DJ Shadow")
+    assert "D J Shadow" in dj_syns
+    assert "Deejay Shadow" in dj_syns
+
+    article_syns = generate_voice_synonyms("A Tribe Called Quest")
+    assert "Tribe Called Quest" in article_syns
+
+
+def test_health_endpoint(client):
+    res = client.get("/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+
+
+def test_oauth_authorize_get_validation(client):
+    res = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "wrong-client",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "xyz",
+            "response_type": "code",
+        },
+    )
+    assert res.status_code == 400
+
+    res = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "xyz",
+            "response_type": "code",
+        },
+    )
+    assert res.status_code == 200
+    assert "Plex Jukebox" in res.text
+    assert "ADMIN_PASSPHRASE" in res.text
+
+
+def test_oauth_authorize_post_failure(client):
+    res = client.post(
+        "/oauth/authorize",
+        data={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "xyz",
+            "response_type": "code",
+            "passphrase": "wrong-password",
+        },
+    )
+    assert res.status_code == 401
+    assert "Invalid Admin Passphrase" in res.text
+
+
+def test_oauth_flow_and_token_exchange(client):
+    res = client.post(
+        "/oauth/authorize",
+        data={
+            "client_id": "test-client-id",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "state123",
+            "response_type": "code",
+            "passphrase": "test-passphrase",
+        },
+        follow_redirects=False,
+    )
+    assert res.status_code == 302
+    location = res.headers["location"]
+    parsed = urllib.parse.urlsplit(location)
+    q = dict(urllib.parse.parse_qsl(parsed.query))
+    assert q["state"] == "state123"
+    auth_code = q["code"]
+    assert auth_code
+
+    token_res = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+        },
+    )
+    assert token_res.status_code == 200
+    token_data = token_res.json()
+    assert token_data["token_type"] == "Bearer"
+    assert "access_token" in token_data
+    assert "refresh_token" in token_data
+    assert token_data["expires_in"] > 0
+
+    refresh_res = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": token_data["refresh_token"],
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+        },
+    )
+    assert refresh_res.status_code == 200
+    new_tokens = refresh_res.json()
+    assert "access_token" in new_tokens
+
+    basic_val = base64.b64encode(b"test-client-id:test-client-secret").decode("utf-8")
+    basic_res = client.post(
+        "/oauth/token",
+        headers={"Authorization": f"Basic {basic_val}"},
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": token_data["refresh_token"],
+        },
+    )
+    assert basic_res.status_code == 200
+
+
+def test_fulfillment_auth_required(client):
+    res = client.post("/fulfillment", json={"requestId": "123", "inputs": [{"intent": "action.devices.SYNC"}]})
+    assert res.status_code == 401
+
+    res = client.post(
+        "/fulfillment",
+        headers={"Authorization": "Bearer invalid-token"},
+        json={"requestId": "123", "inputs": [{"intent": "action.devices.SYNC"}]},
+    )
+    assert res.status_code == 401
+
+
+def test_fulfillment_sync(client, auth_headers):
+    payload = {
+        "requestId": "sync-req-1",
+        "inputs": [{"intent": "action.devices.SYNC"}],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requestId"] == "sync-req-1"
+    devices = data["payload"]["devices"]
+    assert len(devices) == 1
+    dev = devices[0]
+    assert dev["id"] == "plex-jukebox"
+    assert dev["type"] == "action.devices.types.SETTOP"
+
+    attrs = dev["attributes"]
+    channels = attrs["availableChannels"]
+    assert any("Nirvana" in c["names"] for c in channels)
+    assert any("Kruder and Dorfmeister" in c["names"] for c in channels)
+    apps = attrs["availableApplications"]
+    assert any(any("Rock" in s for s in a["names"][0]["name_synonym"]) for a in apps)
+
+
+def test_fulfillment_query(client, auth_headers):
+    payload = {
+        "requestId": "query-req-1",
+        "inputs": [
+            {
+                "intent": "action.devices.QUERY",
+                "payload": {"devices": [{"id": "plex-jukebox"}]},
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requestId"] == "query-req-1"
+    dev_status = data["payload"]["devices"]["plex-jukebox"]
+    assert dev_status["online"] is True
+    assert dev_status["status"] == "SUCCESS"
+    assert dev_status["playbackState"] == "PLAYING"
+
+
+def test_fulfillment_execute_commands(client, auth_headers):
+    published_messages = []
+
+    def mock_publish(payload):
+        published_messages.append(payload)
+        return "msg-test-123"
+
+    client.app.state.pubsub.publish_sync = mock_publish
+
+    cmd_channel = {
+        "requestId": "exec-req-1",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox"}],
+                            "execution": [
+                                {
+                                    "command": "action.devices.commands.selectChannel",
+                                    "params": {"channelName": "Pink Floyd"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_channel)
+    assert res.status_code == 200
+    assert res.json()["payload"]["commands"][0]["status"] == "SUCCESS"
+    assert len(published_messages) == 1
+    assert published_messages[0]["action"] == "play"
+    assert published_messages[0]["query"] == "Pink Floyd"
+    assert published_messages[0]["speaker"] == "Living Room"
+
+    cmd_next = {
+        "requestId": "exec-req-2",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox"}],
+                            "execution": [{"command": "action.devices.commands.mediaNext", "params": {}}],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_next)
+    assert res.status_code == 200
+    assert published_messages[1]["action"] == "next"
+
+    # Test setVolume uses dedicated 'volume' action rather than 'resume'
+    cmd_vol = {
+        "requestId": "exec-req-3",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox"}],
+                            "execution": [
+                                {"command": "action.devices.commands.setVolume", "params": {"volumeLevel": 65}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_vol)
+    assert res.status_code == 200
+    assert published_messages[2]["action"] == "volume"
+    assert published_messages[2]["volume"] == 0.65
+
+
+def test_custom_webhook_query(client):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-hook-123"
+
+    res = client.post("/webhook/query", json={"query": "Play Beatles"})
+    assert res.status_code == 401
+
+    res = client.post(
+        "/webhook/query",
+        headers={"X-API-Key": "wrong-key"},
+        json={"query": "Play Beatles"},
+    )
+    assert res.status_code == 401
+
+    res = client.post(
+        "/webhook/query",
+        headers={"X-API-Key": "test-webhook-key"},
+        json={"query": "Play Beatles in Office", "speaker": "Office"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "queued"
+    assert data["query"] == "Play Beatles in Office"
+    assert data["speaker"] == "Office"
+    assert len(published) == 1
+    assert published[0]["action"] == "play"

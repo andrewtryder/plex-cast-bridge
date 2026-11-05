@@ -1,0 +1,50 @@
+import pytest
+from fastapi.testclient import TestClient
+
+from cloud_gateway.auth import create_token_pair
+from cloud_gateway.config import Settings
+from cloud_gateway.main import app
+from cloud_gateway.pubsub_service import PubSubService
+
+
+@pytest.fixture
+def test_settings(tmp_path):
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(
+        """{
+          "genres": ["Rock", "Jazz"],
+          "artists": ["Nirvana", "The Beatles", "Kruder & Dorfmeister", "DJ Shadow"],
+          "themes": ["Upbeat 90s rock"],
+          "inputs": ["Master Bedroom", "Living Room", "Office"]
+        }"""
+    )
+    return Settings(
+        GOOGLE_CLIENT_ID="test-client-id",
+        GOOGLE_CLIENT_SECRET="test-client-secret",
+        ADMIN_PASSPHRASE="test-passphrase",
+        OAUTH_SIGNING_SECRET="test-signing-secret-key-1234567890",
+        WEBHOOK_API_KEY="test-webhook-key",
+        GCP_PROJECT_ID="test-project",
+        GCP_PUBSUB_TOPIC_ID="test-topic",
+        DEFAULT_SPEAKER_NAME="Living Room",
+        CATALOG_PATH=str(catalog_file),
+        MOCK_PUBSUB=True,
+    )
+
+
+@pytest.fixture
+def client(test_settings):
+    app.state.settings = test_settings
+    app.state.pubsub = PubSubService(
+        project_id=test_settings.gcp_project_id,
+        topic_id=test_settings.gcp_pubsub_topic_id,
+        mock=True,
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def auth_headers(test_settings):
+    tokens = create_token_pair(test_settings)
+    return {"Authorization": f"Bearer {tokens['access_token']}"}

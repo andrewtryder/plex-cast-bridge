@@ -1,0 +1,47 @@
+# Environment & Secrets (NEVER COMMIT)
+.env
+*.env
+**/.env
+**/.env.*
+!**/.env.example
+gcp-credentials.json
+*credentials*.json
+*service-account*.json
+*.pem
+*.key
+*.token
+
+# Python & Virtual Environments
+__pycache__/
+**/*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Testing & Caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local Media / Temporary Downloads
+test-speaker/
+gcp-cloud-run/catalog.json
+*.mp3
+*.m4a
+*.flac
+*.wav
+
+# macOS & Editor metadata
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

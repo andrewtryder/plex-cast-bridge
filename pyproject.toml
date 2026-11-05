@@ -1,0 +1,36 @@
+[project]
+name = "plex-cast-bridge"
+version = "0.2.0"
+description = "Personal Google Home Cloud-to-Cloud Integration, Gemini-Powered Smart DJ, and Continuous Plex Radio for Google Cast"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "plexapi>=4.16",
+    "pychromecast>=14",
+    "google-genai>=1",
+    "google-cloud-pubsub>=2",
+    "pyjwt[crypto]>=2.9",
+    "python-multipart>=0.0.18",
+    "jinja2>=3.1.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.28",
+    "pillow>=11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plex_cast_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "gcp-cloud-run/src"]

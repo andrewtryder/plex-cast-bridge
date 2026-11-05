@@ -1,0 +1,27 @@
+services:
+  plex-cast-bridge:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: plex-cast-bridge:latest
+    container_name: plex-cast-bridge
+    restart: unless-stopped
+    # host networking is mandatory for Chromecast mDNS discovery on the local LAN
+    network_mode: host
+    env_file:
+      - ../.env
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
+      - PORT=8000
+    volumes:
+      # Mount Google Cloud Service Account key for Pub/Sub authentication
+      - ../gcp-credentials.json:/app/gcp-credentials.json:ro
+      # Mount .env for runtime configuration
+      - ../.env:/app/.env:ro
+      # Mount canonical catalog.json
+      - ../catalog.json:/app/catalog.json:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

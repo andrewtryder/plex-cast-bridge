@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plex Jukebox - Google Home Linking</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --primary: #e5a00d; /* Plex gold */
+      --primary-hover: #cc8e0a;
+      --border: #334155;
+      --error-bg: #451a1a;
+      --error-border: #7f1d1d;
+      --error-text: #fca5a5;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      width: 100%;
+      max-width: 420px;
+      padding: 2rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 1.75rem;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #e5a00d, #b45309);
+      margin-bottom: 1rem;
+      color: #0f172a;
+      font-size: 28px;
+      font-weight: 900;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.35rem;
+    }
+    p.subtitle {
+      color: var(--muted);
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+    .alert-error {
+      background-color: var(--error-bg);
+      border: 1px solid var(--error-border);
+      color: var(--error-text);
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-bottom: 1.25rem;
+    }
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+    input[type="password"] {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+      background-color: #0f172a;
+      color: var(--text);
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input[type="password"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.25);
+    }
+    button[type="submit"] {
+      width: 100%;
+      padding: 0.85rem 1rem;
+      background-color: var(--primary);
+      color: #0f172a;
+      border: none;
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button[type="submit"]:hover {
+      background-color: var(--primary-hover);
+    }
+    .footer {
+      margin-top: 1.5rem;
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <img src="/static/icon.png" alt="Plex Cast Bridge" style="width: 80px; height: 80px; border-radius: 20px; margin-bottom: 0.75rem; box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+      <h1>Plex Jukebox</h1>
+      <p class="subtitle">Personal Google Home Cloud-to-Cloud Integration</p>
+    </div>
+
+    {% if error %}
+    <div class="alert-error">
+      {{ error }}
+    </div>
+    {% endif %}
+
+    <form method="POST" action="/oauth/authorize">
+      <input type="hidden" name="client_id" value="{{ client_id }}">
+      <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+      <input type="hidden" name="state" value="{{ state }}">
+      <input type="hidden" name="response_type" value="{{ response_type }}">
+      <input type="hidden" name="scope" value="{{ scope }}">
+
+      <div class="form-group">
+        <label for="passphrase">Admin Passphrase</label>
+        <input 
+          type="password" 
+          id="passphrase" 
+          name="passphrase" 
+          placeholder="Enter ADMIN_PASSPHRASE" 
+          required 
+          autofocus
+        >
+      </div>
+
+      <button type="submit">Authorize Google Home</button>
+    </form>
+
+    <div class="footer">
+      Private Bridge Instance &bull; Secure OAuth 2.0
+    </div>
+  </div>
+</body>
+</html>
+
