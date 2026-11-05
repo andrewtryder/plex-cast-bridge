@@ -5,6 +5,7 @@ import random
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from collections import deque
 from pathlib import Path
@@ -33,7 +34,7 @@ class LocalSpeaker:
         self.state = "IDLE"
         self.generation = 0
         self.volume = 0.25  # default 25% safe volume
-        self.enable_playback = enable_playback and bool(shutil.which("afplay"))
+        self.enable_playback = enable_playback and (sys.platform == "darwin") and bool(shutil.which("afplay"))
         self._proc = None
         self._watcher_thread = None
 
@@ -208,8 +209,9 @@ class LocalSpeaker:
     def status(self):
         with self.lock:
             track = self.current
+            speaker_name = "Mac Speaker (Emulated)" if sys.platform == "darwin" else "Headless Simulation Speaker"
             return {
-                "speaker": "Mac Speaker (Emulated)",
+                "speaker": speaker_name,
                 "state": self.state,
                 "current_track": (
                     {

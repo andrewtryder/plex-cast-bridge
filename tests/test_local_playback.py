@@ -327,3 +327,56 @@ def test_local_bridge_health_endpoint():
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json() == {"status": "ok"}
+
+
+def test_cross_platform_speaker_discovery(monkeypatch):
+    import pychromecast
+    from plex_cast_bridge.cast_manager import CastManager
+
+    # Mock pychromecast to return no network chromecasts
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda timeout: ([], MagicMock()))
+
+    # Case 1: macOS platform -> includes test speaker by default
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.delenv("ENABLE_TEST_SPEAKER", raising=False)
+    cm = CastManager()
+    devices = cm.discover()
+    test_speakers = [d for d in devices if d["name"] == "test speaker"]
+    assert len(test_speakers) == 1
+    assert test_speakers[0]["model"] == "macOS afplay"
+    assert test_speakers[0]["room"] == "Mac Local"
+
+    # Case 2: Linux platform (default) -> omits test speaker
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("ENABLE_TEST_SPEAKER", raising=False)
+    cm_linux = CastManager()
+    devices_linux = cm_linux.discover()
+    assert not any(d["name"] == "test speaker" for d in devices_linux)
+
+    # Case 3: Linux with explicit ENABLE_TEST_SPEAKER=true -> includes headless simulation
+    monkeypatch.setenv("ENABLE_TEST_SPEAKER", "true")
+    cm_linux_sim = CastManager()
+    devices_sim = cm_linux_sim.discover()
+    test_sim = [d for d in devices_sim if d["name"] == "test speaker"]
+    assert len(test_sim) == 1
+    assert test_sim[0]["model"] == "Headless Simulation"
+    assert test_sim[0]["room"] == "Local Host"
+
+
+def test_local_speaker_platform_status(monkeypatch, tmp_path):
+    from plex_cast_bridge.local_speaker import LocalSpeaker
+
+    # On macOS with afplay
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/afplay" if cmd == "afplay" else None)
+    sp_mac = LocalSpeaker(directory=tmp_path / "mac", enable_playback=True)
+    assert sp_mac.enable_playback is True
+    assert sp_mac.status()["speaker"] == "Mac Speaker (Emulated)"
+
+    # On Linux, afplay is never invoked and status reports headless simulation
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/afplay" if cmd == "afplay" else None)
+    sp_linux = LocalSpeaker(directory=tmp_path / "linux", enable_playback=True)
+    assert sp_linux.enable_playback is False
+    assert sp_linux.status()["speaker"] == "Headless Simulation Speaker"
+

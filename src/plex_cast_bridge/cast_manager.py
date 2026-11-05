@@ -1,8 +1,10 @@
 import logging
+import os
 import random
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -342,32 +344,40 @@ class CastManager:
                 self.disabled_speakers.add(r)
 
     def discover(self):
-        discovered = [
-            {
+        discovered = []
+        seen_names = set()
+
+        enable_test_speaker = os.getenv("ENABLE_TEST_SPEAKER", "").strip().lower() in ("true", "1", "yes")
+        # On macOS, include test speaker by default unless explicitly disabled by config.
+        # On Linux (headless), only include test speaker if explicitly requested via ENABLE_TEST_SPEAKER.
+        if sys.platform == "darwin" or enable_test_speaker:
+            model = "macOS afplay" if sys.platform == "darwin" else "Headless Simulation"
+            room = "Mac Local" if sys.platform == "darwin" else "Local Host"
+            discovered.append({
                 "name": "test speaker",
-                "room": "Mac Local",
-                "model": "macOS afplay",
+                "room": room,
+                "model": model,
                 "uuid": "local-test-speaker",
                 "host": "local",
                 "port": 0,
                 "enabled": not self.is_disabled("test speaker"),
-            }
-        ]
-        seen_names = {"test speaker"}
+            })
+            seen_names.add("test speaker")
 
         # 1. Native dns-sd discovery (reliable on macOS multi-homed interfaces)
-        for dev in _discover_via_dnssd():
-            if dev["name"] not in seen_names:
-                seen_names.add(dev["name"])
-                discovered.append({
-                    "name": dev["name"],
-                    "room": dev.get("room") or extract_room_name(dev["name"]),
-                    "model": dev.get("model", "Google Cast"),
-                    "uuid": dev.get("uuid"),
-                    "host": dev["host"],
-                    "port": dev.get("port", 8009),
-                    "enabled": not self.is_disabled(dev["name"]),
-                })
+        if sys.platform == "darwin":
+            for dev in _discover_via_dnssd():
+                if dev["name"] not in seen_names:
+                    seen_names.add(dev["name"])
+                    discovered.append({
+                        "name": dev["name"],
+                        "room": dev.get("room") or extract_room_name(dev["name"]),
+                        "model": dev.get("model", "Google Cast"),
+                        "uuid": dev.get("uuid"),
+                        "host": dev["host"],
+                        "port": dev.get("port", 8009),
+                        "enabled": not self.is_disabled(dev["name"]),
+                    })
 
         # 2. Standard pychromecast discovery (Linux / fallback)
         try:
