@@ -314,7 +314,6 @@ async def fulfillment(
             "requestId": req_id,
             "payload": {
                 "errorCode": "hardError",
-                "debug": str(exc),
             },
         }
 
