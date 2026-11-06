@@ -288,11 +288,16 @@
   <script>
     let speakers = [];
 
-    // Safely retrieve optional local API key from URL parameter ?api_key= or localStorage
+    // Bootstrap key from ?api_key= (deprecated) or localStorage; prefer X-API-Key header thereafter.
     const urlParams = new URLSearchParams(window.location.search);
-    const localApiKey = urlParams.get('api_key') || localStorage.getItem('plex_cast_api_key') || '';
-    if (urlParams.get('api_key')) {
-      localStorage.setItem('plex_cast_api_key', urlParams.get('api_key'));
+    const bootstrappedKey = urlParams.get('api_key');
+    const localApiKey = bootstrappedKey || localStorage.getItem('plex_cast_api_key') || '';
+    if (bootstrappedKey) {
+      localStorage.setItem('plex_cast_api_key', bootstrappedKey);
+      urlParams.delete('api_key');
+      const cleaned = urlParams.toString();
+      const nextUrl = window.location.pathname + (cleaned ? `?${cleaned}` : '') + window.location.hash;
+      window.history.replaceState({}, document.title, nextUrl);
     }
 
     function authHeaders(extra = {}) {
@@ -310,7 +315,7 @@
         const res = await fetch(`/api/speakers?scan=${forceScan}`, { headers: authHeaders() });
         if (res.status === 401) {
           countEl.textContent = 'Auth Required';
-          document.getElementById('actionStatus').textContent = 'Unauthorized: Provide ?api_key=<your_local_key> in URL.';
+          document.getElementById('actionStatus').textContent = 'Unauthorized: Set LOCAL_API_KEY and pass it via X-API-Key (or one-time ?api_key= bootstrap).';
           return;
         }
         speakers = await res.json();

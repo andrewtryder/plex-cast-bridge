@@ -12,6 +12,14 @@ log = logging.getLogger(__name__)
 DEVICE_ID = "plex-jukebox"
 
 
+class UnsupportedCommandError(ValueError):
+    """Raised when Google sends a Smart Home command this bridge does not handle."""
+
+    def __init__(self, command: str):
+        self.command = command
+        super().__init__(f"Unsupported Smart Home command: {command}")
+
+
 def slugify(text: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", text.strip().lower())
     return cleaned.strip("_")
@@ -183,20 +191,11 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
     shared_attributes = _build_shared_attributes(catalog_data)
     raw_speakers = catalog_data.get("speakers") or []
 
-    # Filter to enabled speakers
+    # Filter to enabled speakers. An empty / all-disabled catalog yields no devices
+    # so dashboard disables are honored (no synthetic fallback speaker).
     enabled_speakers = [s for s in raw_speakers if s.get("enabled", True)]
     if not enabled_speakers:
-        fallback_room = default_speaker or "Master Bedroom"
-        enabled_speakers = [
-            {
-                "id": f"{DEVICE_ID}:{fallback_room}",
-                "name": "Plex",
-                "nicknames": [f"{fallback_room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
-                "roomHint": fallback_room,
-                "speaker_name": fallback_room,
-                "enabled": True,
-            }
-        ]
+        return []
 
     devices: list[dict[str, Any]] = []
     for spk in enabled_speakers:
@@ -238,7 +237,10 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
 
 def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
     """Backwards-compatible helper returning the primary virtual device."""
-    return build_sync_devices(catalog_data)[0]
+    devices = build_sync_devices(catalog_data)
+    if not devices:
+        raise ValueError("No enabled speakers in catalog")
+    return devices[0]
 
 
 def extract_speaker_from_device_id(device_id: str | None, default_speaker: str | None) -> str | None:
@@ -337,7 +339,7 @@ def parse_execute_command(
 
     else:
         log.warning(f"Unrecognized Google Smart Home command: {command}")
-        payload = {"action": "resume"}
+        raise UnsupportedCommandError(command)
 
     if "speaker" not in payload and target_speaker:
         payload["speaker"] = target_speaker
@@ -406,22 +408,51 @@ async def handle_smart_home_request(
             target_dev_ids = [d.get("id") for d in devices if d.get("id")] or [DEVICE_ID]
             for dev_id in target_dev_ids:
                 target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
-                dev_success = True
+                # Validate the full execution group before publishing anything so a
+                # trailing unsupported command cannot partially apply earlier actions.
+                parsed_payloads: list[dict[str, Any]] = []
+                unsupported_command: str | None = None
                 for exec_item in executions:
                     cmd_name = exec_item.get("command", "")
                     params = exec_item.get("params", {})
-                    pubsub_payload = parse_execute_command(
-                        cmd_name,
-                        params,
-                        target_speaker,
-                        catalog_inputs,
+                    try:
+                        parsed_payloads.append(
+                            parse_execute_command(
+                                cmd_name,
+                                params,
+                                target_speaker,
+                                catalog_inputs,
+                            )
+                        )
+                    except UnsupportedCommandError:
+                        unsupported_command = cmd_name
+                        break
+
+                if unsupported_command is not None:
+                    log.warning(
+                        "Rejecting unsupported Smart Home command '%s' for device '%s' "
+                        "(no commands published for this device)",
+                        unsupported_command,
+                        dev_id,
                     )
+                    error_commands.append({
+                        "ids": [dev_id],
+                        "status": "ERROR",
+                        "errorCode": "notSupported",
+                    })
+                    continue
+
+                dev_success = True
+                error_code = "transientError"
+                for pubsub_payload in parsed_payloads:
                     log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
                     try:
                         await pubsub_service.publish(pubsub_payload)
                     except Exception as exc:
                         log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
                         dev_success = False
+                        error_code = "transientError"
+                        break
 
                 if dev_success:
                     if dev_id not in success_ids:
@@ -430,7 +461,7 @@ async def handle_smart_home_request(
                     error_commands.append({
                         "ids": [dev_id],
                         "status": "ERROR",
-                        "errorCode": "transientError",
+                        "errorCode": error_code,
                     })
 
         response_commands = []

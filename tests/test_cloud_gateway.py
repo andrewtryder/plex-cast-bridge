@@ -567,3 +567,126 @@ def test_oauth_firestore_fails_closed_in_production(client):
         assert "failed closed" in token_res.text
 
     client.app.state.settings.environment = "test"
+
+
+def test_unknown_smart_home_command_is_not_published(client, auth_headers):
+    from cloud_gateway.smart_home import UnsupportedCommandError, parse_execute_command
+    import pytest
+
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-unknown"
+
+    with pytest.raises(UnsupportedCommandError):
+        parse_execute_command(
+            "action.devices.commands.TotallyFake",
+            {},
+            "Master Bedroom",
+        )
+
+    cmd_unknown = {
+        "requestId": "exec-unknown",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {
+                                    "command": "action.devices.commands.TotallyFake",
+                                    "params": {},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_unknown)
+    assert res.status_code == 200
+    data = res.json()
+    cmd_result = data["payload"]["commands"][0]
+    assert cmd_result["status"] == "ERROR"
+    assert cmd_result["errorCode"] == "notSupported"
+    assert published == []
+
+
+def test_mixed_smart_home_commands_publish_nothing_on_unsupported(client, auth_headers):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-mixed"
+
+    cmd_mixed = {
+        "requestId": "exec-mixed",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaPause", "params": {}},
+                                {
+                                    "command": "action.devices.commands.TotallyFake",
+                                    "params": {},
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_mixed)
+    assert res.status_code == 200
+    data = res.json()
+    cmd_result = data["payload"]["commands"][0]
+    assert cmd_result["status"] == "ERROR"
+    assert cmd_result["errorCode"] == "notSupported"
+    assert published == []
+
+
+def test_build_sync_devices_empty_when_all_disabled():
+    import pytest
+    from cloud_gateway.smart_home import build_sync_device, build_sync_devices
+
+    empty = build_sync_devices({"speakers": []}, default_speaker="Master Bedroom")
+    assert empty == []
+
+    all_disabled = build_sync_devices(
+        {
+            "speakers": [
+                {
+                    "id": "plex-jukebox:Kitchen",
+                    "name": "Plex",
+                    "roomHint": "Kitchen",
+                    "speaker_name": "Kitchen",
+                    "enabled": False,
+                }
+            ]
+        },
+        default_speaker="Master Bedroom",
+    )
+    assert all_disabled == []
+    with pytest.raises(ValueError, match="No enabled speakers"):
+        build_sync_device({"speakers": []})
+
+    enabled = build_sync_devices(
+        {
+            "speakers": [
+                {
+                    "id": "plex-jukebox:Kitchen",
+                    "name": "Plex",
+                    "nicknames": ["Kitchen Plex"],
+                    "roomHint": "Kitchen",
+                    "speaker_name": "Kitchen",
+                    "enabled": True,
+                }
+            ]
+        },
+        default_speaker="Master Bedroom",
+    )
+    assert len(enabled) == 1
+    assert enabled[0]["id"] == "plex-jukebox:Kitchen"

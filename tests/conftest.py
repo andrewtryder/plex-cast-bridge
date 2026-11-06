@@ -1,5 +1,11 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
+
+# Local Settings refuse to start without LOCAL_API_KEY unless this opt-in is set.
+# TestClient triggers the local app lifespan when local tests import plex_cast_bridge.main.
+os.environ.setdefault("ALLOW_UNAUTHENTICATED_LOCAL_API", "true")
 
 from cloud_gateway.auth import create_token_pair
 from cloud_gateway.config import Settings

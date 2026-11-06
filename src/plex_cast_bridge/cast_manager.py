@@ -2,13 +2,9 @@ import json
 import logging
 import os
 import random
-import re
-import shutil
 import socket
-import subprocess
 import sys
 import threading
-import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,106 +12,21 @@ from pathlib import Path
 import pychromecast
 from pychromecast.controllers.media import MediaStatusListener
 
+from .cast_discovery import _discover_via_dnssd, extract_room_name
 from .local_speaker import LocalSpeaker
 
 log = logging.getLogger(__name__)
 
 DEFAULT_CAST_VOLUME = 0.20
 
-
-def extract_room_name(friendly_name: str) -> str:
-    """Derive a clean Google Home roomHint from a Cast friendly name (e.g. 'Kitchen display' -> 'Kitchen')."""
-    raw = friendly_name.strip()
-    cleaned = re.sub(r"\s+(?:display|speaker|speakers|tv|chromecast|mini|hub|nest|audio)$", "", raw, flags=re.IGNORECASE).strip()
-    if not cleaned:
-        cleaned = raw
-    # Title-case words nicely ("Great room" -> "Great Room")
-    return " ".join(w.capitalize() if w.islower() else w for w in cleaned.split())
-
-
-def _discover_via_dnssd(timeout_sec=2.0):
-    """
-    Fallback speaker discovery using macOS native dns-sd command.
-    Bypasses zeroconf multicast drop issues on multi-homed macOS interfaces.
-    """
-    if not shutil.which("dns-sd"):
-        return []
-    devices = []
-    try:
-        proc = subprocess.Popen(
-            ["dns-sd", "-B", "_googlecast._tcp", "local."],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        time.sleep(timeout_sec)
-        proc.terminate()
-        stdout, _ = proc.communicate()
-
-        instances = set()
-        for line in stdout.splitlines():
-            if "Add" in line and "_googlecast._tcp" in line:
-                parts = line.split()
-                if len(parts) >= 7:
-                    inst = " ".join(parts[6:]).strip()
-                    if inst:
-                        instances.add(inst)
-
-        for inst in sorted(instances):
-            lproc = subprocess.Popen(
-                ["dns-sd", "-L", inst, "_googlecast._tcp", "local."],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            time.sleep(0.6)
-            lproc.terminate()
-            lout, _ = lproc.communicate()
-
-            host = None
-            port = 8009
-            model = "Google Cast"
-            uuid = ""
-            friendly_name = inst
-            for line in lout.splitlines():
-                if "can be reached at" in line:
-                    match = re.search(r"reached at ([\w\.-]+):(\d+)", line)
-                    if match:
-                        host = match.group(1)
-                        port = int(match.group(2))
-                if "md=" in line:
-                    m = re.search(r"md=([^\n\r]+?)(?:\s+[a-z]{2}=|$)", line)
-                    if m:
-                        model = m.group(1).replace("\\ ", " ").replace("_", " ").strip()
-                if "fn=" in line:
-                    fn_m = re.search(r"fn=([^\n\r]+?)(?:\s+[a-z]{2}=|$)", line)
-                    if fn_m:
-                        friendly_name = fn_m.group(1).replace("\\ ", " ").strip()
-                if "id=" in line:
-                    u = re.search(r"id=([a-f0-9\-]+)", line)
-                    if u:
-                        uuid = u.group(1)
-            if host:
-                if host.endswith(".local") or host.endswith(".local."):
-                    try:
-                        resolved_ip = socket.gethostbyname(host)
-                        if resolved_ip:
-                            host = resolved_ip
-                    except Exception:
-                        pass
-                room = extract_room_name(friendly_name)
-                devices.append({
-                    "name": friendly_name,
-                    "room": room,
-                    "instance": inst,
-                    "host": host,
-                    "port": port,
-                    "model": model,
-                    "uuid": uuid,
-                })
-    except Exception as exc:
-        log.debug("dns-sd fallback discovery error: %s", exc)
-    return devices
+# Re-export discovery helpers for existing import paths / monkeypatches.
+__all__ = [
+    "DEFAULT_CAST_VOLUME",
+    "SpeakerQueue",
+    "CastManager",
+    "extract_room_name",
+    "_discover_via_dnssd",
+]
 
 
 class SpeakerQueue(MediaStatusListener):
@@ -129,6 +40,15 @@ class SpeakerQueue(MediaStatusListener):
         self.repeat = False
         self.armed = False
         self.generation = 0
+        self.play_generation = 0
+        self.pending_load_generation: int | None = None
+        self.expected_content_id: str | None = None
+        self.current_load_item_id: int | None = None
+        self.active_media_session_id: int | None = None
+        self.rejected_load_item_ids: set[int] = set()
+        self.unidentified_superseded_count = 0
+        self.ignore_load_failures = False
+        self.load_watchdog_seconds = 8.0
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
@@ -141,14 +61,32 @@ class SpeakerQueue(MediaStatusListener):
             except Exception as exc:
                 log.warning("Could not set startup volume on '%s': %s", self.cast.name, exc)
 
+    def _invalidate_inflight_load(self):
+        """Drop unresolved load state and suppress device callbacks during replacement."""
+        if self.pending_load_generation is not None and self.current_load_item_id is None:
+            # Superseded load never reported an item id; a later LOAD_FAILED may be orphaned.
+            self.unidentified_superseded_count += 1
+        if self.current_load_item_id is not None:
+            self.rejected_load_item_ids.add(self.current_load_item_id)
+        self.pending_load_generation = None
+        self.expected_content_id = None
+        self.current_load_item_id = None
+        self.active_media_session_id = None
+        self.armed = False
+        self.ignore_load_failures = True
+        try:
+            self.cast.media_controller.stop()
+        except Exception as exc:
+            log.debug("Media controller stop during invalidate on '%s' (ignored): %s", self.cast.name, exc)
+
     def replace(self, tracks, repeat):
         with self.lock:
             self.generation += 1
+            self._invalidate_inflight_load()
             self.queue = deque(tracks)
             self.history.clear()
             self.original = list(tracks)
             self.repeat = repeat
-            self.armed = False
             self._next()
 
     def _play_track(self, track):
@@ -161,10 +99,15 @@ class SpeakerQueue(MediaStatusListener):
 
         self.current = track
         self.armed = False
+        self.play_generation = self.generation
+        self.pending_load_generation = self.generation
+        self.current_load_item_id = None
+        self.active_media_session_id = None
 
         # Build direct LAN stream URL with Plex auth token
         part = parts_list[0]
         url = track._server.url(part.key, includeToken=True)
+        self.expected_content_id = url
         content_type = {
             "mp3": "audio/mpeg",
             "flac": "audio/flac",
@@ -203,6 +146,37 @@ class SpeakerQueue(MediaStatusListener):
             stream_type="BUFFERED",
             metadata=metadata,
         )
+        # Accept failures only for the load we just started (not stop()-induced leftovers).
+        self.ignore_load_failures = False
+        self._schedule_load_watchdog(self.generation)
+
+    def _schedule_load_watchdog(self, generation: int):
+        """Advance if a pending load never arms after orphan failures were consumed.
+
+        Sleep runs on a daemon timer so the single-worker queue executor stays free;
+        the generation/pending checks below make superseded timers a no-op.
+        """
+        delay = self.load_watchdog_seconds
+        if delay <= 0:
+            return
+
+        def _watch():
+            with self.lock:
+                if self.pending_load_generation != generation or self.armed:
+                    return
+                if generation != self.generation:
+                    return
+                log.warning(
+                    "Cast load watchdog fired on '%s' for generation %s; advancing queue",
+                    self.cast.name,
+                    generation,
+                )
+                self.pending_load_generation = None
+            self.executor.submit(self._advance, generation)
+
+        timer = threading.Timer(delay, _watch)
+        timer.daemon = True
+        timer.start()
 
     def _next(self):
         if self.current is not None:
@@ -225,7 +199,7 @@ class SpeakerQueue(MediaStatusListener):
     def previous(self):
         with self.lock:
             self.generation += 1
-            self.armed = False
+            self._invalidate_inflight_load()
             # Check playback position if available
             status = getattr(self.cast.media_controller, "status", None)
             pos = getattr(status, "adjusted_current_time", None)
@@ -246,12 +220,41 @@ class SpeakerQueue(MediaStatusListener):
         with self.lock:
             if self.current is None:
                 return
+            content_id = getattr(status, "content_id", None)
+            session_id = getattr(status, "media_session_id", None)
+            # Bind Cast queue item id when the receiver reports it (attribute may be
+            # present on some status payloads even if MediaStatus typing omits it).
+            item_id = getattr(status, "current_item_id", None)
+            if item_id is None:
+                item_id = getattr(status, "item_id", None)
+
             if status.player_state in ("PLAYING", "BUFFERING"):
+                # Require content_id match when we know what we loaded; identity-less
+                # PLAYING must not arm or clear a replacement's pending state.
+                if self.expected_content_id and (
+                    not content_id or content_id != self.expected_content_id
+                ):
+                    return
                 self.armed = True
+                self.pending_load_generation = None
+                if session_id is not None:
+                    self.active_media_session_id = session_id
+                if item_id is not None:
+                    self.current_load_item_id = item_id
+                    self.rejected_load_item_ids.discard(item_id)
             elif status.player_state == "IDLE" and status.idle_reason == "FINISHED" and self.armed:
+                if content_id:
+                    if self.expected_content_id and content_id != self.expected_content_id:
+                        return
+                elif self.active_media_session_id is not None:
+                    if session_id != self.active_media_session_id:
+                        return
+                else:
+                    # Armed without a session id only happens after matching content_id.
+                    pass
                 self.armed = False
                 log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
-                self.executor.submit(self._advance, self.generation)
+                self.executor.submit(self._advance, self.play_generation)
 
     def _advance(self, generation):
         with self.lock:
@@ -263,8 +266,59 @@ class SpeakerQueue(MediaStatusListener):
                 log.exception("Could not advance the Cast queue")
 
     def load_media_failed(self, queue_item_id, error_code):
-        log.error("Cast media load failed on '%s': item=%s code=%s. Automatically advancing to next track.", self.cast.name, queue_item_id, error_code)
-        self.executor.submit(self._advance, self.generation)
+        log.error(
+            "Cast media load failed on '%s': item=%s code=%s. Automatically advancing to next track.",
+            self.cast.name,
+            queue_item_id,
+            error_code,
+        )
+        # Known item ids are correlated directly. Unidentified superseded loads contribute
+        # an orphan-failure allowance so a delayed A failure cannot claim B's pending slot;
+        # a watchdog advances if the current load never arms after orphans are consumed.
+        with self.lock:
+            if self.ignore_load_failures:
+                log.info(
+                    "Ignoring Cast media load failure on '%s' during queue transition",
+                    self.cast.name,
+                )
+                return
+            if queue_item_id in self.rejected_load_item_ids:
+                log.info(
+                    "Ignoring stale Cast media load failure on '%s' (rejected item %s)",
+                    self.cast.name,
+                    queue_item_id,
+                )
+                return
+            if self.current_load_item_id is not None and queue_item_id != self.current_load_item_id:
+                log.info(
+                    "Ignoring stale Cast media load failure on '%s' (item %s != current %s)",
+                    self.cast.name,
+                    queue_item_id,
+                    self.current_load_item_id,
+                )
+                return
+            if self.pending_load_generation is None:
+                log.info(
+                    "Ignoring Cast media load failure on '%s' (no pending load)",
+                    self.cast.name,
+                )
+                return
+            if self.current_load_item_id is None and self.unidentified_superseded_count > 0:
+                self.unidentified_superseded_count -= 1
+                if queue_item_id is not None:
+                    self.rejected_load_item_ids.add(queue_item_id)
+                log.info(
+                    "Ignoring uncorrelated Cast media load failure on '%s' "
+                    "(orphan allowance remaining=%s)",
+                    self.cast.name,
+                    self.unidentified_superseded_count,
+                )
+                return
+            if self.current_load_item_id is None and queue_item_id is not None:
+                self.current_load_item_id = queue_item_id
+            generation = self.pending_load_generation
+            self.pending_load_generation = None
+        self.executor.submit(self._advance, generation)
 
     def pause(self):
         try:
@@ -294,7 +348,7 @@ class SpeakerQueue(MediaStatusListener):
     def skip(self):
         with self.lock:
             self.generation += 1
-            self.armed = False
+            self._invalidate_inflight_load()
             self._next()
 
     def next(self):
@@ -303,10 +357,10 @@ class SpeakerQueue(MediaStatusListener):
     def stop(self):
         with self.lock:
             self.generation += 1
+            self._invalidate_inflight_load()
             self.queue.clear()
             self.original = []
             self.current = None
-            self.armed = False
             try:
                 self.cast.media_controller.stop()
             except Exception as exc:

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Restrictive umask before any secret files (.env, temp env YAML) are created.
+umask 077
 
 # ==============================================================================
 # Deploy Script: Plex Google Home Fulfillment on GCP Cloud Run
@@ -182,6 +184,7 @@ if [ ! -f "$ENV_FILE" ]; then
     sed -i '' "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE" 2>/dev/null || sed -i "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE"
     echo "  Generated default secrets in $ENV_FILE."
 fi
+chmod 600 "$ENV_FILE"
 
 # 7. Deploy to Cloud Run
 echo "[7/8] Deploying '$SERVICE_NAME' to Cloud Run..."
@@ -194,13 +197,25 @@ if [ -f "$SCRIPT_DIR/../catalog.json" ]; then
 fi
 
 TMP_ENV_YAML=$(mktemp)
+trap 'rm -f "$TMP_ENV_YAML"' EXIT
+
 python3 -c "
-with open('$ENV_FILE') as f:
-    for line in f:
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            k, v = line.split('=', 1)
-            print(f'{k.strip()}: \"{v.strip()}\"')
+import json
+import re
+from pathlib import Path
+
+env_path = Path(r'''$ENV_FILE''')
+key_re = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+for raw in env_path.read_text(encoding='utf-8').splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#') or '=' not in line:
+        continue
+    key, value = line.split('=', 1)
+    key = key.strip()
+    if not key_re.match(key):
+        raise SystemExit(f'Invalid environment variable name in .env: {key!r}')
+    # JSON-encode the value so quotes, newlines, and YAML-significant chars are safe.
+    print(f'{key}: {json.dumps(value.strip())}')
 " > "$TMP_ENV_YAML"
 
 gcloud run deploy "$SERVICE_NAME" \
@@ -213,6 +228,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --port 8080
 
 rm -f "$TMP_ENV_YAML"
+trap - EXIT
 
 # 8. Prune old Artifact Registry images (keep latest 2 to stay within 0.5GB free tier)
 echo "[8/8] Pruning old container images in Artifact Registry (keeping 2 most recent)..."
