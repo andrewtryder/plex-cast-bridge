@@ -46,7 +46,7 @@ def test_oauth_authorize_get_validation(client):
         },
     )
     assert res.status_code == 200
-    assert "Plex Jukebox" in res.text
+    assert "Plex Cast Bridge" in res.text
     assert "ADMIN_PASSPHRASE" in res.text
 
 
@@ -164,6 +164,20 @@ def test_fulfillment_sync(client, auth_headers):
     assert any("Kruder and Dorfmeister" in c["names"] for c in channels)
     apps = attrs["availableApplications"]
     assert any(any("Rock" in s for s in a["names"][0]["name_synonym"]) for a in apps)
+    assert devices[0]["deviceInfo"]["model"] == "Plex Cast Bridge"
+    assert devices[0]["deviceInfo"]["manufacturer"] == "Plex Cast Bridge"
+
+
+def test_fulfillment_disconnect(client, auth_headers):
+    payload = {
+        "requestId": "disconnect-req-1",
+        "inputs": [{"intent": "action.devices.DISCONNECT"}],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requestId"] == "disconnect-req-1"
+    assert "payload" not in data or data.get("payload") in (None, {})
 
 
 def test_fulfillment_query(client, auth_headers):

@@ -159,7 +159,8 @@ cp -r ~/plex-cast-bridge-repo/deploy ~/plex-cast-bridge/
 Create `.env` inside `~/plex-cast-bridge/`:
 
 ```bash
-cat << 'EOF' > ~/plex-cast-bridge/.env
+LOCAL_API_KEY="$(openssl rand -hex 32)"
+cat << EOF > ~/plex-cast-bridge/.env
 # Plex Media Server Settings
 PLEX_URL=http://192.168.1.50:32400
 PLEX_TOKEN=your_plex_x_token_here
@@ -173,27 +174,36 @@ DEFAULT_CAST_VOLUME=0.20
 # Google Gemini SmartDJ API Key
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Optional Local API Authentication (leave blank/omit for open LAN access)
-# LOCAL_API_KEY=
+# Required local API authentication (fail-closed)
+LOCAL_API_KEY=${LOCAL_API_KEY}
 
-# Google Cloud Platform Pub/Sub Settings
+# Only for trusted LAN labs — do not use on shared networks:
+# ALLOW_UNAUTHENTICATED_LOCAL_API=true
+
+# Google Cloud Platform Pub/Sub Settings (optional until Google Home voice is enabled)
 GCP_PROJECT_ID=plex-cast-bridge-home
 GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
-
-# Operational listener flag (set to true on Proxmox host)
 ENABLE_PUBSUB_LISTENER=true
 EOF
 chmod 600 ~/plex-cast-bridge/.env
+echo "Saved LOCAL_API_KEY=${LOCAL_API_KEY}"
 ```
 
-> [!NOTE]
-> **Local Access Without API Keys:** By default, Plex Cast Bridge allows unauthenticated control on your trusted home LAN without requiring an API key. If you wish to enforce API key authentication across all local endpoints, uncomment `LOCAL_API_KEY` and set a 32-byte hex key (`openssl rand -hex 32`).
+> [!IMPORTANT]
+> **Local API auth is required.** The bridge refuses to start without `LOCAL_API_KEY` unless you explicitly set `ALLOW_UNAUTHENTICATED_LOCAL_API=true`. Prefer `X-API-Key` for API clients; the dashboard accepts a one-time `?api_key=` bootstrap that is stripped from the browser URL after load.
 
 ### 3. Copy GCP Service Account Credentials
-From your **Mac terminal**, securely copy `gcp-credentials.json` to the VM:
+
+Create a dedicated **Pub/Sub subscriber** service account (not the Cloud Run publisher). See [SETUP_GUIDE.md §5](setup/SETUP_GUIDE.md). From your workstation:
 
 ```bash
-scp ~/code/plex-cast-bridge/gcp-credentials.json user@<PROXMOX_VM_IP>:~/plex-cast-bridge/
+scp ./gcp-credentials.json user@<PROXMOX_VM_IP>:~/plex-cast-bridge/
+```
+
+For dashboard-only installs (no voice yet), a placeholder is enough:
+
+```bash
+echo '{}' > ~/plex-cast-bridge/gcp-credentials.json
 ```
 
 On the VM, configure permissions so the container's non-root `appuser` (GID `10001`) can read the credentials while preventing world-read:
@@ -244,9 +254,9 @@ plex-cast-bridge    ghcr.io/andrewtryder/plex-cast-bridge:latest   "uvicorn plex
 ### Step 1: Open the Web Dashboard
 From any browser on your home LAN, open:
 ```
-http://<PROXMOX_HOST_IP>:8000/
+http://<PROXMOX_HOST_IP>:8000/?api_key=<LOCAL_API_KEY>
 ```
-*(If you enabled `LOCAL_API_KEY`, append `?api_key=<YOUR_KEY>`)*
+Prefer `X-API-Key` for scripts; the query-string bootstrap is stripped after the page loads.
 
 - Confirm your Google Cast speakers (e.g. `Kitchen`, `Master Bedroom`) appear in the active speaker list.
 - Try toggling a speaker on/off and confirm the change persists to `data/catalog.json`.

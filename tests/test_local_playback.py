@@ -800,7 +800,7 @@ def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
             {
                 "speaker_name": "Kitchen display",
                 "roomHint": "Kitchen",
-                "host": "192.168.88.83",
+                "host": "192.168.1.50",
                 "port": 8009,
                 "model": "Google Nest Hub",
                 "uuid": "test-kitchen-uuid",

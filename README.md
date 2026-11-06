@@ -5,32 +5,61 @@
 <h1 align="center">Plex Cast Bridge</h1>
 
 <p align="center">
-  <strong>Personal Google Home Cloud-to-Cloud Integration, Gemini-Powered Smart DJ, and Continuous Plex Radio Streaming for Google Cast Speakers.</strong>
+  <strong>Self-hosted Plex music streaming for Google Home and Chromecast speakers, with Gemini-powered radio, voice control, and a Docker web dashboard.</strong>
 </p>
 
 <p align="center">
+  <a href="https://github.com/andrewtryder/plex-cast-bridge/actions/workflows/ci.yml"><img src="https://github.com/andrewtryder/plex-cast-bridge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/andrewtryder/plex-cast-bridge/pkgs/container/plex-cast-bridge"><img src="https://img.shields.io/badge/ghcr.io-plex--cast--bridge-green" alt="GHCR"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start-docker">Docker Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#architecture">Architecture</a> &bull;
-  <a href="#repository-structure">Repository Structure</a> &bull;
-  <a href="#quick-start-local-mac-emulator">Local Emulator</a> &bull;
-  <a href="#google-home-setup--cloud-run-gateway">Google Home Setup</a> &bull;
-  <a href="#production-deployment">Production Deploy</a> &bull;
-  <a href="#monthly-cost-estimate">Cost Estimate</a>
+  <a href="docs/install-docker.md">Install Guide</a> &bull;
+  <a href="docs/setup/SETUP_GUIDE.md">Google Home (advanced)</a> &bull;
+  <a href="#license">License</a>
 </p>
+
+---
+
+## Quick Start (Docker)
+
+The easiest path is the prebuilt multi-arch image (`linux/amd64` + `linux/arm64`):
+
+```bash
+git clone https://github.com/andrewtryder/plex-cast-bridge.git
+cd plex-cast-bridge
+cp .env.example .env
+# Set PLEX_URL, PLEX_TOKEN, and LOCAL_API_KEY=$(openssl rand -hex 32)
+echo '{}' > gcp-credentials.json   # placeholder until Google Home voice is enabled
+
+docker compose -f deploy/docker-compose.yml pull
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, discover speakers, and play.
+
+Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
+
+![Dashboard](docs/setup/screenshots/dashboard.png)
+
+Google Home / Cloud Run voice control is **optional** and documented separately: **[docs/setup/SETUP_GUIDE.md](docs/setup/SETUP_GUIDE.md)**.
 
 ---
 
 ## Features
 
-- 🎵 **Artist-First & Pandora Station Streaming:** Saying *"Play DJ Shadow"* plays **100% DJ Shadow tracks** (0ms deterministic fast-path, no LLM wait). Saying *"Play DJ Shadow radio"* builds a **50/50 Pandora station** with the first 2 tracks pinned to DJ Shadow and interleaved with Gemini-curated sonic peers from your library.
-- 🏠 **Room-Aware Multi-Speaker Routing:** Exposes a virtual `Plex` device per room (`plex-jukebox:Master Bedroom`, `plex-jukebox:Kitchen`, `plex-jukebox:Great Room`). Assigning each virtual device to its matching room in the Google Home app automatically routes voice commands to whichever room speaker heard you.
-- 🖥️ **Local Web Dashboard & Speaker Manager (`http://localhost:8000`):** Built-in dark-mode web console that discovers all Cast speakers on your LAN, lets you toggle individual speakers enabled/disabled (persisted to `catalog.json`), and provides an interactive Smart DJ & transport controller.
-- 🧠 **Gemini Smart DJ:** Powered by Google Gemini (`gemini-3.5-flash` with automatic fallback to `gemini-3.5-flash-lite` and `gemini-3.8-flash`). Interprets natural voice prompts into strict artist playback (`artist`), artist stations (`artist_radio`), albums (`album`), tracks (`track`), or mood/era mixes (`theme_mix`) without hallucinating artists outside your catalog.
-- ☁️ **Google Home Cloud-to-Cloud Gateway (`gcp-cloud-run/`):** Lightweight FastAPI service (`cloud_gateway`) designed for GCP Cloud Run, implementing a personal OAuth 2.0 server and standard Google Smart Home traits (`AppSelector`, `Channel`, `InputSelector`, `TransportControl`, `Volume`, `OnOff`). See the step-by-step [Visual Setup Guide (`docs/setup/SETUP_GUIDE.md`)](docs/setup/SETUP_GUIDE.md).
-- 📨 **Asynchronous Pub/Sub Pipeline:** Decouples the public cloud webhook from your local home network using Google Cloud Pub/Sub, delivering voice commands to your local worker with sub-second latency and zero inbound port-forwarding.
-- 🔊 **Google Cast Auto-Discovery & Volume Protection:** Discovers Google Home/Nest speakers via `pychromecast` with a native macOS `dns-sd` fallback for reliable multi-homed discovery. Startup volume safety clamps (default 20%) prevent audio blast surprises.
-- 💻 **Built-in Mac Speaker Emulator:** Test the full Plex + Gemini voice-control pipeline locally on your Mac using native audio (`afplay`) without requiring physical Cast hardware.
-- 🐳 **Production Ready (`deploy/`):** Includes multi-stage Dockerfiles, `docker-compose.yml` (`network_mode: host` for Proxmox LXC), and Linux systemd unit files.
+- **Artist-first & station streaming:** Play an artist strictly from your library, or build Gemini-assisted radio / theme mixes.
+- **Room-aware multi-speaker routing:** Virtual `Plex` devices per room (`plex-jukebox:<Room>`). Assign each device to its room in Google Home so voice follows the speaker that heard you.
+- **Local web dashboard:** Discover Cast speakers, enable/disable rooms, and drive Smart DJ + transport from `http://localhost:8000`.
+- **Gemini Smart DJ:** Natural-language intents (`artist`, `artist_radio`, `album`, `track`, `theme_mix`) constrained to your catalog.
+- **Optional Google Home gateway (`gcp-cloud-run/`):** OAuth 2.0 account linking and Smart Home traits over Cloud Run + Pub/Sub (no inbound ports to your LAN).
+- **Cast discovery & volume safety:** `pychromecast` with macOS `dns-sd` fallback; startup volume clamp (default 20%).
+- **Mac speaker emulator:** Test without hardware via `afplay`.
+- **Production packaging:** Multi-stage Dockerfiles, host-network Compose, systemd unit, Proxmox guide.
 
 ---
 
@@ -39,34 +68,22 @@
 ```text
  ┌──────────────────────┐
  │  "Hey Google, play   │
- │   DJ Shadow on Plex" │
+ │   <artist> on Plex"  │   (optional Google Home path)
  └──────────┬───────────┘
             ▼
  ┌─────────────────────────────────────────────────────────┐
- │ Google Assistant / Google Home App                      │
+ │ GCP Cloud Run (cloud_gateway)                           │
+ │ OAuth + Smart Home SYNC / QUERY / EXECUTE / DISCONNECT  │
  └──────────┬──────────────────────────────────────────────┘
-            │ HTTPS POST /fulfillment (EXECUTE intent)
+            │ Pub/Sub
             ▼
  ┌─────────────────────────────────────────────────────────┐
- │ GCP Cloud Run: gcp-cloud-run (cloud_gateway)            │
- │ • Personal OAuth 2.0 Server (/oauth/authorize, /token)  │
- │ • Smart Home Traits & 111-Artist Synonyms Catalog       │
- └──────────┬──────────────────────────────────────────────┘
-            │ Publish JSON Command
-            ▼
- ┌─────────────────────────────────────────────────────────┐
- │ Google Cloud Pub/Sub (Topic: plex-commands)             │
- └──────────┬──────────────────────────────────────────────┘
-            │ Pull (Streaming Pull Subscriber)
-            ▼
- ┌─────────────────────────────────────────────────────────┐
- │ Local Bridge: plex_cast_bridge (Mac / Proxmox LXC)      │
- │                                                         │
- │  1. Interpret Prompt ──> Google Gemini 3.5 Flash        │
- │  2. Build Radio Queue ──> Plex Server (192.168.88.166)  │
- │  3. Cast Media Stream ──> Master Bedroom (192.168.88.x) │
+ │ Local bridge (Docker / Mac / Proxmox)                   │
+ │ Dashboard · Gemini · Plex · Chromecast                  │
  └─────────────────────────────────────────────────────────┘
 ```
+
+Dashboard-only installs skip Cloud Run and Pub/Sub entirely.
 
 ---
 
@@ -74,209 +91,73 @@
 
 ```text
 plex-cast-bridge/
-├── pyproject.toml                   # Unified workspace dependencies & pytest config
-├── catalog.json                     # Canonical 111-artist voice synonym catalog
-├── assets/                          # Project icons & branding
-├── src/
-│   └── plex_cast_bridge/            # LOCAL SERVICE (Runs on Mac / Proxmox LXC)
-│       ├── main.py                  # FastAPI entrypoint & Pub/Sub consumer lifecycle
-│       ├── config.py                # Local settings (Plex, Gemini, Cast, Pub/Sub)
-│       ├── ai_router.py             # Gemini Smart DJ intent router & sonic peer selector
-│       ├── plex_service.py          # Plex catalog, radio queue weighting & Track 1 pinning
-│       ├── cast_manager.py          # Chromecast mDNS discovery & persistent speaker queue
-│       ├── local_speaker.py         # macOS afplay local speaker emulator
-│       └── pubsub_worker.py         # Background GCP Pub/Sub streaming pull subscriber
-├── gcp-cloud-run/                   # CLOUD SERVICE (Deployed to GCP Cloud Run)
-│   ├── Dockerfile                   # Multi-stage Cloud Run container image
-│   ├── deploy.sh                    # Automated Cloud Run + Pub/Sub + Artifact pruning
-│   └── src/
-│       └── cloud_gateway/           # Cloud Run FastAPI package
-│           ├── main.py              # Cloud Run entrypoint (/oauth/*, /fulfillment)
-│           ├── auth.py              # OAuth 2.0 & JWT signing/verification
-│           ├── smart_home.py        # Google Home SYNC / QUERY / EXECUTE handlers
-│           └── pubsub_publisher.py  # GCP Pub/Sub publisher
-├── deploy/                          # LOCAL PRODUCTION DEPLOYMENT CONFIGS
-│   ├── Dockerfile                   # Container image for local bridge worker
-│   ├── docker-compose.yml           # Proxmox LXC / Linux host-network compose file
-│   └── plex-cast-bridge.service     # Linux systemd unit file
-├── scripts/                         # CLI UTILITIES & E2E HARNESSES
-│   ├── sync_plex_catalog.py         # Extracts Plex artists/genres -> catalog.json
-│   ├── emulate_speaker.py           # Interactive Mac speaker emulator CLI
-│   ├── test_live_cast.py            # Direct LAN Chromecast verification script
-│   ├── test_voice_fulfillment.py    # End-to-end Cloud Run -> Pub/Sub -> Cast test
-│   └── generate_icons.py            # Superellipse alpha-mask icon processor
-└── tests/                           # UNIFIED TEST SUITE (uv run pytest)
-    ├── test_local_playback.py       # Local queue, Plex service, and transport tests
-    └── test_cloud_gateway.py        # Cloud Run OAuth, Smart Home, and webhook tests
+├── pyproject.toml
+├── catalog.json                     # Sample catalog (replace via sync_plex_catalog.py)
+├── LICENSE
+├── assets/                          # Icons (incl. 144×144 Google Home upload)
+├── src/plex_cast_bridge/            # Local bridge (FastAPI + Cast + Pub/Sub worker)
+├── gcp-cloud-run/                   # Optional Cloud Run OAuth + fulfillment
+├── deploy/                          # Dockerfile, compose, systemd
+├── docs/
+│   ├── install-docker.md            # Beginner Docker path
+│   ├── proxmox-deployment.md
+│   └── setup/SETUP_GUIDE.md         # Advanced Google Home path
+├── scripts/                         # sync, preflight, emulator, e2e harnesses
+└── tests/
 ```
 
 ---
 
-## Quick Start: Local Mac Emulator
-
-You can test and enjoy the entire smart radio experience directly on your Mac before touching physical speakers:
+## Local Mac Emulator
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/andrewtryder/plex-cast-bridge.git
-cd plex-cast-bridge
-
-# 2. Install dependencies with uv
 uv sync
-
-# 3. Configure environment
 cp .env.example .env
-# Edit .env with your PLEX_URL, PLEX_TOKEN, GEMINI_API_KEY, and LOCAL_API_KEY
-# (or set ALLOW_UNAUTHENTICATED_LOCAL_API=true only on a trusted LAN / local host)
-
-# 4. Launch interactive Google Home speaker emulator
+# Set PLEX_URL, PLEX_TOKEN, LOCAL_API_KEY (or ALLOW_UNAUTHENTICATED_LOCAL_API=true)
+uv run python scripts/preflight.py --skip-plex   # or full check without --skip-plex
 uv run python scripts/emulate_speaker.py
 ```
 
-### Interactive Emulator Commands
-```text
-Google Home > play DJ Shadow
-Google Home > play DJ Shadow only
-Google Home > play some 90s trip hop
-Google Home > pause
-Google Home > resume
-Google Home > next
-Google Home > vol 25
-Google Home > status
-Google Home > stop
-```
-
-Audio streams directly out of your Mac's speakers using macOS native `/usr/bin/afplay`, automatically advancing to the next track in the station queue when the current track finishes.
-
 ---
 
-## Google Home Setup & Cloud Run Gateway
+## Google Home (advanced)
 
-The GCP Cloud Run service is located in [`gcp-cloud-run/`](gcp-cloud-run).
+See the step-by-step guide: [docs/setup/SETUP_GUIDE.md](docs/setup/SETUP_GUIDE.md).
 
-### 1. Extract & Sync Your Plex Library Catalog
-Extract your artists and genres into voice-friendly phonetic synonyms at `./catalog.json`:
-```bash
-uv run python scripts/sync_plex_catalog.py
-```
+Summary:
 
-### 2. Deploy Gateway to GCP Cloud Run
-```bash
-cp gcp-cloud-run/.env.example gcp-cloud-run/.env
-# Edit gcp-cloud-run/.env with your OAUTH_SIGNING_SECRET, ADMIN_PASSPHRASE, and GOOGLE_CLIENT_SECRET
-./gcp-cloud-run/deploy.sh
-```
-This copies the latest `catalog.json`, deploys the container to Cloud Run, provisions the Pub/Sub topic `plex-commands` and subscription `plex-commands-local-worker`, and prunes old container images in Artifact Registry.
+1. Sync catalog → deploy `gcp-cloud-run/`
+2. Create a Cloud-to-cloud integration in the **Google Home Developer Console**
+3. Create a Pub/Sub **subscriber** service account JSON for the local worker
+4. Link the **`[test]`** integration in the Google Home app
 
-### 3. Google Home Developer Console Account Linking
-1. Open the [Google Home Developer Console](https://console.home.google.com/projects).
-2. Under **Cloud-to-cloud > Account Linking**:
-   - **Client ID:** Set to `GOOGLE_CLIENT_ID` from `gcp-cloud-run/.env`
-   - **Client Secret:** Set to `GOOGLE_CLIENT_SECRET` from `gcp-cloud-run/.env`
-   - **Authorization URL:** `https://<YOUR-CLOUD-RUN-URL>/oauth/authorize`
-   - **Token URL:** `https://<YOUR-CLOUD-RUN-URL>/oauth/token`
-3. Under **Fulfillment URL**:
-   - `https://<YOUR-CLOUD-RUN-URL>/fulfillment`
-4. In your **Google Home App** on your phone:
-   - Tap **Settings > Works with Google > [test] Plex Cast Bridge**.
-   - Enter your `ADMIN_PASSPHRASE` on the login screen to link your account.
-
----
-
-## Local Worker Configuration
-
-Once your Google Home account is linked, run the local worker to receive commands from Pub/Sub and cast to your physical speakers:
-
-```bash
-# Set your environment variables in .env:
-# LOCAL_API_KEY=<random secret>   # required unless ALLOW_UNAUTHENTICATED_LOCAL_API=true
-# DEFAULT_SPEAKER_NAME=Master Bedroom
-# DEFAULT_CAST_VOLUME=0.20
-# GCP_PROJECT_ID=plex-cast-bridge-home
-# GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
-# ENABLE_PUBSUB_LISTENER=true
-
-uv run uvicorn plex_cast_bridge.main:app --host 0.0.0.0 --port 8000
-```
-
-Pass the key to the dashboard via `X-API-Key` (preferred). A one-time `?api_key=` bootstrap still works but is stripped from the browser URL after load.
-
----
-
-## Voice Commands
-
-Once linked, speak directly to any Google Home speaker, Nest Hub, or Google Pixel:
-
-| Action | Voice Command |
-|---|---|
-| **Artist Radio** | *"Hey Google, switch to DJ Shadow on Plex"* |
-| **Artist Radio** | *"Hey Google, play Fugazi on Plex"* |
-| **Theme / Genre Mix** | *"Hey Google, play 90s trip hop on Plex"* |
-| **Next Track** | *"Hey Google, next track on Plex"* |
-| **Pause Playback** | *"Hey Google, pause Plex"* |
-| **Resume Playback** | *"Hey Google, resume Plex"* |
-| **Volume Control** | *"Hey Google, set Plex volume to 20%"* |
+This repo targets personal / test integrations. Public Google certification is out of scope unless you pursue it separately.
 
 ---
 
 ## Production Deployment
 
-### Option A: Proxmox VE (Dedicated Linux VM with Docker Compose)
-
-For 24/7 always-on playback orchestration, see the comprehensive **[Proxmox VE Deployment Guide](docs/proxmox-deployment.md)**.
-
-Quick launch on your Proxmox Debian/Ubuntu VM using pre-built multi-arch images from GHCR:
-
-```bash
-# 1. Place service account key at ./gcp-credentials.json and configure .env
-# 2. Launch container with persistent /data volume and host networking:
-docker compose -f deploy/docker-compose.yml pull
-docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs -f
-```
-
-### Option B: Linux Systemd Service
-
-```bash
-# Copy and enable the systemd service
-sudo cp deploy/plex-cast-bridge.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now plex-cast-bridge
-sudo journalctl -u plex-cast-bridge -f
-```
+- **Docker / Proxmox:** [docs/install-docker.md](docs/install-docker.md) and [docs/proxmox-deployment.md](docs/proxmox-deployment.md)
+- **Image:** `ghcr.io/andrewtryder/plex-cast-bridge:latest` (and version tags from GitHub Releases). The package must be marked **Public** in GHCR package settings for anonymous pulls.
+- **Systemd:** `deploy/plex-cast-bridge.service`
 
 ---
 
 ## Monthly Cost Estimate
 
-Running `plex-cast-bridge` for personal household use (~20 voice commands/day) costs effectively **\$0.00 to \$0.06/month**:
-
-| Service | Configuration | Free Tier Allowance | Est. Monthly Cost |
-|---|---|---|---|
-| **GCP Cloud Run** | `min-instances=0`, 256Mi, `cpu-throttling` | 2M requests / 180k vCPU-sec | **\$0.00** |
-| **GCP Cloud Pub/Sub** | 1 topic, 1 streaming pull subscriber | First 10 GB / month free | **\$0.00** |
-| **GCP Artifact Registry** | Pruned to latest 2 images (~180 MB) | First 500 MB free | **\$0.00** |
-| **Gemini API** | `gemini-3.5-flash` (~1,100 tokens/call) | Free Tier (or ~\$0.06/mo Paid Tier) | **\$0.00 – \$0.06** |
+Personal use (~20 voice commands/day) is typically **\$0.00–\$0.06/month** within GCP/Gemini free tiers (Cloud Run min-instances=0, Pub/Sub, pruned Artifact Registry).
 
 ---
 
-## Validation & Testing Harness
+## Testing
 
-- **Unified Unit Test Suite (Local + Cloud Gateway):**
-  ```bash
-  uv run pytest
-  ```
-- **Live Speaker Cast Test:**
-  ```bash
-  uv run python scripts/test_live_cast.py "Play some 90s trip hop like DJ Shadow" "Master Bedroom"
-  ```
-- **Cloud Run & Pub/Sub Fulfillment Test:**
-  ```bash
-  uv run python scripts/test_voice_fulfillment.py "Fugazi" "Master Bedroom"
-  ```
+```bash
+uv run pytest
+uv run python scripts/preflight.py
+```
 
 ---
 
 ## License
 
-MIT License. Open source and designed for personal, self-hosted media setups.
+[MIT](LICENSE). Open source for personal, self-hosted media setups.
