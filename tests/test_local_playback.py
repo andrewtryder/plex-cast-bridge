@@ -1,4 +1,3 @@
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -316,29 +315,70 @@ def test_stale_load_media_failed_does_not_advance_replacement_queue():
 
     queue.replace([old_a, old_b], repeat=False)
     assert queue.current.title == "old-a"
-    stale_generation = queue.play_generation
-    assert list(queue.pending_load_generations) == [stale_generation]
+    assert queue.pending_load_generation == queue.play_generation
 
     queue.replace([new_a, new_b], repeat=False)
     assert queue.current.title == "new-a"
-    # replace() drops superseded pending loads so a late failure has nothing to claim.
-    assert list(queue.pending_load_generations) == [queue.play_generation]
-    assert stale_generation != queue.generation
+    # Replacement's pending load must remain intact through a late old failure.
+    assert queue.pending_load_generation == queue.play_generation
+    assert queue.superseded_unresolved_count == 1
 
-    # Stale callback after replace: pending tokens from the old load were cleared,
-    # so this must be ignored when we only have a drained/cleared stale token.
-    with queue.lock:
-        # Recreate the post-replace stale condition: old token gone, then a late
-        # failure arrives without a pending load for that old generation.
-        saved_pending = deque(queue.pending_load_generations)
-        queue.pending_load_generations.clear()
     queue.load_media_failed(queue_item_id=99, error_code="LOAD_FAILED")
-    with queue.lock:
-        queue.pending_load_generations = saved_pending
-    # Old generation advance must also be a no-op against the new queue.
-    queue.executor.submit(queue._advance, stale_generation)
     queue.executor.shutdown(wait=True)
 
+    assert queue.current.title == "new-a"
+    assert [t.title for t in queue.queue] == ["new-b"]
+    assert queue.pending_load_generation == queue.play_generation
+    assert queue.superseded_unresolved_count == 0
+
+
+def test_current_load_media_failed_still_advances_after_replace():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.replace([track("old-a"), track("old-b")], repeat=False)
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+    assert queue.current.title == "new-a"
+
+    # Consume the superseded budget with the stale callback first.
+    queue.load_media_failed(queue_item_id=1, error_code="LOAD_FAILED")
+    # Real failure for the replacement load should still advance.
+    queue.load_media_failed(queue_item_id=2, error_code="LOAD_FAILED")
+    queue.executor.shutdown(wait=True)
+
+    assert queue.current.title == "new-b"
+
+
+def test_mismatched_content_status_does_not_arm_or_advance_replacement():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.replace([track("old-a")], repeat=False)
+    old_url = queue.expected_content_id
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+    assert queue.current.title == "new-a"
+    assert queue.armed is False
+
+    # Delayed PLAYING for the superseded media must not arm the new queue.
+    queue.new_media_status(
+        SimpleNamespace(
+            player_state="PLAYING",
+            idle_reason=None,
+            content_id=old_url,
+            media_session_id=11,
+        )
+    )
+    assert queue.armed is False
+    assert queue.pending_load_generation == queue.play_generation
+
+    # Delayed FINISHED for the superseded media must not advance.
+    queue.new_media_status(
+        SimpleNamespace(
+            player_state="IDLE",
+            idle_reason="FINISHED",
+            content_id=old_url,
+            media_session_id=11,
+        )
+    )
+    queue.executor.shutdown(wait=True)
     assert queue.current.title == "new-a"
     assert [t.title for t in queue.queue] == ["new-b"]
 
@@ -446,6 +486,72 @@ def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):
     # DLQ path defaults to DATA_DIR
     dlq_p = get_dead_letter_log_path()
     assert dlq_p == test_data / "dead_letter_queue.jsonl"
+
+
+def test_catalog_persist_atomic_and_concurrent(tmp_path, monkeypatch):
+    import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from plex_cast_bridge import catalog_store
+    from plex_cast_bridge.cast_manager import CastManager
+
+    monkeypatch.setattr(catalog_store, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("CATALOG_PATH", str(tmp_path / "catalog.json"))
+
+    cast_mgr = CastManager()
+
+    def persist(idx: int):
+        discovered = [
+            {
+                "name": f"Speaker {idx}",
+                "room": f"Room {idx}",
+                "model": "Google Cast",
+                "host": f"192.168.1.{idx}",
+                "port": 8009,
+                "uuid": f"uuid-{idx}",
+            }
+        ]
+        catalog_store.persist_discovered_speakers_to_catalog(discovered, cast_mgr)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(persist, i) for i in range(1, 9)]
+        for fut in as_completed(futures):
+            fut.result()
+
+    catalog_path = tmp_path / "catalog.json"
+    assert catalog_path.exists()
+    assert not (tmp_path / "catalog.json.tmp").exists()
+    data = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert "speakers" in data
+    assert isinstance(data["speakers"], list)
+    assert len(data["speakers"]) >= 1
+
+
+def test_toggle_reports_catalog_persist_failure(monkeypatch):
+    mock_cast = MagicMock()
+    mock_cast.get.return_value = MagicMock()
+    mock_cast.last_discovered = [
+        {"name": "Master Bedroom", "room": "Master Bedroom", "enabled": True}
+    ]
+    mock_cast.is_disabled.return_value = False
+    mock_cast.discover.return_value = mock_cast.last_discovered
+    app.state.cast = mock_cast
+    app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "plex_cast_bridge.main._persist_discovered_speakers_to_catalog",
+        boom,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/api/speakers/toggle",
+        json={"speaker": "Master Bedroom", "enabled": False},
+    )
+    assert resp.status_code == 500
+    assert "Catalog persistence failed" in resp.json()["detail"]
 
 
 def test_local_bridge_health_endpoint():

@@ -613,8 +613,44 @@ def test_unknown_smart_home_command_is_not_published(client, auth_headers):
     assert published == []
 
 
+def test_mixed_smart_home_commands_publish_nothing_on_unsupported(client, auth_headers):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-mixed"
+
+    cmd_mixed = {
+        "requestId": "exec-mixed",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:Master Bedroom"}],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaPause", "params": {}},
+                                {
+                                    "command": "action.devices.commands.TotallyFake",
+                                    "params": {},
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=cmd_mixed)
+    assert res.status_code == 200
+    data = res.json()
+    cmd_result = data["payload"]["commands"][0]
+    assert cmd_result["status"] == "ERROR"
+    assert cmd_result["errorCode"] == "notSupported"
+    assert published == []
+
+
 def test_build_sync_devices_empty_when_all_disabled():
-    from cloud_gateway.smart_home import build_sync_devices
+    import pytest
+    from cloud_gateway.smart_home import build_sync_device, build_sync_devices
 
     empty = build_sync_devices({"speakers": []}, default_speaker="Master Bedroom")
     assert empty == []
@@ -634,6 +670,8 @@ def test_build_sync_devices_empty_when_all_disabled():
         default_speaker="Master Bedroom",
     )
     assert all_disabled == []
+    with pytest.raises(ValueError, match="No enabled speakers"):
+        build_sync_device({"speakers": []})
 
     enabled = build_sync_devices(
         {

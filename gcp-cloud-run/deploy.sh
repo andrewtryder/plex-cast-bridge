@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Restrictive umask before any secret files (.env, temp env YAML) are created.
+umask 077
 
 # ==============================================================================
 # Deploy Script: Plex Google Home Fulfillment on GCP Cloud Run
@@ -182,6 +184,7 @@ if [ ! -f "$ENV_FILE" ]; then
     sed -i '' "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE" 2>/dev/null || sed -i "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE"
     echo "  Generated default secrets in $ENV_FILE."
 fi
+chmod 600 "$ENV_FILE"
 
 # 7. Deploy to Cloud Run
 echo "[7/8] Deploying '$SERVICE_NAME' to Cloud Run..."
@@ -193,8 +196,6 @@ if [ -f "$SCRIPT_DIR/../catalog.json" ]; then
     echo "  Synced canonical catalog.json from repository root."
 fi
 
-# Restrictive umask so the temp env-vars file is not world-readable if left behind.
-umask 077
 TMP_ENV_YAML=$(mktemp)
 trap 'rm -f "$TMP_ENV_YAML"' EXIT
 

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,8 @@ DATA_DIR = Path(
 )
 CANONICAL_CATALOG = PROJECT_ROOT / "catalog.json"
 CLOUD_RUN_CATALOG = PROJECT_ROOT / "gcp-cloud-run" / "catalog.json"
+
+_CATALOG_LOCK = threading.RLock()
 
 
 def get_catalog_path(for_writing: bool = False) -> Path:
@@ -74,69 +77,81 @@ def load_disabled_speakers_from_catalog() -> set[str]:
     return disabled
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 def persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: CastManager):
     """Persist discovered LAN speakers and their enabled/disabled flags into catalog.json."""
-    try:
-        read_path = get_catalog_path(for_writing=False)
-        data = {}
-        if read_path.exists():
-            with open(read_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    with _CATALOG_LOCK:
+        try:
+            read_path = get_catalog_path(for_writing=False)
+            data = {}
+            if read_path.exists():
+                with open(read_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
-        existing_by_room = {
-            (s.get("roomHint") or "").casefold(): s
-            for s in data.get("speakers", [])
-            if s.get("roomHint")
-        }
+            existing_by_room = {
+                (s.get("roomHint") or "").casefold(): s
+                for s in data.get("speakers", [])
+                if s.get("roomHint")
+            }
 
-        speakers_list = []
-        seen_rooms = set()
-        for dev in discovered:
-            name = dev["name"]
-            if name.casefold() == "test speaker":
-                continue
-            room = dev.get("room") or extract_room_name(name)
-            r_fold = room.casefold()
-            if r_fold in seen_rooms:
-                continue
-            seen_rooms.add(r_fold)
-            enabled = not cast_mgr.is_disabled(name) and not cast_mgr.is_disabled(room)
-            speakers_list.append({
-                "id": f"plex-jukebox:{room}",
-                "name": "Plex",
-                "nicknames": [f"{room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
-                "roomHint": room,
-                "speaker_name": name,
-                "model": dev.get("model", "Google Cast"),
-                "host": dev.get("host", ""),
-                "port": dev.get("port", 8009),
-                "uuid": dev.get("uuid", ""),
-                "enabled": enabled,
-            })
+            speakers_list = []
+            seen_rooms = set()
+            for dev in discovered:
+                name = dev["name"]
+                if name.casefold() == "test speaker":
+                    continue
+                room = dev.get("room") or extract_room_name(name)
+                r_fold = room.casefold()
+                if r_fold in seen_rooms:
+                    continue
+                seen_rooms.add(r_fold)
+                enabled = not cast_mgr.is_disabled(name) and not cast_mgr.is_disabled(room)
+                speakers_list.append({
+                    "id": f"plex-jukebox:{room}",
+                    "name": "Plex",
+                    "nicknames": [f"{room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
+                    "roomHint": room,
+                    "speaker_name": name,
+                    "model": dev.get("model", "Google Cast"),
+                    "host": dev.get("host", ""),
+                    "port": dev.get("port", 8009),
+                    "uuid": dev.get("uuid", ""),
+                    "enabled": enabled,
+                })
 
-        # Keep any previously known speakers that might be temporarily asleep on LAN
-        for r_fold, old_spk in existing_by_room.items():
-            if r_fold not in seen_rooms:
-                old_name = old_spk.get("speaker_name", "")
-                old_room = old_spk.get("roomHint", "")
-                old_spk["enabled"] = not cast_mgr.is_disabled(old_name) and not cast_mgr.is_disabled(old_room)
-                speakers_list.append(old_spk)
+            # Keep any previously known speakers that might be temporarily asleep on LAN
+            for r_fold, old_spk in existing_by_room.items():
+                if r_fold not in seen_rooms:
+                    old_name = old_spk.get("speaker_name", "")
+                    old_room = old_spk.get("roomHint", "")
+                    old_spk["enabled"] = (
+                        not cast_mgr.is_disabled(old_name) and not cast_mgr.is_disabled(old_room)
+                    )
+                    speakers_list.append(old_spk)
 
-        if speakers_list:
-            data["speakers"] = speakers_list
-            data["inputs"] = [s["roomHint"] for s in speakers_list if s.get("enabled", True)]
-            write_path = get_catalog_path(for_writing=True)
-            write_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(write_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            if CLOUD_RUN_CATALOG.parent.exists():
-                try:
-                    shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
-                except Exception:
-                    pass
-    except Exception as exc:
-        log.warning("Could not persist speaker states to catalog.json: %s", exc)
+            if speakers_list:
+                data["speakers"] = speakers_list
+                data["inputs"] = [s["roomHint"] for s in speakers_list if s.get("enabled", True)]
+                write_path = get_catalog_path(for_writing=True)
+                _atomic_write_json(write_path, data)
+                if CLOUD_RUN_CATALOG.parent.exists():
+                    try:
+                        shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
+                    except Exception as exc:
+                        log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
+        except Exception as exc:
+            log.warning("Could not persist speaker states to catalog.json: %s", exc)
+            raise
 
 
 # Compatibility aliases matching the previous private names in main.py

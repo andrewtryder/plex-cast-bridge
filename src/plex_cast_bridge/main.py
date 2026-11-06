@@ -18,8 +18,6 @@ from .catalog_store import (
     load_disabled_speakers_from_catalog,
     persist_discovered_speakers_to_catalog,
 )
-# Compatibility alias: tests historically monkeypatch main.DATA_DIR.
-from .catalog_store import DATA_DIR as DATA_DIR  # noqa: F401
 from .config import Settings
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
@@ -286,7 +284,10 @@ async def speakers_endpoint(scan: bool = False):
         for dev in app.state.cast.last_discovered:
             dev["enabled"] = not app.state.cast.is_disabled(dev["name"])
         return app.state.cast.last_discovered
-    return await run_in_threadpool(get_list)
+    try:
+        return await run_in_threadpool(get_list)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
 
 
 @app.post("/api/speakers/toggle", dependencies=[Depends(verify_local_api)])
@@ -302,7 +303,10 @@ async def toggle_speaker_endpoint(toggle: SpeakerToggle):
             "enabled": toggle.enabled,
             "speakers": discovered,
         }
-    return await run_in_threadpool(update)
+    try:
+        return await run_in_threadpool(update)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
 
 
 @app.get("/api/status", dependencies=[Depends(verify_local_api)])

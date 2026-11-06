@@ -237,7 +237,10 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
 
 def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
     """Backwards-compatible helper returning the primary virtual device."""
-    return build_sync_devices(catalog_data)[0]
+    devices = build_sync_devices(catalog_data)
+    if not devices:
+        raise ValueError("No enabled speakers in catalog")
+    return devices[0]
 
 
 def extract_speaker_from_device_id(device_id: str | None, default_speaker: str | None) -> str | None:
@@ -405,27 +408,43 @@ async def handle_smart_home_request(
             target_dev_ids = [d.get("id") for d in devices if d.get("id")] or [DEVICE_ID]
             for dev_id in target_dev_ids:
                 target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
-                dev_success = True
-                error_code = "transientError"
+                # Validate the full execution group before publishing anything so a
+                # trailing unsupported command cannot partially apply earlier actions.
+                parsed_payloads: list[dict[str, Any]] = []
+                unsupported_command: str | None = None
                 for exec_item in executions:
                     cmd_name = exec_item.get("command", "")
                     params = exec_item.get("params", {})
                     try:
-                        pubsub_payload = parse_execute_command(
-                            cmd_name,
-                            params,
-                            target_speaker,
-                            catalog_inputs,
+                        parsed_payloads.append(
+                            parse_execute_command(
+                                cmd_name,
+                                params,
+                                target_speaker,
+                                catalog_inputs,
+                            )
                         )
                     except UnsupportedCommandError:
-                        log.warning(
-                            "Rejecting unsupported Smart Home command '%s' for device '%s'",
-                            cmd_name,
-                            dev_id,
-                        )
-                        dev_success = False
-                        error_code = "notSupported"
+                        unsupported_command = cmd_name
                         break
+
+                if unsupported_command is not None:
+                    log.warning(
+                        "Rejecting unsupported Smart Home command '%s' for device '%s' "
+                        "(no commands published for this device)",
+                        unsupported_command,
+                        dev_id,
+                    )
+                    error_commands.append({
+                        "ids": [dev_id],
+                        "status": "ERROR",
+                        "errorCode": "notSupported",
+                    })
+                    continue
+
+                dev_success = True
+                error_code = "transientError"
+                for pubsub_payload in parsed_payloads:
                     log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
                     try:
                         await pubsub_service.publish(pubsub_payload)
@@ -433,6 +452,7 @@ async def handle_smart_home_request(
                         log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
                         dev_success = False
                         error_code = "transientError"
+                        break
 
                 if dev_success:
                     if dev_id not in success_ids:

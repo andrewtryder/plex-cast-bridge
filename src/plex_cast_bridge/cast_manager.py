@@ -41,7 +41,11 @@ class SpeakerQueue(MediaStatusListener):
         self.armed = False
         self.generation = 0
         self.play_generation = 0
-        self.pending_load_generations = deque()
+        self.pending_load_generation: int | None = None
+        self.expected_content_id: str | None = None
+        self.current_load_item_id: int | None = None
+        self.active_media_session_id: int | None = None
+        self.superseded_unresolved_count = 0
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
@@ -54,15 +58,24 @@ class SpeakerQueue(MediaStatusListener):
             except Exception as exc:
                 log.warning("Could not set startup volume on '%s': %s", self.cast.name, exc)
 
+    def _invalidate_inflight_load(self):
+        """Retire any unresolved load so late failures cannot advance a newer queue."""
+        if self.pending_load_generation is not None:
+            self.superseded_unresolved_count += 1
+        self.pending_load_generation = None
+        self.expected_content_id = None
+        self.current_load_item_id = None
+        self.active_media_session_id = None
+        self.armed = False
+
     def replace(self, tracks, repeat):
         with self.lock:
             self.generation += 1
-            self.pending_load_generations.clear()
+            self._invalidate_inflight_load()
             self.queue = deque(tracks)
             self.history.clear()
             self.original = list(tracks)
             self.repeat = repeat
-            self.armed = False
             self._next()
 
     def _play_track(self, track):
@@ -76,11 +89,14 @@ class SpeakerQueue(MediaStatusListener):
         self.current = track
         self.armed = False
         self.play_generation = self.generation
-        self.pending_load_generations.append(self.generation)
+        self.pending_load_generation = self.generation
+        self.current_load_item_id = None
+        self.active_media_session_id = None
 
         # Build direct LAN stream URL with Plex auth token
         part = parts_list[0]
         url = track._server.url(part.key, includeToken=True)
+        self.expected_content_id = url
         content_type = {
             "mp3": "audio/mpeg",
             "flac": "audio/flac",
@@ -141,8 +157,7 @@ class SpeakerQueue(MediaStatusListener):
     def previous(self):
         with self.lock:
             self.generation += 1
-            self.pending_load_generations.clear()
-            self.armed = False
+            self._invalidate_inflight_load()
             # Check playback position if available
             status = getattr(self.cast.media_controller, "status", None)
             pos = getattr(status, "adjusted_current_time", None)
@@ -163,18 +178,24 @@ class SpeakerQueue(MediaStatusListener):
         with self.lock:
             if self.current is None:
                 return
+            content_id = getattr(status, "content_id", None)
+            if (
+                self.expected_content_id
+                and content_id
+                and content_id != self.expected_content_id
+            ):
+                # Delayed status from a superseded media load.
+                return
             if status.player_state in ("PLAYING", "BUFFERING"):
                 self.armed = True
-                # Load succeeded; drop the matching inflight load token.
-                if (
-                    self.pending_load_generations
-                    and self.pending_load_generations[0] == self.play_generation
-                ):
-                    self.pending_load_generations.popleft()
+                self.pending_load_generation = None
+                session_id = getattr(status, "media_session_id", None)
+                if session_id is not None:
+                    self.active_media_session_id = session_id
             elif status.player_state == "IDLE" and status.idle_reason == "FINISHED" and self.armed:
                 self.armed = False
                 log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
-                self.executor.submit(self._advance, self.generation)
+                self.executor.submit(self._advance, self.play_generation)
 
     def _advance(self, generation):
         with self.lock:
@@ -192,26 +213,33 @@ class SpeakerQueue(MediaStatusListener):
             queue_item_id,
             error_code,
         )
-        # Bind advancement to the generation that started the inflight load.
-        # replace/skip/previous/stop clear pending_load_generations so a delayed
-        # failure from a superseded play_media cannot capture the new generation
-        # (the previous bug: submit(_advance, self.generation) at callback time).
+        # Prefer attributing unidentified failures to superseded loads so a delayed
+        # callback for replaced media cannot consume the replacement's pending slot.
         with self.lock:
-            if not self.pending_load_generations:
+            if self.current_load_item_id is not None and queue_item_id != self.current_load_item_id:
                 log.info(
-                    "Ignoring stale Cast media load failure on '%s' (no pending load)",
+                    "Ignoring stale Cast media load failure on '%s' (item %s != current %s)",
+                    self.cast.name,
+                    queue_item_id,
+                    self.current_load_item_id,
+                )
+                return
+            if self.superseded_unresolved_count > 0:
+                self.superseded_unresolved_count -= 1
+                log.info(
+                    "Ignoring stale Cast media load failure on '%s' (superseded unresolved load)",
                     self.cast.name,
                 )
                 return
-            generation = self.pending_load_generations.popleft()
-            if generation != self.play_generation and generation != self.generation:
-                # Superseded load token; do not advance the active queue.
+            if self.pending_load_generation is None:
                 log.info(
-                    "Ignoring stale Cast media load failure on '%s' (generation %s)",
+                    "Ignoring Cast media load failure on '%s' (no pending load)",
                     self.cast.name,
-                    generation,
                 )
                 return
+            generation = self.pending_load_generation
+            self.pending_load_generation = None
+            self.current_load_item_id = None
         self.executor.submit(self._advance, generation)
 
     def pause(self):
@@ -242,8 +270,7 @@ class SpeakerQueue(MediaStatusListener):
     def skip(self):
         with self.lock:
             self.generation += 1
-            self.pending_load_generations.clear()
-            self.armed = False
+            self._invalidate_inflight_load()
             self._next()
 
     def next(self):
@@ -252,11 +279,10 @@ class SpeakerQueue(MediaStatusListener):
     def stop(self):
         with self.lock:
             self.generation += 1
-            self.pending_load_generations.clear()
+            self._invalidate_inflight_load()
             self.queue.clear()
             self.original = []
             self.current = None
-            self.armed = False
             try:
                 self.cast.media_controller.stop()
             except Exception as exc:
