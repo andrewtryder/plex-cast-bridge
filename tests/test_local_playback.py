@@ -1,3 +1,4 @@
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -315,37 +316,75 @@ def test_stale_load_media_failed_does_not_advance_replacement_queue():
 
     queue.replace([old_a, old_b], repeat=False)
     assert queue.current.title == "old-a"
+    # Simulate receiver assigning an item id for the first load.
+    queue.current_load_item_id = 10
     assert queue.pending_load_generation == queue.play_generation
 
     queue.replace([new_a, new_b], repeat=False)
     assert queue.current.title == "new-a"
-    # Replacement's pending load must remain intact through a late old failure.
     assert queue.pending_load_generation == queue.play_generation
-    assert queue.superseded_unresolved_count == 1
+    assert 10 in queue.rejected_load_item_ids
+    cast.media_controller.stop.assert_called()
 
-    queue.load_media_failed(queue_item_id=99, error_code="LOAD_FAILED")
+    # Late failure for the superseded item must not consume the replacement pending load.
+    queue.load_media_failed(queue_item_id=10, error_code="LOAD_FAILED")
     queue.executor.shutdown(wait=True)
 
     assert queue.current.title == "new-a"
     assert [t.title for t in queue.queue] == ["new-b"]
     assert queue.pending_load_generation == queue.play_generation
-    assert queue.superseded_unresolved_count == 0
 
 
-def test_current_load_media_failed_still_advances_after_replace():
+def test_replacement_load_failure_advances_when_old_load_never_fails():
+    """B failing after replace must advance even if superseded A never reports failure."""
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
     queue.replace([track("old-a"), track("old-b")], repeat=False)
+    queue.current_load_item_id = 10
     queue.replace([track("new-a"), track("new-b")], repeat=False)
     assert queue.current.title == "new-a"
+    assert queue.pending_load_generation == queue.play_generation
 
-    # Consume the superseded budget with the stale callback first.
-    queue.load_media_failed(queue_item_id=1, error_code="LOAD_FAILED")
-    # Real failure for the replacement load should still advance.
-    queue.load_media_failed(queue_item_id=2, error_code="LOAD_FAILED")
+    # Only the replacement fails; the old load never sends a callback.
+    queue.load_media_failed(queue_item_id=20, error_code="LOAD_FAILED")
     queue.executor.shutdown(wait=True)
 
     assert queue.current.title == "new-b"
+
+
+def test_replacement_load_failure_arrives_before_stale_failure():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.replace([track("old-a"), track("old-b")], repeat=False)
+    queue.current_load_item_id = 10
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+
+    queue.load_media_failed(queue_item_id=20, error_code="LOAD_FAILED")  # B first
+    queue.load_media_failed(queue_item_id=10, error_code="LOAD_FAILED")  # stale A
+    queue.executor.shutdown(wait=True)
+
+    assert queue.current.title == "new-b"
+
+
+def test_transition_failures_are_ignored_before_new_play_accepts_them():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.replace([track("old-a")], repeat=False)
+
+    with queue.lock:
+        queue.generation += 1
+        queue._invalidate_inflight_load()
+        assert queue.ignore_load_failures is True
+        queue.load_media_failed(queue_item_id=99, error_code="LOAD_FAILED")
+        assert queue.pending_load_generation is None
+        queue.queue = deque([track("new-a"), track("new-b")])
+        queue.original = [track("new-a"), track("new-b")]
+        queue._next()
+
+    assert queue.ignore_load_failures is False
+    assert queue.current.title == "new-a"
+    queue.executor.shutdown(wait=True)
+    assert queue.current.title == "new-a"
 
 
 def test_mismatched_content_status_does_not_arm_or_advance_replacement():
@@ -364,23 +403,45 @@ def test_mismatched_content_status_does_not_arm_or_advance_replacement():
             idle_reason=None,
             content_id=old_url,
             media_session_id=11,
+            current_item_id=10,
         )
     )
     assert queue.armed is False
     assert queue.pending_load_generation == queue.play_generation
 
-    # Delayed FINISHED for the superseded media must not advance.
+    # FINISHED for a different session must not advance the replacement queue.
+    queue.armed = True
+    queue.active_media_session_id = 99
     queue.new_media_status(
         SimpleNamespace(
             player_state="IDLE",
             idle_reason="FINISHED",
-            content_id=old_url,
+            content_id=None,
             media_session_id=11,
+            current_item_id=None,
         )
     )
     queue.executor.shutdown(wait=True)
     assert queue.current.title == "new-a"
     assert [t.title for t in queue.queue] == ["new-b"]
+
+
+def test_status_binds_current_load_item_id():
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.replace([track("song1"), track("song2")], repeat=False)
+    queue.new_media_status(
+        SimpleNamespace(
+            player_state="PLAYING",
+            idle_reason=None,
+            content_id=queue.expected_content_id,
+            media_session_id=42,
+            current_item_id=7,
+        )
+    )
+    assert queue.current_load_item_id == 7
+    assert queue.active_media_session_id == 42
+    assert queue.pending_load_generation is None
 
 def test_pubsub_worker_native_dlq_delegation():
     from unittest.mock import MagicMock, patch
@@ -552,6 +613,8 @@ def test_toggle_reports_catalog_persist_failure(monkeypatch):
     )
     assert resp.status_code == 500
     assert "Catalog persistence failed" in resp.json()["detail"]
+    # In-memory enablement is rolled back to the prior state (enabled).
+    assert mock_cast.set_speaker_enabled.call_args_list[-1].args == ("Master Bedroom", True)
 
 
 def test_local_bridge_health_endpoint():

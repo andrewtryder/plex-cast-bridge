@@ -45,7 +45,8 @@ class SpeakerQueue(MediaStatusListener):
         self.expected_content_id: str | None = None
         self.current_load_item_id: int | None = None
         self.active_media_session_id: int | None = None
-        self.superseded_unresolved_count = 0
+        self.rejected_load_item_ids: set[int] = set()
+        self.ignore_load_failures = False
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
@@ -59,14 +60,19 @@ class SpeakerQueue(MediaStatusListener):
                 log.warning("Could not set startup volume on '%s': %s", self.cast.name, exc)
 
     def _invalidate_inflight_load(self):
-        """Retire any unresolved load so late failures cannot advance a newer queue."""
-        if self.pending_load_generation is not None:
-            self.superseded_unresolved_count += 1
+        """Drop unresolved load state and suppress device callbacks during replacement."""
+        if self.current_load_item_id is not None:
+            self.rejected_load_item_ids.add(self.current_load_item_id)
         self.pending_load_generation = None
         self.expected_content_id = None
         self.current_load_item_id = None
         self.active_media_session_id = None
         self.armed = False
+        self.ignore_load_failures = True
+        try:
+            self.cast.media_controller.stop()
+        except Exception as exc:
+            log.debug("Media controller stop during invalidate on '%s' (ignored): %s", self.cast.name, exc)
 
     def replace(self, tracks, repeat):
         with self.lock:
@@ -135,6 +141,8 @@ class SpeakerQueue(MediaStatusListener):
             stream_type="BUFFERED",
             metadata=metadata,
         )
+        # Accept failures only for the load we just started (not stop()-induced leftovers).
+        self.ignore_load_failures = False
 
     def _next(self):
         if self.current is not None:
@@ -179,20 +187,41 @@ class SpeakerQueue(MediaStatusListener):
             if self.current is None:
                 return
             content_id = getattr(status, "content_id", None)
-            if (
-                self.expected_content_id
-                and content_id
-                and content_id != self.expected_content_id
-            ):
-                # Delayed status from a superseded media load.
-                return
+            session_id = getattr(status, "media_session_id", None)
+            # Bind Cast queue item id when the receiver reports it (attribute may be
+            # present on some status payloads even if MediaStatus typing omits it).
+            item_id = getattr(status, "current_item_id", None)
+            if item_id is None:
+                item_id = getattr(status, "item_id", None)
+
+            if content_id:
+                if self.expected_content_id and content_id != self.expected_content_id:
+                    return
+            else:
+                # Identity-less events: require an established session match, or allow
+                # a single bootstrap while a current load is still pending.
+                if self.active_media_session_id is not None:
+                    if session_id != self.active_media_session_id:
+                        return
+                elif self.pending_load_generation is None and not self.armed:
+                    return
+
             if status.player_state in ("PLAYING", "BUFFERING"):
                 self.armed = True
                 self.pending_load_generation = None
-                session_id = getattr(status, "media_session_id", None)
                 if session_id is not None:
                     self.active_media_session_id = session_id
+                if item_id is not None:
+                    self.current_load_item_id = item_id
+                    self.rejected_load_item_ids.discard(item_id)
             elif status.player_state == "IDLE" and status.idle_reason == "FINISHED" and self.armed:
+                if content_id:
+                    if self.expected_content_id and content_id != self.expected_content_id:
+                        return
+                elif self.active_media_session_id is not None:
+                    # Reject identity-less FINISHED that does not match the armed session.
+                    if session_id != self.active_media_session_id:
+                        return
                 self.armed = False
                 log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
                 self.executor.submit(self._advance, self.play_generation)
@@ -213,9 +242,23 @@ class SpeakerQueue(MediaStatusListener):
             queue_item_id,
             error_code,
         )
-        # Prefer attributing unidentified failures to superseded loads so a delayed
-        # callback for replaced media cannot consume the replacement's pending slot.
+        # Correlate by queue item id when known. Otherwise attribute the failure to the
+        # current pending load only (never to a superseded budget), so a replacement
+        # track that fails is not discarded because an older load never reported.
         with self.lock:
+            if self.ignore_load_failures:
+                log.info(
+                    "Ignoring Cast media load failure on '%s' during queue transition",
+                    self.cast.name,
+                )
+                return
+            if queue_item_id in self.rejected_load_item_ids:
+                log.info(
+                    "Ignoring stale Cast media load failure on '%s' (rejected item %s)",
+                    self.cast.name,
+                    queue_item_id,
+                )
+                return
             if self.current_load_item_id is not None and queue_item_id != self.current_load_item_id:
                 log.info(
                     "Ignoring stale Cast media load failure on '%s' (item %s != current %s)",
@@ -224,22 +267,17 @@ class SpeakerQueue(MediaStatusListener):
                     self.current_load_item_id,
                 )
                 return
-            if self.superseded_unresolved_count > 0:
-                self.superseded_unresolved_count -= 1
-                log.info(
-                    "Ignoring stale Cast media load failure on '%s' (superseded unresolved load)",
-                    self.cast.name,
-                )
-                return
             if self.pending_load_generation is None:
                 log.info(
                     "Ignoring Cast media load failure on '%s' (no pending load)",
                     self.cast.name,
                 )
                 return
+            # Bind this receiver item id to the active pending load when first seen.
+            if self.current_load_item_id is None and queue_item_id is not None:
+                self.current_load_item_id = queue_item_id
             generation = self.pending_load_generation
             self.pending_load_generation = None
-            self.current_load_item_id = None
         self.executor.submit(self._advance, generation)
 
     def pause(self):
