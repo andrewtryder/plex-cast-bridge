@@ -119,7 +119,7 @@ def persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: Cas
                 speakers_list.append({
                     "id": f"plex-jukebox:{room}",
                     "name": "Plex",
-                    "nicknames": [f"{room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
+                    "nicknames": [f"{room} Plex", "Plex", "Plex Cast Bridge", "Plex Radio"],
                     "roomHint": room,
                     "speaker_name": name,
                     "model": dev.get("model", "Google Cast"),

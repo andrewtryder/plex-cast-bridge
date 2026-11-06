@@ -1,132 +1,157 @@
-# Google Cloud & Google Home Developer Console Setup Guide
+# Google Home voice setup (advanced)
 
-This guide walks through provisioning the Google Cloud infrastructure, configuring the Actions on Google / Google Home Developer Console, and linking **Plex Cast Bridge** to your Google Home app for local Plex streaming.
+This guide adds **Hey Google** control on top of a working local bridge. Complete [Docker install](../install-docker.md) (or the Mac emulator) first so Plex + Cast playback already works.
+
+Personal / household use is supported via a **test** Cloud-to-cloud integration. Public Google Home certification is a separate process and is **not** required to use this project at home.
 
 ---
 
-## 1. Architecture Overview
+## 1. Architecture
 
 ```text
-[Google Assistant / Nest Speaker / Mobile App]
-                    │
-                    │ 1. OAuth2 Account Linking (/oauth/authorize, /oauth/token)
-                    │ 2. Smart Home Intents: SYNC, QUERY, EXECUTE (/fulfillment)
-                    │ 3. Direct Query Webhook (/webhook/query)
-                    ▼
-[GCP Cloud Run: gcp-cloud-run (cloud_gateway)]
-                    │
-                    │ Publishes command payload to GCP Pub/Sub Topic
-                    ▼
-[GCP Pub/Sub Topic: plex-commands]
-                    │
-                    │ Outbound StreamingPull (No inbound firewall ports required)
-                    ▼
-[Local Home Server: plex-cast-bridge]
-     ├── Local Admin & Speaker Management Web UI (http://localhost:8000)
-     ├── Google Cloud Pub/Sub Worker (pubsub_worker.py)
-     ├── Google Gemini Flash Intent Parser (ai_router.py)
-     ├── Local Plex Media Server (plex_service.py)
-     └── Stateful Cast Controller (cast_manager.py)
+[Google Assistant / Nest / Home app]
+        │  OAuth link + SYNC / QUERY / EXECUTE / DISCONNECT
+        ▼
+[Cloud Run: cloud_gateway]
+        │  Pub/Sub publish
+        ▼
+[Pub/Sub topic: plex-commands]
+        │  Streaming pull (no inbound ports)
+        ▼
+[Local plex-cast-bridge] → Plex + Cast speakers
 ```
 
 ---
 
-## 2. Local Plex Library Preparation
+## 2. Local Plex library
 
-Ensure your Plex Media Server has a dedicated Music library section (e.g., `Music`) accessible on your local subnet (`http://<PLEX_LAN_IP>:32400`) and retrieve your `X-Plex-Token`.
+Ensure a Music library section exists and note your `X-Plex-Token`. Sync artists into the catalog the cloud gateway will serve:
+
+```bash
+uv run python scripts/sync_plex_catalog.py
+```
 
 ![Plex Music Library](screenshots/01-plex-music-library.jpg)
 
 ---
 
-## 3. Google Cloud Platform (GCP) Provisioning
+## 3. Google Cloud provisioning
 
-1. Create a GCP project (e.g., `plex-cast-bridge-home`) and enable billing.
-2. Enable the **Cloud Run API**, **Cloud Pub/Sub API**, **Cloud Build API**, and **HomeGraph API**.
-3. Provision the Pub/Sub topic and subscription:
-   - **Topic:** `projects/<PROJECT_ID>/topics/plex-commands`
-   - **Subscription:** `projects/<PROJECT_ID>/subscriptions/plex-commands-local-worker`
-4. Sync your local Plex catalog and discovered Cast speakers into `catalog.json`, then deploy `gcp-cloud-run` to Cloud Run (`us-central1`) using `./gcp-cloud-run/deploy.sh`:
-   ```bash
-   uv run python scripts/sync_plex_catalog.py
-   ./gcp-cloud-run/deploy.sh
-   ```
-5. Note your live Cloud Run URL (e.g., `https://plex-google-home-fulfillment-<hash>-uc.a.run.app`).
+1. Create a GCP project and enable billing.
+2. Enable **Cloud Run**, **Cloud Pub/Sub**, **Cloud Build**, and **HomeGraph** APIs.
+3. Deploy the gateway (creates the Pub/Sub topic/subscription and Cloud Run service):
+
+```bash
+cp gcp-cloud-run/.env.example gcp-cloud-run/.env
+# Set OAUTH_SIGNING_SECRET, ADMIN_PASSPHRASE, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+./gcp-cloud-run/deploy.sh
+```
+
+Note the Cloud Run URL, for example `https://plex-google-home-fulfillment-….run.app`.
 
 ---
 
-## 4. Initializing the Project in Actions on Google & Developer Console
+## 4. Create the Cloud-to-cloud integration
 
-Because Google Home Cloud-to-Cloud integrations rely on an underlying Actions on Google project, initialize the project in the Actions Console first if it does not yet appear in the Google Home Developer Console.
+**Use the [Google Home Developer Console](https://console.home.google.com/projects)** for new projects. The legacy Actions on Google console is deprecated / view-only for new work after the December 2024 migration.
 
-### Step 4.1: Open the Google Home Developer Console
-Navigate to `https://console.home.google.com/projects`. If no projects are listed yet, click **Create a project** or initialize via the Actions Console.
+1. Open [console.home.google.com/projects](https://console.home.google.com/projects) and create or select your project.
+2. Add a **Cloud-to-cloud** integration.
+3. Under **Develop → Setup & configuration**:
+   - **Integration name:** `Plex Cast Bridge`
+   - **Device type:** Set-top box (or AVR)
+   - **App icon:** Upload a **144×144** PNG with a round presentation (use [`assets/icon-144.png`](../../assets/icon-144.png), generated from [`assets/icon.png`](../../assets/icon.png))
 
 ![Developer Console Welcome](screenshots/02-google-home-developer-console-welcome.png)
 
-### Step 4.2: Navigating Cloud-to-Cloud Integration
-Under **Cloud-to-cloud > Develop**, Google links out to the **Actions on Google console**.
+![Setup and Configuration](screenshots/08-developer-console-setup-and-configuration-top.png)
 
-![Developer Console Cloud-to-Cloud](screenshots/03-developer-console-cloud-to-cloud-develop.png)
+### Account linking & fulfillment URLs
 
-> **Troubleshooting Multi-Login Redirect Errors:** If clicking the link produces *"There was an error completing your request"*, open `https://console.actions.google.com/` directly in a dedicated browser profile or Incognito window logged into your primary GCP account.
+| Field | Value |
+|---|---|
+| OAuth Client ID | Your `GOOGLE_CLIENT_ID` |
+| Client secret | Your `GOOGLE_CLIENT_SECRET` |
+| Authorization URL | `https://<CLOUD_RUN_URL>/oauth/authorize` |
+| Token URL | `https://<CLOUD_RUN_URL>/oauth/token` |
+| Cloud fulfillment URL | `https://<CLOUD_RUN_URL>/fulfillment` |
+| Scope(s) | `smart-home` |
 
-![Actions Console Error](screenshots/04-actions-console-redirect-error.png)
+![OAuth and fulfillment config](screenshots/09-developer-console-full-oauth-and-fulfillment-config.jpg)
 
-### Step 4.3: Create / Import Project in Actions Console
-1. Go directly to `https://console.actions.google.com/`.
-2. Click **New Project**.
-
-![Actions on Google Welcome](screenshots/05-actions-on-google-welcome.png)
-
-3. Select or enter your GCP Project (`Plex Cast Bridge` / `plex-cast-bridge-home`) and click **Import project**.
-
-![Actions Console Creating Project](screenshots/06-actions-console-creating-project.png)
-
-4. Select **Smart Home** as the Action category and click **Go to Developer Console** / **Start Building**.
-
-![Select Smart Home](screenshots/07-actions-console-select-smart-home.png)
+> **Historical note:** Older screenshots under `screenshots/04`–`07` show the Actions Console. Prefer the Home Developer Console for anything new. If a multi-login redirect fails, use a clean browser profile signed into the same Google account as the GCP project.
 
 ---
 
-## 5. Configuring Cloud Fulfillment & OAuth 2.0 Account Linking
+## 5. Pub/Sub subscriber credentials (local worker)
 
-Inside the Google Home Developer Console under **Cloud-to-cloud > Develop** (**Setup & configuration**):
+`deploy.sh` creates a **publisher** service account for Cloud Run. The **local bridge** needs a separate subscriber key.
 
-![Setup and Configuration Top](screenshots/08-developer-console-setup-and-configuration-top.png)
+1. In GCP IAM, create a service account, e.g. `plex-local-subscriber@<PROJECT_ID>.iam.gserviceaccount.com`.
+2. Grant it **Pub/Sub Subscriber** on the subscription `plex-commands-local-worker` (or project-level `roles/pubsub.subscriber` if you accept broader scope).
+3. Create a JSON key and save it **outside git** as `gcp-credentials.json` next to your compose `.env`.
+4. Restrict filesystem permissions:
 
-### Step 5.1: Basic Integration Info & Branding
-- **Integration name:** `Plex Cast Bridge`
-- **Device type:** `Set-top box` or `Audio Video Receiver`
-- **App icon:** Upload a 144x144px PNG icon (`assets/icon-128.png` or `10-plex-cast-bridge-app-icon.jpg`).
+```bash
+chmod 600 gcp-credentials.json
+# On Linux Docker host with the compose appuser GID:
+# sudo chown root:10001 gcp-credentials.json && sudo chmod 640 gcp-credentials.json
+```
 
-![Plex Cast Bridge Icon](screenshots/10-plex-cast-bridge-app-icon.jpg)
+5. Enable the listener in `.env`:
 
-### Step 5.2: Account Linking & Cloud Fulfillment URL
-Fill in the OAuth 2.0 and Fulfillment fields pointing to your Cloud Run service:
-- **OAuth Client ID:** `plex-google-home-client-id` (or your configured `GOOGLE_CLIENT_ID`)
-- **Client secret:** `<YOUR_GOOGLE_CLIENT_SECRET>`
-- **Authorization URL:** `https://<YOUR_CLOUD_RUN_URL>/oauth/authorize`
-- **Token URL:** `https://<YOUR_CLOUD_RUN_URL>/oauth/token`
-- **Cloud fulfillment URL:** `https://<YOUR_CLOUD_RUN_URL>/fulfillment`
-- **Scope(s):** `smart-home`
+```bash
+GCP_PROJECT_ID=<your-project>
+GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
+ENABLE_PUBSUB_LISTENER=true
+GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json   # already set in compose
+```
 
-Click **Save** at the bottom of the page.
+6. Re-run preflight and restart the container:
 
-![Full Setup and Configuration](screenshots/09-developer-console-full-oauth-and-fulfillment-config.jpg)
+```bash
+uv run python scripts/preflight.py
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Never commit `gcp-credentials.json`.
 
 ---
 
-## 6. Enabling Draft Testing & Linking in the Google Home Mobile App
+## 6. Test integration vs public launch
 
-### Why the Web Test Suite Shows "Unlinked Action" First
-If you click **Test** in the web console before linking your account on your mobile phone, the Test Suite will display **Unlinked Action**:
+| Mode | What you do | Audience |
+|---|---|---|
+| **Personal test** | Enable testing / draft in the Home Developer Console; link `[test] Plex Cast Bridge` in the Google Home app | Your Google account / household |
+| **Public launch** | Google certification, additional review, production policies | Anyone — **out of scope** for this repo’s default docs |
+
+Account linking UX in the Google Home app continues to evolve (including deep-link / in-app linking changes with an **October 30, 2026** deadline for affected integrations). Prefer the current in-app **Works with Google** flow documented by Google:
+
+- [Cloud-to-cloud account linking](https://developers.home.google.com/cloud-to-cloud/primer/account-linking)
+- [Google Home Developer Console](https://developers.home.google.com/console/get-started)
+
+---
+
+## 7. Link in the Google Home app
+
+1. Open the **Google Home** app (same Google account as the developer project).
+2. **Devices → + Add → Works with Google**.
+3. Select **`[test] Plex Cast Bridge`**.
+4. Sign in with your `ADMIN_PASSPHRASE` on the Cloud Run login page (branded **Plex Cast Bridge**).
+5. Assign each virtual **Plex** device to the matching room so voice routes to the speaker that heard you.
+
+If the web Test Suite shows **Unlinked Action**, link on the phone first:
 
 ![Unlinked Action](screenshots/11-test-suite-unlinked-action.png)
 
-### Linking on iOS / Android
-1. Open the **Google Home** app on your phone (logged into the same Google account).
-2. Tap **Devices** -> **+ Add** -> **Works with Google**.
-3. Select **`[test] Plex Cast Bridge`** at the top of the list.
-4. When redirected to your Cloud Run `/oauth/authorize` login page, enter your configured `ADMIN_PASSPHRASE` and authorize.
-5. Assign the virtual **Plex** device (or per-room virtual devices like **Master Bedroom Plex**, **Kitchen Plex**) to the corresponding rooms in your home so Google Assistant automatically routes commands to whichever room speaker heard you.
+---
+
+## 8. Verify voice
+
+Try:
+
+- “Hey Google, play \<artist\> on Plex”
+- “Hey Google, next track on Plex”
+- “Hey Google, pause Plex”
+
+Unlinking in the Google Home app sends `action.devices.DISCONNECT` to the gateway; the bridge acknowledges unlink so Home Graph clears the association.

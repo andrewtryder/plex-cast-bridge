@@ -90,7 +90,7 @@ def load_catalog(catalog_path: Path) -> dict[str, Any]:
             {
                 "id": f"{DEVICE_ID}:Master Bedroom",
                 "name": "Plex",
-                "nicknames": ["Master Bedroom Plex", "Plex", "Plex Jukebox"],
+                "nicknames": ["Master Bedroom Plex", "Plex", "Plex Cast Bridge"],
                 "roomHint": "Master Bedroom",
                 "speaker_name": "Master Bedroom",
                 "enabled": True,
@@ -203,7 +203,12 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
         room_hint = spk.get("roomHint") or speaker_name
         dev_id = spk.get("id") or f"{DEVICE_ID}:{speaker_name}"
         dev_name = spk.get("name") or "Plex"
-        nicknames = spk.get("nicknames") or [f"{room_hint} Plex", "Plex", "Plex Jukebox", "Plex Radio"]
+        nicknames = spk.get("nicknames") or [
+            f"{room_hint} Plex",
+            "Plex",
+            "Plex Cast Bridge",
+            "Plex Radio",
+        ]
 
         devices.append({
             "id": dev_id,
@@ -224,8 +229,8 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
             "roomHint": room_hint,
             "willReportState": False,
             "deviceInfo": {
-                "manufacturer": "Plex Bridge",
-                "model": "Plex Jukebox",
+                "manufacturer": "Plex Cast Bridge",
+                "model": "Plex Cast Bridge",
                 "hwVersion": "1.0",
                 "swVersion": "2.0",
             },
@@ -480,6 +485,13 @@ async def handle_smart_home_request(
                 "commands": response_commands,
             },
         }
+
+    elif intent == "action.devices.DISCONNECT":
+        # Google sends DISCONNECT when the user unlinks the integration.
+        # Access/refresh tokens are self-contained JWTs; acknowledge unlink so
+        # Home Graph clears the agent association. No durable cloud session store.
+        log.info("Google Home DISCONNECT for requestId=%s; acknowledging unlink", request_id)
+        return {"requestId": request_id}
 
     else:
         log.warning(f"Unknown Google Smart Home intent: {intent}")

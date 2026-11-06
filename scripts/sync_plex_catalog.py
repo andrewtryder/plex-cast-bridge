@@ -70,7 +70,7 @@ def build_speakers_catalog(discovered_devices: list[dict], existing_states: dict
             "nicknames": [
                 f"{room} Plex",
                 "Plex",
-                "Plex Jukebox",
+                "Plex Cast Bridge",
                 "Plex Radio",
             ],
             "roomHint": room,
@@ -86,7 +86,7 @@ def build_speakers_catalog(discovered_devices: list[dict], existing_states: dict
         speakers_list.append({
             "id": "plex-jukebox:Master Bedroom",
             "name": "Plex",
-            "nicknames": ["Master Bedroom Plex", "Plex", "Plex Jukebox"],
+            "nicknames": ["Master Bedroom Plex", "Plex", "Plex Cast Bridge"],
             "roomHint": "Master Bedroom",
             "speaker_name": "Master Bedroom display",
             "model": "Google Nest Hub",
