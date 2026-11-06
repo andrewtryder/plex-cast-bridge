@@ -22,10 +22,23 @@ def track(title):
 def test_queue_advances_once_and_repeats():
     cast = SimpleNamespace(media_controller=MagicMock(), name="Room")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("one"), track("two")], repeat=True)
     assert queue.current.title == "one"
-    queue.new_media_status(SimpleNamespace(player_state="PLAYING", idle_reason=None))
-    status = SimpleNamespace(player_state="IDLE", idle_reason="FINISHED")
+    queue.new_media_status(
+        SimpleNamespace(
+            player_state="PLAYING",
+            idle_reason=None,
+            content_id=queue.expected_content_id,
+            media_session_id=1,
+        )
+    )
+    status = SimpleNamespace(
+        player_state="IDLE",
+        idle_reason="FINISHED",
+        content_id=queue.expected_content_id,
+        media_session_id=1,
+    )
     queue.new_media_status(status)
     queue.new_media_status(status)
     queue.executor.shutdown(wait=True)
@@ -282,6 +295,7 @@ def test_plex_startup_retry_exhausted(monkeypatch):
 def test_speaker_queue_load_media_failed_and_previous():
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     track1 = track("song1")
     track2 = track("song2")
     track3 = track("song3")
@@ -309,6 +323,7 @@ def test_stale_load_media_failed_does_not_advance_replacement_queue():
     """A delayed failure from a prior queue must not skip the replacement's first track."""
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     old_a = track("old-a")
     old_b = track("old-b")
     new_a = track("new-a")
@@ -335,10 +350,57 @@ def test_stale_load_media_failed_does_not_advance_replacement_queue():
     assert queue.pending_load_generation == queue.play_generation
 
 
+def test_unidentified_superseded_failure_does_not_claim_replacement():
+    """Delayed LOAD_FAILED from an unidentified superseded load must not advance B."""
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
+    queue.replace([track("old-a"), track("old-b")], repeat=False)
+    # No item id learned for A.
+    assert queue.current_load_item_id is None
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+    assert queue.current.title == "new-a"
+    assert queue.unidentified_superseded_count == 1
+
+    queue.load_media_failed(queue_item_id=10, error_code="LOAD_FAILED")
+    queue.executor.shutdown(wait=True)
+
+    assert queue.current.title == "new-a"
+    assert [t.title for t in queue.queue] == ["new-b"]
+    assert queue.pending_load_generation == queue.play_generation
+    assert queue.unidentified_superseded_count == 0
+    assert 10 in queue.rejected_load_item_ids
+
+
+def test_unidentified_replacement_failure_advances_via_watchdog():
+    """When only B fails after an unidentified replace, orphan consumes it; watchdog advances."""
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0.05
+    queue.replace([track("old-a"), track("old-b")], repeat=False)
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+    assert queue.current.title == "new-a"
+    assert queue.unidentified_superseded_count == 1
+
+    # Ambiguous failure consumed as orphan; B remains pending until watchdog.
+    queue.load_media_failed(queue_item_id=20, error_code="LOAD_FAILED")
+    assert queue.current.title == "new-a"
+    assert queue.pending_load_generation == queue.play_generation
+
+    import time
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and queue.current.title == "new-a":
+        time.sleep(0.02)
+    queue.executor.shutdown(wait=True)
+    assert queue.current.title == "new-b"
+
+
 def test_replacement_load_failure_advances_when_old_load_never_fails():
     """B failing after replace must advance even if superseded A never reports failure."""
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("old-a"), track("old-b")], repeat=False)
     queue.current_load_item_id = 10
     queue.replace([track("new-a"), track("new-b")], repeat=False)
@@ -355,6 +417,7 @@ def test_replacement_load_failure_advances_when_old_load_never_fails():
 def test_replacement_load_failure_arrives_before_stale_failure():
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("old-a"), track("old-b")], repeat=False)
     queue.current_load_item_id = 10
     queue.replace([track("new-a"), track("new-b")], repeat=False)
@@ -369,6 +432,7 @@ def test_replacement_load_failure_arrives_before_stale_failure():
 def test_transition_failures_are_ignored_before_new_play_accepts_them():
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("old-a")], repeat=False)
 
     with queue.lock:
@@ -390,6 +454,7 @@ def test_transition_failures_are_ignored_before_new_play_accepts_them():
 def test_mismatched_content_status_does_not_arm_or_advance_replacement():
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("old-a")], repeat=False)
     old_url = queue.expected_content_id
     queue.replace([track("new-a"), track("new-b")], repeat=False)
@@ -426,9 +491,34 @@ def test_mismatched_content_status_does_not_arm_or_advance_replacement():
     assert [t.title for t in queue.queue] == ["new-b"]
 
 
+def test_identity_less_playing_does_not_arm_pending_load():
+    """After replace to B, delayed PLAYING with content_id=None must not arm or clear pending."""
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
+    queue.replace([track("old-a")], repeat=False)
+    queue.replace([track("new-a"), track("new-b")], repeat=False)
+    assert queue.current.title == "new-a"
+    pending = queue.pending_load_generation
+
+    queue.new_media_status(
+        SimpleNamespace(
+            player_state="PLAYING",
+            idle_reason=None,
+            content_id=None,
+            media_session_id=11,
+            current_item_id=None,
+        )
+    )
+    assert queue.armed is False
+    assert queue.pending_load_generation == pending
+    assert queue.active_media_session_id is None
+
+
 def test_status_binds_current_load_item_id():
     cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
     queue = SpeakerQueue(cast)
+    queue.load_watchdog_seconds = 0
     queue.replace([track("song1"), track("song2")], repeat=False)
     queue.new_media_status(
         SimpleNamespace(
@@ -614,6 +704,26 @@ def test_toggle_reports_catalog_persist_failure(monkeypatch):
     assert resp.status_code == 500
     assert "Catalog persistence failed" in resp.json()["detail"]
     # In-memory enablement is rolled back to the prior state (enabled).
+    assert mock_cast.set_speaker_enabled.call_args_list[-1].args == ("Master Bedroom", True)
+
+
+def test_toggle_rolls_back_on_discover_failure(monkeypatch):
+    mock_cast = MagicMock()
+    mock_cast.get.return_value = MagicMock()
+    mock_cast.last_discovered = None
+    mock_cast.is_disabled.return_value = False
+    mock_cast.discover.side_effect = RuntimeError("mdns down")
+    app.state.cast = mock_cast
+    app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/speakers/toggle",
+        json={"speaker": "Master Bedroom", "enabled": False},
+    )
+    assert resp.status_code == 500
+    assert "Catalog persistence failed" in resp.json()["detail"]
+    assert mock_cast.set_speaker_enabled.call_args_list[0].args == ("Master Bedroom", False)
     assert mock_cast.set_speaker_enabled.call_args_list[-1].args == ("Master Bedroom", True)
 
 

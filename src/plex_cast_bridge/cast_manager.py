@@ -46,7 +46,9 @@ class SpeakerQueue(MediaStatusListener):
         self.current_load_item_id: int | None = None
         self.active_media_session_id: int | None = None
         self.rejected_load_item_ids: set[int] = set()
+        self.unidentified_superseded_count = 0
         self.ignore_load_failures = False
+        self.load_watchdog_seconds = 8.0
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
@@ -61,6 +63,9 @@ class SpeakerQueue(MediaStatusListener):
 
     def _invalidate_inflight_load(self):
         """Drop unresolved load state and suppress device callbacks during replacement."""
+        if self.pending_load_generation is not None and self.current_load_item_id is None:
+            # Superseded load never reported an item id; a later LOAD_FAILED may be orphaned.
+            self.unidentified_superseded_count += 1
         if self.current_load_item_id is not None:
             self.rejected_load_item_ids.add(self.current_load_item_id)
         self.pending_load_generation = None
@@ -143,6 +148,35 @@ class SpeakerQueue(MediaStatusListener):
         )
         # Accept failures only for the load we just started (not stop()-induced leftovers).
         self.ignore_load_failures = False
+        self._schedule_load_watchdog(self.generation)
+
+    def _schedule_load_watchdog(self, generation: int):
+        """Advance if a pending load never arms after orphan failures were consumed.
+
+        Sleep runs on a daemon timer so the single-worker queue executor stays free;
+        the generation/pending checks below make superseded timers a no-op.
+        """
+        delay = self.load_watchdog_seconds
+        if delay <= 0:
+            return
+
+        def _watch():
+            with self.lock:
+                if self.pending_load_generation != generation or self.armed:
+                    return
+                if generation != self.generation:
+                    return
+                log.warning(
+                    "Cast load watchdog fired on '%s' for generation %s; advancing queue",
+                    self.cast.name,
+                    generation,
+                )
+                self.pending_load_generation = None
+            self.executor.submit(self._advance, generation)
+
+        timer = threading.Timer(delay, _watch)
+        timer.daemon = True
+        timer.start()
 
     def _next(self):
         if self.current is not None:
@@ -194,19 +228,13 @@ class SpeakerQueue(MediaStatusListener):
             if item_id is None:
                 item_id = getattr(status, "item_id", None)
 
-            if content_id:
-                if self.expected_content_id and content_id != self.expected_content_id:
-                    return
-            else:
-                # Identity-less events: require an established session match, or allow
-                # a single bootstrap while a current load is still pending.
-                if self.active_media_session_id is not None:
-                    if session_id != self.active_media_session_id:
-                        return
-                elif self.pending_load_generation is None and not self.armed:
-                    return
-
             if status.player_state in ("PLAYING", "BUFFERING"):
+                # Require content_id match when we know what we loaded; identity-less
+                # PLAYING must not arm or clear a replacement's pending state.
+                if self.expected_content_id and (
+                    not content_id or content_id != self.expected_content_id
+                ):
+                    return
                 self.armed = True
                 self.pending_load_generation = None
                 if session_id is not None:
@@ -219,9 +247,11 @@ class SpeakerQueue(MediaStatusListener):
                     if self.expected_content_id and content_id != self.expected_content_id:
                         return
                 elif self.active_media_session_id is not None:
-                    # Reject identity-less FINISHED that does not match the armed session.
                     if session_id != self.active_media_session_id:
                         return
+                else:
+                    # Armed without a session id only happens after matching content_id.
+                    pass
                 self.armed = False
                 log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
                 self.executor.submit(self._advance, self.play_generation)
@@ -242,9 +272,9 @@ class SpeakerQueue(MediaStatusListener):
             queue_item_id,
             error_code,
         )
-        # Correlate by queue item id when known. Otherwise attribute the failure to the
-        # current pending load only (never to a superseded budget), so a replacement
-        # track that fails is not discarded because an older load never reported.
+        # Known item ids are correlated directly. Unidentified superseded loads contribute
+        # an orphan-failure allowance so a delayed A failure cannot claim B's pending slot;
+        # a watchdog advances if the current load never arms after orphans are consumed.
         with self.lock:
             if self.ignore_load_failures:
                 log.info(
@@ -273,7 +303,17 @@ class SpeakerQueue(MediaStatusListener):
                     self.cast.name,
                 )
                 return
-            # Bind this receiver item id to the active pending load when first seen.
+            if self.current_load_item_id is None and self.unidentified_superseded_count > 0:
+                self.unidentified_superseded_count -= 1
+                if queue_item_id is not None:
+                    self.rejected_load_item_ids.add(queue_item_id)
+                log.info(
+                    "Ignoring uncorrelated Cast media load failure on '%s' "
+                    "(orphan allowance remaining=%s)",
+                    self.cast.name,
+                    self.unidentified_superseded_count,
+                )
+                return
             if self.current_load_item_id is None and queue_item_id is not None:
                 self.current_load_item_id = queue_item_id
             generation = self.pending_load_generation

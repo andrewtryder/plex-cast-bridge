@@ -295,10 +295,10 @@ async def toggle_speaker_endpoint(toggle: SpeakerToggle):
     def update():
         previous_disabled = app.state.cast.is_disabled(toggle.speaker)
         app.state.cast.set_speaker_enabled(toggle.speaker, toggle.enabled)
-        discovered = getattr(app.state.cast, "last_discovered", None) or app.state.cast.discover()
-        for dev in discovered:
-            dev["enabled"] = not app.state.cast.is_disabled(dev["name"])
         try:
+            discovered = getattr(app.state.cast, "last_discovered", None) or app.state.cast.discover()
+            for dev in discovered:
+                dev["enabled"] = not app.state.cast.is_disabled(dev["name"])
             _persist_discovered_speakers_to_catalog(discovered, app.state.cast)
         except Exception:
             # Roll back in-memory enablement so API state matches catalog on disk.
