@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.2](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.2.1...v0.2.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* resolve CodeQL alerts and update github actions ([#9](https://github.com/andrewtryder/plex-cast-bridge/issues/9)) ([37e37a1](https://github.com/andrewtryder/plex-cast-bridge/commit/37e37a18416b374866f6076e21a9660f9e5a7857))
+
+
+### Documentation
+
+* require X-API-Key in Proxmox curl example ([0fc72b6](https://github.com/andrewtryder/plex-cast-bridge/commit/0fc72b6bd86ba12eb8c788dbc73c249d89c718f6))
+* require X-API-Key in Proxmox curl playback example ([7dce626](https://github.com/andrewtryder/plex-cast-bridge/commit/7dce626a72e7e9e95ece73d03eb9e80d3c93f3d0))
+
 ## [0.2.1](https://github.com/andrewtryder/plex-cast-bridge/compare/plex-cast-bridge-v0.2.0...plex-cast-bridge-v0.2.1) (2026-11-06)
 
 
