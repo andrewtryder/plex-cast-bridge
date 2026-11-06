@@ -126,7 +126,8 @@ uv sync
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env with your PLEX_URL, PLEX_TOKEN, and GEMINI_API_KEY
+# Edit .env with your PLEX_URL, PLEX_TOKEN, GEMINI_API_KEY, and LOCAL_API_KEY
+# (or set ALLOW_UNAUTHENTICATED_LOCAL_API=true only on a trusted LAN / local host)
 
 # 4. Launch interactive Google Home speaker emulator
 uv run python scripts/emulate_speaker.py
@@ -188,6 +189,7 @@ Once your Google Home account is linked, run the local worker to receive command
 
 ```bash
 # Set your environment variables in .env:
+# LOCAL_API_KEY=<random secret>   # required unless ALLOW_UNAUTHENTICATED_LOCAL_API=true
 # DEFAULT_SPEAKER_NAME=Master Bedroom
 # DEFAULT_CAST_VOLUME=0.20
 # GCP_PROJECT_ID=plex-cast-bridge-home
@@ -196,6 +198,8 @@ Once your Google Home account is linked, run the local worker to receive command
 
 uv run uvicorn plex_cast_bridge.main:app --host 0.0.0.0 --port 8000
 ```
+
+Pass the key to the dashboard via `X-API-Key` (preferred). A one-time `?api_key=` bootstrap still works but is stripped from the browser URL after load.
 
 ---
 

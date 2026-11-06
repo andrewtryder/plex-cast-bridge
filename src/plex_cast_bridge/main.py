@@ -1,9 +1,6 @@
 import asyncio
-import json
 import logging
-import os
 import secrets
-import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -14,136 +11,27 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .ai_router import SmartDJ
-from .cast_manager import CastManager, extract_room_name
+from .cast_manager import CastManager
+from .catalog_store import (
+    PROJECT_ROOT,
+    get_catalog_path,
+    load_disabled_speakers_from_catalog,
+    persist_discovered_speakers_to_catalog,
+)
+# Compatibility alias: tests historically monkeypatch main.DATA_DIR.
+from .catalog_store import DATA_DIR as DATA_DIR  # noqa: F401
 from .config import Settings
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 
 log = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = Path(
-    os.getenv("DATA_DIR")
-    or (
-        "/data"
-        if Path("/data").is_dir()
-        else (PROJECT_ROOT / "data" if (PROJECT_ROOT / "data").is_dir() else PROJECT_ROOT)
-    )
-)
-CANONICAL_CATALOG = PROJECT_ROOT / "catalog.json"
-CLOUD_RUN_CATALOG = PROJECT_ROOT / "gcp-cloud-run" / "catalog.json"
 ICON_PATH = PROJECT_ROOT / "assets" / "icon.png"
 DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 
-
-def get_catalog_path(for_writing: bool = False) -> Path:
-    env_cat = os.getenv("CATALOG_PATH")
-    if env_cat:
-        p = Path(env_cat)
-        if for_writing:
-            p.parent.mkdir(parents=True, exist_ok=True)
-        return p
-
-    data_cat = DATA_DIR / "catalog.json"
-    bundled_cat = PROJECT_ROOT / "catalog.json"
-
-    if for_writing:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if not data_cat.exists() and bundled_cat.exists() and DATA_DIR != PROJECT_ROOT:
-            try:
-                shutil.copyfile(bundled_cat, data_cat)
-            except Exception:
-                pass
-        return data_cat if (DATA_DIR != PROJECT_ROOT or data_cat.exists()) else bundled_cat
-
-    if data_cat.exists():
-        return data_cat
-    if bundled_cat.exists():
-        return bundled_cat
-    return data_cat
-
-
-def _load_disabled_speakers_from_catalog() -> set[str]:
-    disabled: set[str] = set()
-    cat_path = get_catalog_path(for_writing=False)
-    if cat_path.exists():
-        try:
-            with open(cat_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for spk in data.get("speakers", []):
-                    if not spk.get("enabled", True):
-                        if spk.get("speaker_name"):
-                            disabled.add(spk["speaker_name"].casefold())
-                        if spk.get("roomHint"):
-                            disabled.add(spk["roomHint"].casefold())
-        except Exception as exc:
-            log.warning("Could not read disabled speakers from %s: %s", cat_path, exc)
-    return disabled
-
-
-def _persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: CastManager):
-    """Persist discovered LAN speakers and their enabled/disabled flags into catalog.json."""
-    try:
-        read_path = get_catalog_path(for_writing=False)
-        data = {}
-        if read_path.exists():
-            with open(read_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-        existing_by_room = {
-            (s.get("roomHint") or "").casefold(): s
-            for s in data.get("speakers", [])
-            if s.get("roomHint")
-        }
-
-        speakers_list = []
-        seen_rooms = set()
-        for dev in discovered:
-            name = dev["name"]
-            if name.casefold() == "test speaker":
-                continue
-            room = dev.get("room") or extract_room_name(name)
-            r_fold = room.casefold()
-            if r_fold in seen_rooms:
-                continue
-            seen_rooms.add(r_fold)
-            enabled = not cast_mgr.is_disabled(name) and not cast_mgr.is_disabled(room)
-            speakers_list.append({
-                "id": f"plex-jukebox:{room}",
-                "name": "Plex",
-                "nicknames": [f"{room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
-                "roomHint": room,
-                "speaker_name": name,
-                "model": dev.get("model", "Google Cast"),
-                "host": dev.get("host", ""),
-                "port": dev.get("port", 8009),
-                "uuid": dev.get("uuid", ""),
-                "enabled": enabled,
-            })
-
-        # Keep any previously known speakers that might be temporarily asleep on LAN
-        for r_fold, old_spk in existing_by_room.items():
-            if r_fold not in seen_rooms:
-                old_name = old_spk.get("speaker_name", "")
-                old_room = old_spk.get("roomHint", "")
-                old_spk["enabled"] = not cast_mgr.is_disabled(old_name) and not cast_mgr.is_disabled(old_room)
-                speakers_list.append(old_spk)
-
-        if speakers_list:
-            data["speakers"] = speakers_list
-            data["inputs"] = [s["roomHint"] for s in speakers_list if s.get("enabled", True)]
-            write_path = get_catalog_path(for_writing=True)
-            write_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(write_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            if CLOUD_RUN_CATALOG.parent.exists():
-                try:
-                    shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
-                except Exception:
-                    pass
-    except Exception as exc:
-        log.warning("Could not persist speaker states to catalog.json: %s", exc)
+# Compatibility re-exports for scripts/tests that imported private helpers from main.
+_load_disabled_speakers_from_catalog = load_disabled_speakers_from_catalog
+_persist_discovered_speakers_to_catalog = persist_discovered_speakers_to_catalog
 
 
 class Command(BaseModel):
@@ -190,22 +78,52 @@ async def verify_local_api(
     return token
 
 
+async def _init_plex_with_retry(settings: Settings, attempts: int = 5, base_delay_sec: float = 1.0):
+    """Connect to Plex and refresh the library catalog with bounded backoff."""
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            plex = await run_in_threadpool(
+                PlexService,
+                settings.plex_url,
+                settings.plex_token.get_secret_value(),
+                settings.plex_music_section,
+            )
+            await run_in_threadpool(plex.refresh)
+            if attempt > 1:
+                log.info("Plex became reachable on startup attempt %d/%d", attempt, attempts)
+            return plex
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            delay = base_delay_sec * (2 ** (attempt - 1))
+            log.warning(
+                "Plex startup attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt,
+                attempts,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    raise RuntimeError(
+        f"Plex unavailable after {attempts} startup attempts: {last_exc}"
+    ) from last_exc
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
     app.state.settings = settings
     if not settings.local_api_key or not settings.local_api_key.get_secret_value():
-        log.info("Local control API running in local LAN mode (no API key required).")
+        log.warning(
+            "Local control API running without LOCAL_API_KEY "
+            "(ALLOW_UNAUTHENTICATED_LOCAL_API=true). Restrict to a trusted LAN."
+        )
     else:
         log.info("LOCAL_API_KEY authentication enabled for local API control endpoints.")
 
-    app.state.plex = await run_in_threadpool(
-        PlexService,
-        settings.plex_url,
-        settings.plex_token.get_secret_value(),
-        settings.plex_music_section,
-    )
-    await run_in_threadpool(app.state.plex.refresh)
+    app.state.plex = await _init_plex_with_retry(settings)
     app.state.dj = SmartDJ(settings.gemini_api_key.get_secret_value())
     disabled_speakers = _load_disabled_speakers_from_catalog()
     app.state.cast = CastManager(

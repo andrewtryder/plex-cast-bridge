@@ -1,7 +1,9 @@
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from plex_cast_bridge.ai_router import PlaybackIntent
@@ -167,7 +169,23 @@ def test_transport_volume_actions():
 
 
 def test_local_api_key_authentication():
-    from pydantic import SecretStr
+    from pydantic import SecretStr, ValidationError
+
+    from plex_cast_bridge.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            plex_token=SecretStr("tok"),
+            local_api_key=None,
+            allow_unauthenticated_local_api=False,
+        )
+
+    ok = Settings(
+        plex_token=SecretStr("tok"),
+        local_api_key=None,
+        allow_unauthenticated_local_api=True,
+    )
+    assert ok.allow_unauthenticated_local_api is True
 
     mock_speaker = MagicMock()
     mock_speaker.status.return_value = {"speaker": "Master Bedroom", "state": "IDLE"}
@@ -194,7 +212,7 @@ def test_local_api_key_authentication():
     )
     assert resp.status_code == 200
 
-    # 3. Authenticated with query param ?api_key= succeeds
+    # 3. Authenticated with query param ?api_key= succeeds (deprecated bootstrap path)
     resp = client.post(
         "/api/transport?api_key=super-secret-local-key",
         json={"action": "resume", "speaker": "Master Bedroom"},
@@ -203,6 +221,62 @@ def test_local_api_key_authentication():
 
     # Restore settings without local_api_key
     app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
+
+
+def test_plex_startup_retry_eventually_succeeds(monkeypatch):
+    import asyncio
+
+    from plex_cast_bridge import main as local_main
+
+    calls = {"n": 0}
+
+    class FakePlex:
+        def __init__(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ConnectionError("plex down")
+
+        def refresh(self):
+            return {"artists": []}
+
+    async def immediate_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(local_main, "PlexService", FakePlex)
+    monkeypatch.setattr(local_main.asyncio, "sleep", immediate_sleep)
+
+    settings = SimpleNamespace(
+        plex_url="http://plex",
+        plex_token=SimpleNamespace(get_secret_value=lambda: "tok"),
+        plex_music_section="Music",
+    )
+    plex = asyncio.run(local_main._init_plex_with_retry(settings, attempts=5, base_delay_sec=0.01))
+    assert isinstance(plex, FakePlex)
+    assert calls["n"] == 3
+
+
+def test_plex_startup_retry_exhausted(monkeypatch):
+    import asyncio
+
+    from plex_cast_bridge import main as local_main
+
+    class AlwaysDown:
+        def __init__(self, *args, **kwargs):
+            raise ConnectionError("plex down")
+
+    async def immediate_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(local_main, "PlexService", AlwaysDown)
+    monkeypatch.setattr(local_main.asyncio, "sleep", immediate_sleep)
+
+    settings = SimpleNamespace(
+        plex_url="http://plex",
+        plex_token=SimpleNamespace(get_secret_value=lambda: "tok"),
+        plex_music_section="Music",
+    )
+    with pytest.raises(RuntimeError, match="Plex unavailable after 2 startup attempts"):
+        asyncio.run(local_main._init_plex_with_retry(settings, attempts=2, base_delay_sec=0.01))
 
 
 def test_speaker_queue_load_media_failed_and_previous():
@@ -229,6 +303,44 @@ def test_speaker_queue_load_media_failed_and_previous():
     queue.previous()
     assert queue.current.title == "song2"
     queue.executor.shutdown(wait=True)
+
+
+def test_stale_load_media_failed_does_not_advance_replacement_queue():
+    """A delayed failure from a prior queue must not skip the replacement's first track."""
+    cast = SimpleNamespace(media_controller=MagicMock(), name="TestRoom")
+    queue = SpeakerQueue(cast)
+    old_a = track("old-a")
+    old_b = track("old-b")
+    new_a = track("new-a")
+    new_b = track("new-b")
+
+    queue.replace([old_a, old_b], repeat=False)
+    assert queue.current.title == "old-a"
+    stale_generation = queue.play_generation
+    assert list(queue.pending_load_generations) == [stale_generation]
+
+    queue.replace([new_a, new_b], repeat=False)
+    assert queue.current.title == "new-a"
+    # replace() drops superseded pending loads so a late failure has nothing to claim.
+    assert list(queue.pending_load_generations) == [queue.play_generation]
+    assert stale_generation != queue.generation
+
+    # Stale callback after replace: pending tokens from the old load were cleared,
+    # so this must be ignored when we only have a drained/cleared stale token.
+    with queue.lock:
+        # Recreate the post-replace stale condition: old token gone, then a late
+        # failure arrives without a pending load for that old generation.
+        saved_pending = deque(queue.pending_load_generations)
+        queue.pending_load_generations.clear()
+    queue.load_media_failed(queue_item_id=99, error_code="LOAD_FAILED")
+    with queue.lock:
+        queue.pending_load_generations = saved_pending
+    # Old generation advance must also be a no-op against the new queue.
+    queue.executor.submit(queue._advance, stale_generation)
+    queue.executor.shutdown(wait=True)
+
+    assert queue.current.title == "new-a"
+    assert [t.title for t in queue.queue] == ["new-b"]
 
 def test_pubsub_worker_native_dlq_delegation():
     from unittest.mock import MagicMock, patch
@@ -319,10 +431,10 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
 def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):
     from plex_cast_bridge.main import get_catalog_path
     from plex_cast_bridge.pubsub_worker import get_dead_letter_log_path
-    import plex_cast_bridge.main as main_mod
+    from plex_cast_bridge import catalog_store
 
     test_data = tmp_path / "custom_data"
-    monkeypatch.setattr(main_mod, "DATA_DIR", test_data)
+    monkeypatch.setattr(catalog_store, "DATA_DIR", test_data)
     monkeypatch.delenv("CATALOG_PATH", raising=False)
     monkeypatch.setenv("DATA_DIR", str(test_data))
 

@@ -12,6 +12,14 @@ log = logging.getLogger(__name__)
 DEVICE_ID = "plex-jukebox"
 
 
+class UnsupportedCommandError(ValueError):
+    """Raised when Google sends a Smart Home command this bridge does not handle."""
+
+    def __init__(self, command: str):
+        self.command = command
+        super().__init__(f"Unsupported Smart Home command: {command}")
+
+
 def slugify(text: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", text.strip().lower())
     return cleaned.strip("_")
@@ -183,20 +191,11 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
     shared_attributes = _build_shared_attributes(catalog_data)
     raw_speakers = catalog_data.get("speakers") or []
 
-    # Filter to enabled speakers
+    # Filter to enabled speakers. An empty / all-disabled catalog yields no devices
+    # so dashboard disables are honored (no synthetic fallback speaker).
     enabled_speakers = [s for s in raw_speakers if s.get("enabled", True)]
     if not enabled_speakers:
-        fallback_room = default_speaker or "Master Bedroom"
-        enabled_speakers = [
-            {
-                "id": f"{DEVICE_ID}:{fallback_room}",
-                "name": "Plex",
-                "nicknames": [f"{fallback_room} Plex", "Plex", "Plex Jukebox", "Plex Radio"],
-                "roomHint": fallback_room,
-                "speaker_name": fallback_room,
-                "enabled": True,
-            }
-        ]
+        return []
 
     devices: list[dict[str, Any]] = []
     for spk in enabled_speakers:
@@ -337,7 +336,7 @@ def parse_execute_command(
 
     else:
         log.warning(f"Unrecognized Google Smart Home command: {command}")
-        payload = {"action": "resume"}
+        raise UnsupportedCommandError(command)
 
     if "speaker" not in payload and target_speaker:
         payload["speaker"] = target_speaker
@@ -407,21 +406,33 @@ async def handle_smart_home_request(
             for dev_id in target_dev_ids:
                 target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
                 dev_success = True
+                error_code = "transientError"
                 for exec_item in executions:
                     cmd_name = exec_item.get("command", "")
                     params = exec_item.get("params", {})
-                    pubsub_payload = parse_execute_command(
-                        cmd_name,
-                        params,
-                        target_speaker,
-                        catalog_inputs,
-                    )
+                    try:
+                        pubsub_payload = parse_execute_command(
+                            cmd_name,
+                            params,
+                            target_speaker,
+                            catalog_inputs,
+                        )
+                    except UnsupportedCommandError:
+                        log.warning(
+                            "Rejecting unsupported Smart Home command '%s' for device '%s'",
+                            cmd_name,
+                            dev_id,
+                        )
+                        dev_success = False
+                        error_code = "notSupported"
+                        break
                     log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
                     try:
                         await pubsub_service.publish(pubsub_payload)
                     except Exception as exc:
                         log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
                         dev_success = False
+                        error_code = "transientError"
 
                 if dev_success:
                     if dev_id not in success_ids:
@@ -430,7 +441,7 @@ async def handle_smart_home_request(
                     error_commands.append({
                         "ids": [dev_id],
                         "status": "ERROR",
-                        "errorCode": "transientError",
+                        "errorCode": error_code,
                     })
 
         response_commands = []
