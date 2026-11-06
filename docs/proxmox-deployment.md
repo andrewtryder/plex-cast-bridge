@@ -262,11 +262,12 @@ Prefer `X-API-Key` for scripts; the query-string bootstrap is stripped after the
 - Try toggling a speaker on/off and confirm the change persists to `data/catalog.json`.
 
 ### Step 2: Trigger a Direct Test Command via API
-From your terminal, test direct playback on your Kitchen speaker without an API key:
+From your terminal, test direct playback on your Kitchen speaker:
 
 ```bash
 curl -X POST "http://<PROXMOX_HOST_IP>:8000/api/command" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <LOCAL_API_KEY>" \
   -d '{"query":"DJ Shadow","speaker":"Kitchen"}'
 ```
 
