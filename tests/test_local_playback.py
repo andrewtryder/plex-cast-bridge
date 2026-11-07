@@ -69,7 +69,7 @@ def test_artist_radio_pins_track1_and_interleaves_seeds():
         genres=["Electronic"],
         similar=[],
         similarArtists=[],
-        albums=lambda: [],
+        albums=list,
         tracks=lambda: list(artist_tracks),
     )
     peer_tracks = [track(f"krush_{i}") for i in range(10)]
@@ -78,7 +78,7 @@ def test_artist_radio_pins_track1_and_interleaves_seeds():
         genres=["Electronic"],
         similar=[],
         similarArtists=[],
-        albums=lambda: [],
+        albums=list,
         tracks=lambda: list(peer_tracks),
     )
     service = PlexService.__new__(PlexService)
@@ -534,8 +534,9 @@ def test_status_binds_current_load_item_id():
     assert queue.pending_load_generation is None
 
 def test_pubsub_worker_native_dlq_delegation():
-    from unittest.mock import MagicMock, patch
     import json
+    from unittest.mock import MagicMock, patch
+
     from plex_cast_bridge.pubsub_worker import PubSubWorker
 
     settings = SimpleNamespace(
@@ -571,10 +572,11 @@ def test_pubsub_worker_native_dlq_delegation():
 
 
 def test_pubsub_worker_local_dlq_retention(tmp_path):
-    from unittest.mock import MagicMock, patch
     import json
-    from plex_cast_bridge.pubsub_worker import PubSubWorker, MAX_MESSAGE_RETRIES
+    from unittest.mock import MagicMock, patch
+
     import plex_cast_bridge.pubsub_worker as pw
+    from plex_cast_bridge.pubsub_worker import MAX_MESSAGE_RETRIES, PubSubWorker
 
     settings = SimpleNamespace(
         gcp_project_id="test-proj",
@@ -620,9 +622,9 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
 
 
 def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):
+    from plex_cast_bridge import catalog_store
     from plex_cast_bridge.main import get_catalog_path
     from plex_cast_bridge.pubsub_worker import get_dead_letter_log_path
-    from plex_cast_bridge import catalog_store
 
     test_data = tmp_path / "custom_data"
     monkeypatch.setattr(catalog_store, "DATA_DIR", test_data)
@@ -693,7 +695,7 @@ def test_toggle_reports_catalog_persist_failure(monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "plex_cast_bridge.main._persist_discovered_speakers_to_catalog",
+        "plex_cast_bridge.routes.persist_discovered_speakers_to_catalog",
         boom,
     )
     client = TestClient(app)
@@ -736,6 +738,7 @@ def test_local_bridge_health_endpoint():
 
 def test_cross_platform_speaker_discovery(monkeypatch):
     import pychromecast
+
     from plex_cast_bridge.cast_manager import CastManager
 
     # Mock pychromecast to return no network chromecasts
@@ -788,7 +791,9 @@ def test_local_speaker_platform_status(monkeypatch, tmp_path):
 
 def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
     import json
+
     import pychromecast
+
     from plex_cast_bridge.cast_manager import CastManager
 
     # Simulate dynamic discovery returning nothing

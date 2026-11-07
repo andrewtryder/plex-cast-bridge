@@ -49,3 +49,46 @@ jobs:
 
       - name: Run Test Suite
         run: uv run pytest -v
+
+  requirements-drift:
+    name: Cloud Run requirements drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Regenerate and diff gcp-cloud-run/requirements.txt
+        run: |
+          uv lock
+          uv export --only-group cloud-gateway --no-emit-project --no-dev --no-hashes \
+            -o gcp-cloud-run/requirements.txt
+          git diff --exit-code -- gcp-cloud-run/requirements.txt
+
+  doc-links:
+    name: Markdown relative links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check docs links
+        run: python3 scripts/check_doc_links.py
+
+  docker-build:
+    name: Docker build (local + Cloud Run)
+    needs: [lint, requirements-drift]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build local bridge image
+        run: docker build -f deploy/Dockerfile .
+
+      - name: Sync sample catalog for Cloud Run context
+        run: cp catalog.json gcp-cloud-run/catalog.json
+
+      - name: Build Cloud Run gateway image
+        run: docker build -f gcp-cloud-run/Dockerfile gcp-cloud-run

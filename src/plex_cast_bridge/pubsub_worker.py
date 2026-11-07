@@ -1,11 +1,11 @@
 import asyncio
 import json
 import logging
-
 import os
 import time
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
+
 from google.cloud import pubsub_v1
 
 

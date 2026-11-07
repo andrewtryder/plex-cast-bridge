@@ -41,6 +41,22 @@ Copy `.env.example` to `.env` before running `deploy.sh`:
 
 ---
 
+## Dependencies
+
+The root [`pyproject.toml`](../pyproject.toml) `cloud-gateway` dependency group is the **source of truth**.
+[`requirements.txt`](requirements.txt) is generated for the Cloud Run Docker/pip install path—do not hand-edit it.
+
+```bash
+# From repository root, after changing cloud-gateway deps:
+uv lock
+uv export --only-group cloud-gateway --no-emit-project --no-dev --no-hashes \
+  -o gcp-cloud-run/requirements.txt
+```
+
+CI fails if the committed `requirements.txt` drifts from this export.
+
+---
+
 ## Local Testing
 
 From the repository root:

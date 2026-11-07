@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Any
+
 from starlette.concurrency import run_in_threadpool
 
 log = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class PubSubService:
     def publish_sync(self, payload: dict[str, Any]) -> str:
         if self.mock or not self._publisher or not self._topic_path:
             log.info(f"[MOCK PUBSUB] Publishing payload: {payload}")
-            return f"mock-{int(id(payload))}"
+            return f"mock-{id(payload)}"
 
         data = json.dumps(payload).encode("utf-8")
         future = self._publisher.publish(self._topic_path, data)
