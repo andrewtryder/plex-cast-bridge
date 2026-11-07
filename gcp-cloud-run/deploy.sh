@@ -39,7 +39,7 @@ echo "  Service Account:      $SA_NAME"
 echo "------------------------------------------------------------"
 
 # 1. Verify gcloud authentication
-echo "[1/7] Verifying gcloud authentication..."
+echo "[1/8] Verifying gcloud authentication..."
 ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)")
 if [ -z "$ACTIVE_ACCOUNT" ]; then
     echo "ERROR: No active gcloud account found. Run 'gcloud auth login' first."
@@ -51,7 +51,7 @@ echo "  Authenticated as: $ACTIVE_ACCOUNT"
 gcloud config set project "$PROJECT_ID" >/dev/null
 
 # 2. Enable necessary APIs and verify Firestore Native Database
-echo "[2/7] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build, Firestore)..."
+echo "[2/8] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build, Firestore)..."
 gcloud services enable \
     run.googleapis.com \
     pubsub.googleapis.com \
@@ -74,7 +74,7 @@ fi
 
 # 3. Provision Pub/Sub Topic and Dead-Letter Queue (DLQ) Topic
 DLQ_TOPIC="${TOPIC_ID}-dlq"
-echo "[3/7] Provisioning Pub/Sub topics ( and )..."
+echo "[3/8] Provisioning Pub/Sub topics ('$TOPIC_ID' and '$DLQ_TOPIC')..."
 if gcloud pubsub topics describe "$TOPIC_ID" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Topic '$TOPIC_ID' already exists."
 else
@@ -99,7 +99,7 @@ gcloud pubsub topics add-iam-policy-binding "$DLQ_TOPIC" \
     --project="$PROJECT_ID" >/dev/null
 
 # 4. Provision Pub/Sub Subscription for local worker with durable DLQ policy
-echo "[4/7] Provisioning Pub/Sub subscription '$SUBSCRIPTION_ID' with DLQ policy..."
+echo "[4/8] Provisioning Pub/Sub subscription '$SUBSCRIPTION_ID' with DLQ policy..."
 if gcloud pubsub subscriptions describe "$SUBSCRIPTION_ID" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Subscription '$SUBSCRIPTION_ID' already exists. Updating dead-letter policy..."
     gcloud pubsub subscriptions update "$SUBSCRIPTION_ID" \
@@ -141,7 +141,7 @@ fi
 echo "  ✓ Subscription DLQ verified: topic=$EFFECTIVE_DLQ, maxDeliveryAttempts=$EFFECTIVE_ATTEMPTS"
 
 # 5. Provision Service Account for Cloud Run
-echo "[5/7] Provisioning Service Account '$SA_NAME'..."
+echo "[5/8] Provisioning Service Account '$SA_NAME'..."
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 if gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT_ID" >/dev/null 2>&1; then
     echo "  Service account '$SA_EMAIL' already exists."
@@ -167,7 +167,7 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --project="$PROJECT_ID" >/dev/null
 
 # 6. Check environment variables
-echo "[6/7] Checking environment configuration..."
+echo "[6/8] Checking environment configuration..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 

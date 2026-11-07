@@ -65,6 +65,26 @@ def test_oauth_authorize_post_failure(client):
     assert "Invalid Admin Passphrase" in res.text
 
 
+def test_oauth_login_throttle_returns_429(client):
+    from cloud_gateway.rate_limit import MAX_FAILED_LOGINS, reset_for_tests
+
+    reset_for_tests()
+    payload = {
+        "client_id": "test-client-id",
+        "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+        "state": "xyz",
+        "response_type": "code",
+        "passphrase": "wrong-password",
+    }
+    for _ in range(MAX_FAILED_LOGINS):
+        res = client.post("/oauth/authorize", data=payload)
+        assert res.status_code == 401
+    res = client.post("/oauth/authorize", data=payload)
+    assert res.status_code == 429
+    assert "Too many failed authorization attempts" in res.text
+    reset_for_tests()
+
+
 def test_oauth_flow_and_token_exchange(client):
     res = client.post(
         "/oauth/authorize",
@@ -485,6 +505,7 @@ def test_smart_home_command_key_translation_and_fail_closed(client, auth_headers
 
 def test_oauth_firestore_distributed_single_use(client):
     from unittest.mock import MagicMock, patch
+
     from google.api_core.exceptions import AlreadyExists
 
     mock_db = MagicMock()
@@ -584,8 +605,8 @@ def test_oauth_firestore_fails_closed_in_production(client):
 
 
 def test_unknown_smart_home_command_is_not_published(client, auth_headers):
-    from cloud_gateway.smart_home import UnsupportedCommandError, parse_execute_command
     import pytest
+    from cloud_gateway.smart_home import UnsupportedCommandError, parse_execute_command
 
     published = []
     client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-unknown"

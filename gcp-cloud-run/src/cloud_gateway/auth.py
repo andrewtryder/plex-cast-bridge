@@ -1,7 +1,7 @@
 import logging
 import secrets
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import jwt
@@ -43,7 +43,7 @@ def _check_local_jti(jti: str, exp: int | None):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Authorization code has already been redeemed (single-use violated)",
         )
-    _REDEEMED_JTIS[jti] = exp or (int(datetime.now(timezone.utc).timestamp()) + 600)
+    _REDEEMED_JTIS[jti] = exp or (int(datetime.now(UTC).timestamp()) + 600)
 
 
 # In-memory store for redeemed authorization code JTIs: {jti: exp_timestamp}
@@ -56,7 +56,7 @@ ALLOWED_REDIRECT_DOMAINS = {
 
 
 def _cleanup_expired_jtis():
-    now_ts = int(datetime.now(timezone.utc).timestamp())
+    now_ts = int(datetime.now(UTC).timestamp())
     expired = [jti for jti, exp in _REDEEMED_JTIS.items() if exp < now_ts]
     for jti in expired:
         _REDEEMED_JTIS.pop(jti, None)
@@ -93,7 +93,7 @@ def create_authorization_code(
     settings: Settings,
     scope: str = "smart-home",
 ) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     exp = int((now + timedelta(minutes=settings.auth_code_expire_minutes)).timestamp())
     payload = {
         "sub": "admin",
@@ -194,7 +194,7 @@ def verify_authorization_code(
 
 
 def create_token_pair(settings: Settings) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     access_expires_seconds = settings.token_expire_days * 86400
     access_payload = {
         "sub": "admin",

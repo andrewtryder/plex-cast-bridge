@@ -116,7 +116,7 @@ newgrp docker
 
 ## 4. Directory Structure & Persistent Data
 
-Plex Cast Bridge stores mutable state (speaker enable/disable preferences, room assignments, and dead-letter queue records) in a dedicated `/data` directory outside the container image.
+Plex Cast Bridge stores mutable state (speaker enable/disable preferences, room assignments, and dead-letter queue records) in a dedicated host directory mounted into the container at `/data`. Compose resolves `../data` relative to [`deploy/docker-compose.yml`](../deploy/docker-compose.yml), so with the layout below that is `~/plex-cast-bridge/data`.
 
 On the VM, create the project directory:
 
@@ -306,5 +306,5 @@ Verify that:
 5. **Dead-Letter Queue Inspection:**
    - If a voice command fails persistently, inspect `data/dead_letter_queue.jsonl`:
      ```bash
-     cat /opt/plex-cast-bridge/data/dead_letter_queue.jsonl
+     cat ~/plex-cast-bridge/data/dead_letter_queue.jsonl
      ```

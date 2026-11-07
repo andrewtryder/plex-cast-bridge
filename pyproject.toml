@@ -26,6 +26,19 @@ dev = [
     "ruff>=0.8",
     "pre-commit>=4",
 ]
+# Canonical Cloud Run gateway set. Regenerate gcp-cloud-run/requirements.txt with:
+#   uv export --only-group cloud-gateway --no-emit-project --no-dev --no-hashes -o gcp-cloud-run/requirements.txt
+cloud-gateway = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "google-cloud-pubsub>=2",
+    "pyjwt[crypto]>=2.9",
+    "python-multipart>=0.0.18",
+    "jinja2>=3.1.4",
+    "google-cloud-firestore>=2.19.0",
+]
 
 [build-system]
 requires = ["hatchling"]

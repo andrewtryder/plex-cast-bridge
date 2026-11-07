@@ -1,0 +1,204 @@
+"""OAuth 2.0 account-linking routes for Google Home."""
+
+import base64
+import logging
+import secrets
+import urllib.parse
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from .auth import (
+    create_authorization_code,
+    create_token_pair,
+    validate_redirect_uri,
+    verify_authorization_code,
+    verify_refresh_token,
+)
+from .config import Settings
+from .rate_limit import check_rate_limit, clear_attempts, record_failed_attempt
+
+log = logging.getLogger("fulfillment")
+
+templates_dir = Path(__file__).resolve().parent / "templates"
+templates = Jinja2Templates(directory=str(templates_dir))
+
+router = APIRouter()
+
+
+def get_settings(request: Request) -> Settings:
+    return request.app.state.settings
+
+
+@router.get("/oauth/authorize", response_class=HTMLResponse)
+async def oauth_authorize_get(
+    request: Request,
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    response_type: str = "code",
+    scope: str = "",
+    settings: Settings = Depends(get_settings),
+):
+    validate_redirect_uri(redirect_uri, allow_local=settings.mock_pubsub)
+    if client_id != settings.google_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid client_id. Expected '{settings.google_client_id}'.",
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "response_type": response_type,
+            "scope": scope,
+            "error": None,
+        },
+    )
+
+
+@router.post("/oauth/authorize", response_class=HTMLResponse)
+async def oauth_authorize_post(
+    request: Request,
+    passphrase: str = Form(...),
+    client_id: str = Form(...),
+    redirect_uri: str = Form(...),
+    state: str = Form(...),
+    response_type: str = Form("code"),
+    scope: str = Form(""),
+    settings: Settings = Depends(get_settings),
+):
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(client_ip)
+
+    validate_redirect_uri(redirect_uri, allow_local=settings.mock_pubsub)
+    if client_id != settings.google_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid client_id.",
+        )
+
+    expected_passphrase = settings.admin_passphrase.get_secret_value()
+    if not secrets.compare_digest(passphrase, expected_passphrase):
+        record_failed_attempt(client_ip)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "state": state,
+                "response_type": response_type,
+                "scope": scope,
+                "error": "Invalid Admin Passphrase. Please try again.",
+            },
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    clear_attempts(client_ip)
+
+    auth_code = create_authorization_code(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        settings=settings,
+        scope=scope,
+    )
+
+    parsed_redirect = urllib.parse.urlsplit(redirect_uri)
+    query_params = urllib.parse.parse_qsl(parsed_redirect.query)
+    query_params.extend([("code", auth_code), ("state", state)])
+    new_query = urllib.parse.urlencode(query_params)
+    target_url = urllib.parse.urlunsplit((
+        parsed_redirect.scheme,
+        parsed_redirect.netloc,
+        parsed_redirect.path,
+        new_query,
+        parsed_redirect.fragment,
+    ))
+
+    log.info(f"OAuth authorize successful for client '{client_id}'. Redirecting to Google.")
+    return RedirectResponse(url=target_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/oauth/token")
+async def oauth_token(
+    request: Request,
+    grant_type: str = Form(...),
+    code: str | None = Form(None),
+    redirect_uri: str | None = Form(None),
+    client_id: str | None = Form(None),
+    client_secret: str | None = Form(None),
+    refresh_token: str | None = Form(None),
+    authorization: str | None = Header(None, alias="Authorization"),
+    settings: Settings = Depends(get_settings),
+):
+    if authorization and authorization.lower().startswith("basic "):
+        try:
+            b64_creds = authorization.split(" ", 1)[1]
+            decoded = base64.b64decode(b64_creds).decode("utf-8")
+            if ":" in decoded:
+                client_id, client_secret = decoded.split(":", 1)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Malformed HTTP Basic Authorization header",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+
+    expected_cid = settings.google_client_id
+    expected_sec = settings.google_client_secret.get_secret_value()
+
+    if client_id != expected_cid:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "invalid_client", "error_description": "Unknown client_id"},
+        )
+
+    if not client_secret or not secrets.compare_digest(client_secret, expected_sec):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "invalid_client", "error_description": "Invalid client_secret"},
+        )
+
+    if grant_type == "authorization_code":
+        if not code:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "invalid_request", "error_description": "Missing authorization code"},
+            )
+        try:
+            verify_authorization_code(code, expected_cid, settings, redirect_uri)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": "invalid_grant", "error_description": str(exc.detail)},
+            )
+        token_data = create_token_pair(settings)
+        return JSONResponse(
+            content=token_data,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+
+    elif grant_type == "refresh_token":
+        if not refresh_token:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "invalid_request", "error_description": "Missing refresh_token"},
+            )
+        verify_refresh_token(refresh_token, settings)
+        token_data = create_token_pair(settings)
+        return JSONResponse(
+            content=token_data,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error": "unsupported_grant_type", "error_description": f"Unsupported grant_type: {grant_type}"},
+    )

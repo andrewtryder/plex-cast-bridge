@@ -1044,7 +1044,7 @@ wheels = [
 
 [[package]]
 name = "plex-cast-bridge"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -1062,6 +1062,17 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+cloud-gateway = [
+    { name = "fastapi" },
+    { name = "google-cloud-firestore" },
+    { name = "google-cloud-pubsub" },
+    { name = "jinja2" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-multipart" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 dev = [
     { name = "httpx" },
     { name = "pillow" },
@@ -1087,6 +1098,17 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+cloud-gateway = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "google-cloud-firestore", specifier = ">=2.19.0" },
+    { name = "google-cloud-pubsub", specifier = ">=2" },
+    { name = "jinja2", specifier = ">=3.1.4" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
+    { name = "python-multipart", specifier = ">=0.0.18" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
+]
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=11" },
