@@ -1,5 +1,6 @@
 """HTTP routes for the local Plex Cast Bridge control API."""
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,10 +15,21 @@ from .catalog_store import (
 )
 from .playback_service import play, transport
 
+log = logging.getLogger(__name__)
+
 ICON_PATH = PROJECT_ROOT / "assets" / "icon.png"
 DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 
 router = APIRouter()
+
+PLEX_REQUIRED_DETAIL = "Plex is not linked. Connect with Plex in Settings, or set PLEX_TOKEN."
+
+
+def _require_plex(request: Request):
+    plex = getattr(request.app.state, "plex", None)
+    if plex is None:
+        raise HTTPException(status_code=503, detail=PLEX_REQUIRED_DETAIL)
+    return plex
 
 
 @router.get("/health", include_in_schema=False)
@@ -42,21 +54,25 @@ async def dashboard_ui():
 @router.post("/api/command", dependencies=[Depends(verify_local_api)])
 async def command_endpoint(request: Request, command: Command):
     state = request.app.state
+    plex = _require_plex(request)
     try:
         return await play(
             dj=state.dj,
-            plex=state.plex,
+            plex=plex,
             cast=state.cast,
             settings=state.settings,
             command=command,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Command failed for query=%r speaker=%r", command.query, command.speaker)
+        raise HTTPException(status_code=500, detail=f"Playback failed: {exc}") from exc
 
 
 @router.get("/api/library/tracks", dependencies=[Depends(verify_local_api)])
 async def library_tracks(request: Request, query: str = "", limit: int = 25):
-    state = request.app.state
+    plex = _require_plex(request)
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
 
@@ -64,7 +80,7 @@ async def library_tracks(request: Request, query: str = "", limit: int = 25):
         kwargs = {"libtype": "track", "maxresults": limit}
         if query:
             kwargs["title"] = query
-        tracks = state.plex.library.search(**kwargs)
+        tracks = plex.library.search(**kwargs)
         return [
             {
                 "title": t.title,
@@ -80,12 +96,13 @@ async def library_tracks(request: Request, query: str = "", limit: int = 25):
 @router.post("/api/speakers/test", dependencies=[Depends(verify_local_api)])
 async def test_speaker_endpoint(request: Request, command: SpeakerTest):
     state = request.app.state
+    plex = _require_plex(request)
 
     def execute():
         tracks = (
-            state.plex.library.search(title=command.query, libtype="track")
+            plex.library.search(title=command.query, libtype="track")
             if command.query
-            else state.plex.library.search(libtype="track", maxresults=1)
+            else plex.library.search(libtype="track", maxresults=1)
         )
         if not tracks:
             raise ValueError("No matching tracks found in the Plex library")
@@ -110,6 +127,9 @@ async def transport_endpoint(request: Request, command: Transport):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Transport '%s' failed for speaker=%r", command.action, command.speaker)
+        raise HTTPException(status_code=500, detail=f"Transport failed: {exc}") from exc
 
 
 @router.get("/api/speakers", dependencies=[Depends(verify_local_api)])
@@ -123,7 +143,7 @@ async def speakers_endpoint(request: Request, scan: bool = False):
             return discovered
         for dev in state.cast.last_discovered:
             dev["enabled"] = not state.cast.is_disabled(dev["name"])
-        return state.cast.last_discovered
+        return list(state.cast.last_discovered)
 
     try:
         return await run_in_threadpool(get_list)
@@ -166,10 +186,12 @@ async def status_endpoint(request: Request):
 
 @router.post("/api/library/refresh", dependencies=[Depends(verify_local_api)])
 async def refresh_endpoint(request: Request):
-    return await run_in_threadpool(request.app.state.plex.refresh)
+    plex = _require_plex(request)
+    return await run_in_threadpool(plex.refresh)
 
 
 @router.get("/api/sync-catalog", dependencies=[Depends(verify_local_api)])
 async def catalog_endpoint(request: Request):
-    catalog = request.app.state.plex.catalog
+    plex = _require_plex(request)
+    catalog = plex.catalog
     return {"genres": catalog["genres"], "artists": catalog["artists"][:100]}

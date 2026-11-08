@@ -25,3 +25,8 @@ class Transport(BaseModel):
     speaker: str | None = None
     volume: float | None = Field(default=None, ge=0, le=1)
     relative_volume: float | None = Field(default=None, ge=-1, le=1)
+
+
+class PlexSelect(BaseModel):
+    server_id: str = Field(min_length=1)
+    section: str = Field(min_length=1)
