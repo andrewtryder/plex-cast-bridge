@@ -38,6 +38,7 @@ cloud-gateway = [
     "python-multipart>=0.0.18",
     "jinja2>=3.1.4",
     "google-cloud-firestore>=2.19.0",
+    "google-cloud-storage>=2.18.0",
 ]
 
 [build-system]
