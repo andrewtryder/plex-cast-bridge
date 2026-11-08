@@ -37,6 +37,45 @@ class PlexService:
                         "genres": sorted(genres), "moods": sorted(moods)}
         return self.catalog
 
+    def library_summary(self) -> dict:
+        """Cheap counts for Settings → Playback (artists/albums from cache; tracks via size query)."""
+        section_title = getattr(self.library, "title", None) or str(getattr(self.library, "key", "Music"))
+        if not self.catalog:
+            try:
+                self.refresh()
+            except Exception as exc:
+                log.warning("library_summary refresh failed: %s", exc)
+                return {
+                    "linked": True,
+                    "section": section_title,
+                    "artists": None,
+                    "albums": None,
+                    "tracks": None,
+                }
+        artists = len(self.catalog.get("artists") or [])
+        albums = len(self.catalog.get("albums") or [])
+        tracks = None
+        try:
+            # type=10 is track; request size only (no payload).
+            el = self.server.query(
+                f"/library/sections/{self.library.key}/all",
+                params={"type": 10, "X-Plex-Container-Start": 0, "X-Plex-Container-Size": 0},
+            )
+            raw = el.attrib.get("totalSize") if hasattr(el, "attrib") else None
+            if raw is None and isinstance(el, dict):
+                raw = el.get("totalSize")
+            if raw is not None:
+                tracks = int(raw)
+        except Exception as exc:
+            log.debug("track count unavailable: %s", exc)
+        return {
+            "linked": True,
+            "section": section_title,
+            "artists": artists,
+            "albums": albums,
+            "tracks": tracks,
+        }
+
     def _artist(self, name):
         if not name:
             return None
