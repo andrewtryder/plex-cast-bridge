@@ -5,11 +5,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     plex_url: str = "http://plex.local:32400"
-    plex_token: SecretStr
+    # Optional when using Settings → Connect with Plex (JWT store under DATA_DIR).
+    plex_token: SecretStr | None = None
     plex_music_section: str = "Music"
     default_speaker_name: str = ""
     default_speaker_host: str = ""
     default_cast_volume: float = 0.20
+    max_cast_volume: float = 0.85
+    night_cast_volume: float | None = None
     gemini_api_key: SecretStr = SecretStr("")
     local_api_key: SecretStr | None = None
     # Explicit opt-in for trusted LAN / local development without an API key.
