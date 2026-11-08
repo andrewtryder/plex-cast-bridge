@@ -2,7 +2,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .ai_router import SmartDJ
@@ -162,6 +165,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Plex Cast Bridge", lifespan=lifespan)
+_STATIC = Path(__file__).resolve().parent / "static"
+if _STATIC.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 app.include_router(router)
 app.include_router(plex_router)
 app.include_router(google_home_router)

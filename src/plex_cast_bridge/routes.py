@@ -64,6 +64,16 @@ async def serve_icon_144():
 
 
 
+
+
+@router.get("/assets/tutorials/manifest.json", include_in_schema=False)
+async def serve_tutorial_manifest():
+    path = PROJECT_ROOT / "assets" / "tutorials" / "manifest.json"
+    if path.exists():
+        return FileResponse(path, media_type="application/json")
+    raise HTTPException(status_code=404, detail="Tutorial manifest not found")
+
+
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_ui():
     if DASHBOARD_TEMPLATE.exists():
