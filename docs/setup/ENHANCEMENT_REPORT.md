@@ -29,7 +29,7 @@ Recreate continues via wizard + companion + Developer Console (manual) + Home ap
 |---|---|
 | 2 Catalog sync + Request Sync | Implemented (mock-tested; live HomeGraph after redeploy + link) |
 | 3 Google Home wizard UI/API | Implemented (resumable steps, preview, console values, sync, test) |
-| 4 Tutorials + Grok Bot | Manifest + drawer + [GROK_BOT_TEACH_WORKFLOW.md](GROK_BOT_TEACH_WORKFLOW.md); Google videos `needs_capture` |
+| 4 Tutorials | Manifest + in-app drawer; Google videos `needs_capture` (no Grok Bot onboarding) |
 | 5 Player enhancements | Artwork proxy path, Up Next + queue APIs, library browse/play, group labeling, max volume |
 | 6 Diagnostics | `/api/diagnostics` + Settings panel |
 | 7 Backup | `/api/backup` non-secret zip |
