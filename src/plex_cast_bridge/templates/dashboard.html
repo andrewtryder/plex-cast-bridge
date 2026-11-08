@@ -761,6 +761,7 @@
       <summary>Up next</summary>
       <ul class="up-next-list" id="upNextList"></ul>
       <div class="conn-actions" style="margin-top:12px">
+        <button type="button" class="ghost-button" id="clearQueueBtn">Clear upcoming</button>
       </div>
     </details>
 
@@ -825,6 +826,7 @@
 
     <nav class="settings-tabs" aria-label="Settings sections">
       <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
+      <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
     </nav>
 
     <div class="settings-panel" data-settings-panel="connections">
@@ -867,6 +869,30 @@
     </div>
 
     </div>
+    </div>
+
+    <div class="settings-panel" data-settings-panel="playback" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Volume safety</h2>
+        <p class="conn-meta">Startup / clamp limits for Cast from this bridge. Saved to <code>data/app_settings.json</code> (overrides env). Live transport volume stays on the Player page.</p>
+        <div class="field-wrap">
+          <label class="field-label" for="defaultVolumeInput">Default volume (%)</label>
+          <input id="defaultVolumeInput" class="field-select" type="number" min="0" max="100" step="1" inputmode="numeric" aria-label="Default cast volume percent">
+        </div>
+        <div class="field-wrap" style="margin-top:0.75rem">
+          <label class="field-label" for="maxVolumeInput">Maximum volume (%)</label>
+          <input id="maxVolumeInput" class="field-select" type="number" min="0" max="100" step="1" inputmode="numeric" aria-label="Maximum cast volume percent">
+        </div>
+        <p class="conn-meta" id="volumeSettingsHint" style="margin-top:0.75rem">Loading…</p>
+        <div class="conn-actions" style="margin-top:0.75rem">
+          <button type="button" class="accent-button" id="saveVolumeSettingsBtn">Save volumes</button>
+        </div>
+      </div>
+      <div class="conn-card">
+        <h2 class="conn-title">Library</h2>
+        <p class="conn-meta" id="librarySummaryMeta">Linked music library summary.</p>
+        <div id="librarySummary" class="conn-meta">Loading…</div>
+      </div>
     </div>
 
   </section>
@@ -1402,9 +1428,25 @@
     const list = $('upNextList');
     if (!list) return;
     list.replaceChildren();
-    (items || []).slice(0, 12).forEach((t) => {
+    (items || []).slice(0, 12).forEach((t, idx) => {
       const li = document.createElement('li');
       li.innerHTML = `<span>${t.title || 'Track'} — ${t.artist || ''}</span>`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ghost-button';
+      btn.textContent = 'Remove';
+      btn.addEventListener('click', async () => {
+        try {
+          await api('/api/queue', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'remove', index: idx, speaker: selected }),
+          });
+          await refreshStatus();
+        } catch (err) {
+          announce(err.message || 'Could not update queue');
+        }
+      });
+      li.appendChild(btn);
       list.appendChild(li);
     });
   }
@@ -1707,10 +1749,82 @@
       document.querySelectorAll('[data-settings-panel]').forEach((p) => {
         p.hidden = p.getAttribute('data-settings-panel') !== tab;
       });
+      if (tab === 'playback') refreshPlaybackSettings();
     });
   });
 
-  // Google Home wizard / diagnostics / playback settings deferred to later PRs.
+  function pctFromUnit(v) {
+    if (v == null || Number.isNaN(Number(v))) return '';
+    return String(Math.round(Number(v) * 100));
+  }
+  function unitFromPct(raw) {
+    const n = Number(raw);
+    if (Number.isNaN(n)) return null;
+    return Math.max(0, Math.min(100, n)) / 100;
+  }
+  function renderLibrarySummary(library) {
+    const box = $('librarySummary');
+    const meta = $('librarySummaryMeta');
+    if (!library || !library.linked) {
+      meta.textContent = 'No music library linked yet.';
+      box.textContent = 'Connect with Plex under Settings → Connections.';
+      return;
+    }
+    meta.textContent = library.section ? `Section: ${library.section}` : 'Linked music library.';
+    const parts = [];
+    if (library.artists != null) parts.push(`${library.artists.toLocaleString()} artists`);
+    if (library.albums != null) parts.push(`${library.albums.toLocaleString()} albums`);
+    if (library.tracks != null) parts.push(`${library.tracks.toLocaleString()} tracks`);
+    box.textContent = parts.length ? parts.join(' · ') : 'Library linked (counts unavailable).';
+  }
+  async function refreshPlaybackSettings() {
+    try {
+      const data = await api('/api/settings');
+      const vols = data.volumes || {};
+      $('defaultVolumeInput').value = pctFromUnit(vols.default_cast_volume);
+      $('maxVolumeInput').value = pctFromUnit(vols.max_cast_volume);
+      const stored = data.stored?.configured;
+      $('volumeSettingsHint').textContent = stored
+        ? 'Using values from data/app_settings.json (overrides .env).'
+        : 'Using defaults from .env / server config. Save to create data/app_settings.json.';
+      renderLibrarySummary(data.library);
+    } catch (err) {
+      $('volumeSettingsHint').textContent = err.message || 'Could not load settings';
+      $('librarySummary').textContent = 'Unavailable';
+    }
+  }
+  $('saveVolumeSettingsBtn').addEventListener('click', async () => {
+    const default_cast_volume = unitFromPct($('defaultVolumeInput').value);
+    const max_cast_volume = unitFromPct($('maxVolumeInput').value);
+    if (default_cast_volume == null || max_cast_volume == null) {
+      announce('Enter default and max volume as percents (0–100)');
+      return;
+    }
+    if (default_cast_volume > max_cast_volume) {
+      announce('Default volume cannot exceed maximum');
+      return;
+    }
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ default_cast_volume, max_cast_volume }),
+      });
+      announce('Volume settings saved');
+      await refreshPlaybackSettings();
+    } catch (err) {
+      announce(err.message || 'Could not save volume settings');
+    }
+  });
+
+  $('clearQueueBtn')?.addEventListener('click', async () => {
+    try {
+      await api('/api/queue', { method: 'POST', body: JSON.stringify({ action: 'clear', speaker: selected }) });
+      await refreshStatus();
+    } catch (err) {
+      announce(err.message || 'Could not clear queue');
+    }
+  });
+
 
   window.addEventListener('hashchange', updateView);
   if (!location.hash) location.hash = '#player';
@@ -1725,6 +1839,7 @@
     await loadSpeakers(false);
     await refreshStatus();
     await refreshPlexStatus();
+    await refreshGoogleHome();
     setInterval(() => {
       if (document.visibilityState === 'visible') refreshStatus();
     }, POLL_MS);

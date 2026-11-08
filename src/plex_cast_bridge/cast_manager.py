@@ -123,6 +123,7 @@ class CastManager:
         sq = SpeakerQueue(
             cast,
             default_volume=min(self.default_volume, self.max_volume),
+            max_volume=self.max_volume,
         )
         self.speakers[name] = sq
         return sq

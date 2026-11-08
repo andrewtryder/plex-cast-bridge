@@ -210,21 +210,23 @@ class LocalSpeaker:
             self.set_volume(self.volume + float(delta))
 
     def status(self):
+        from .speaker_queue import track_art_url
+
         with self.lock:
             track = self.current
             speaker_name = "Mac Speaker (Emulated)" if sys.platform == "darwin" else "Headless Simulation Speaker"
+            current_track = None
+            if track:
+                current_track = {
+                    "title": track.title,
+                    "artist": getattr(track, "grandparentTitle", ""),
+                    "album": getattr(track, "parentTitle", ""),
+                    "art": track_art_url(track),
+                }
             return {
                 "speaker": speaker_name,
                 "state": self.state,
-                "current_track": (
-                    {
-                        "title": track.title,
-                        "artist": getattr(track, "grandparentTitle", ""),
-                        "album": getattr(track, "parentTitle", ""),
-                    }
-                    if track
-                    else None
-                ),
+                "current_track": current_track,
                 "queue_length": len(self.queue),
                 "repeat": self.repeat,
                 "output_file": getattr(self, "output", None),
