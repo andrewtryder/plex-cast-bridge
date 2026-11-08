@@ -24,6 +24,7 @@ from .plex_routes import router as plex_router
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 from .routes import router
+from . import catalog_sync
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,13 @@ async def lifespan(app: FastAPI):
         disabled_speakers=disabled_speakers,
         catalog_path=get_catalog_path(for_writing=False),
     )
+    cloud_url = getattr(settings, "cloud_gateway_url", "") or ""
+    write_key = settings.catalog_write_key.get_secret_value() if getattr(settings, "catalog_write_key", None) else ""
+    if cloud_url and write_key:
+        try:
+            catalog_sync.configure_gateway(cloud_url, write_key)
+        except Exception as exc:
+            log.warning("Could not configure catalog sync from env: %s", exc)
     try:
         discovered = await run_in_threadpool(app.state.cast.discover)
         await run_in_threadpool(_persist_discovered_speakers_to_catalog, discovered, app.state.cast)

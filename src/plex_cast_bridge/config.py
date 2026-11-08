@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     gcp_project_id: str = ""
     gcp_pubsub_subscription_id: str = ""
     enable_pubsub_listener: bool = False
+    cloud_gateway_url: str = ""
+    catalog_write_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def require_local_api_key_unless_opted_in(self):
