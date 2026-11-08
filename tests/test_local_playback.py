@@ -19,6 +19,46 @@ def track(title):
                            media=[SimpleNamespace(parts=[part], container="mp3")], _server=server)
 
 
+def test_track_art_url_and_status_include_art():
+    from plex_cast_bridge.speaker_queue import track_art_url
+
+    server = SimpleNamespace(url=lambda key, includeToken: "http://plex" + key + "?X-Plex-Token=t")
+    with_url = SimpleNamespace(thumbUrl="http://cdn/art.jpg", thumb=None, _server=server)
+    with_thumb = SimpleNamespace(thumbUrl=None, thumb="/library/metadata/1/thumb", _server=server)
+    assert track_art_url(with_url) == "http://cdn/art.jpg"
+    assert track_art_url(with_thumb) == "http://plex/library/metadata/1/thumb?X-Plex-Token=t"
+    assert track_art_url(None) is None
+
+    mc = MagicMock()
+    mc.status = SimpleNamespace(player_state="PLAYING")
+    cast = SimpleNamespace(media_controller=mc, status=SimpleNamespace(volume_level=0.2), name="Room", set_volume=MagicMock())
+    queue = SpeakerQueue(cast)
+    queue.current = track("Song")
+    queue.current.thumbUrl = "http://cdn/cover.jpg"
+    status = queue.status()
+    assert status["current_track"]["art"] == "http://cdn/cover.jpg"
+
+
+def test_dashboard_template_has_player_and_dj_views():
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "src/plex_cast_bridge/templates/dashboard.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="playerPage"' in html
+    assert 'id="djPage"' in html
+    assert 'id="settingsPage"' in html
+    assert 'href="#player"' in html
+    assert 'href="#dj"' in html
+    assert 'href="#settings"' in html
+    assert "/api/command" in html
+    assert "/api/transport" in html
+    assert "/api/plex/connect/start" in html
+    assert "Connect with Plex" in html
+    assert "Demo data only" not in html
+    assert "tracks=[" not in html
+
+
 def test_queue_advances_once_and_repeats():
     cast = SimpleNamespace(media_controller=MagicMock(), name="Room")
     queue = SpeakerQueue(cast)
@@ -823,3 +863,86 @@ def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
     queue = cm.get("Kitchen")
     assert queue.cast == mock_cast
     assert mock_cast.wait.called
+
+
+def test_mdns_discovery_reconnects_via_host(tmp_path, monkeypatch):
+    """mDNS finds a device, then we connect host-based so stop_discovery is safe."""
+    import pychromecast
+
+    from plex_cast_bridge import cast_manager as cm_mod
+    from plex_cast_bridge.cast_manager import CastManager
+
+    discovered = MagicMock()
+    discovered.cast_info.host = "192.168.1.77"
+    discovered.cast_info.port = 8009
+    discovered.cast_info.uuid = "uuid-77"
+    discovered.cast_info.model_name = "Google Nest Mini"
+    discovered.cast_info.friendly_name = "Lab speaker"
+    browser = MagicMock()
+
+    monkeypatch.setattr(
+        pychromecast,
+        "get_listed_chromecasts",
+        lambda friendly_names, discovery_timeout: ([discovered], browser),
+    )
+    monkeypatch.setattr(cm_mod, "_discover_via_dnssd", lambda: [])
+
+    host_cast = MagicMock()
+    host_cast.name = "Lab speaker"
+    host_cast.wait = MagicMock()
+    seen = {}
+
+    def from_host(args):
+        seen["args"] = args
+        return host_cast
+
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", from_host)
+
+    # Empty catalog so resolution must go through mDNS → from_host.
+    cm = CastManager(catalog_path=tmp_path / "missing-catalog.json")
+    queue = cm.get("Lab speaker")
+    assert queue.cast is host_cast
+    assert seen["args"][0] == "192.168.1.77"
+    assert seen["args"][1] == 8009
+    browser.stop_discovery.assert_called_once()
+    discovered.disconnect.assert_called_once()
+
+
+def test_dead_cached_cast_is_reconnected(tmp_path, monkeypatch):
+    import json
+
+    import pychromecast
+
+    from plex_cast_bridge.cast_manager import CastManager, SpeakerQueue
+
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps({
+        "speakers": [
+            {
+                "speaker_name": "Kitchen display",
+                "roomHint": "Kitchen",
+                "host": "192.168.1.50",
+                "port": 8009,
+                "model": "Google Nest Hub",
+                "uuid": "test-kitchen-uuid",
+                "enabled": True,
+            }
+        ]
+    }), encoding="utf-8")
+
+    dead = MagicMock()
+    dead.name = "Kitchen display"
+    dead.socket_client.is_connected = False
+    dead_queue = SpeakerQueue(dead)
+
+    fresh = MagicMock()
+    fresh.name = "Kitchen display"
+    fresh.wait = MagicMock()
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda args: fresh)
+    monkeypatch.setattr(pychromecast, "get_listed_chromecasts", lambda *a, **k: ([], MagicMock()))
+
+    cm = CastManager(catalog_path=catalog_file)
+    cm.speakers["Kitchen"] = dead_queue
+    queue = cm.get("Kitchen")
+    assert queue.cast is fresh
+    dead.disconnect.assert_called()

@@ -33,14 +33,15 @@ The easiest path is the prebuilt multi-arch image (`linux/amd64` + `linux/arm64`
 git clone https://github.com/andrewtryder/plex-cast-bridge.git
 cd plex-cast-bridge
 cp .env.example .env
-# Set PLEX_URL, PLEX_TOKEN, and LOCAL_API_KEY=$(openssl rand -hex 32)
+# Set LOCAL_API_KEY=$(openssl rand -hex 32)
+# Optional: PLEX_URL + PLEX_TOKEN for headless/env mode (or use Settings → Connect with Plex)
 echo '{}' > gcp-credentials.json   # placeholder until Google Home voice is enabled
 
 docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, discover speakers, and play.
+Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, use the Settings gear to **Connect with Plex** (or rely on env token), discover speakers, and play.
 
 Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
 
@@ -113,7 +114,7 @@ plex-cast-bridge/
 ```bash
 uv sync
 cp .env.example .env
-# Set PLEX_URL, PLEX_TOKEN, LOCAL_API_KEY (or ALLOW_UNAUTHENTICATED_LOCAL_API=true)
+# Set LOCAL_API_KEY (or ALLOW_UNAUTHENTICATED_LOCAL_API=true); optional PLEX_URL/PLEX_TOKEN
 uv run python scripts/preflight.py --skip-plex   # or full check without --skip-plex
 uv run python scripts/emulate_speaker.py
 ```

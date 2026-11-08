@@ -352,10 +352,23 @@ def parse_execute_command(
     return payload
 
 
+def _resolve_catalog(settings: Settings, catalog_store: Any | None) -> dict[str, Any]:
+    fallback = load_catalog(settings.get_catalog_file())
+    if catalog_store is None or not getattr(settings, "use_cloud_catalog", True):
+        return fallback
+    try:
+        cloud = catalog_store.load_catalog(fallback=fallback)
+        return cloud or fallback
+    except Exception as exc:
+        log.warning("Cloud catalog load failed; using local fallback: %s", exc)
+        return fallback
+
+
 async def handle_smart_home_request(
     body: dict[str, Any],
     settings: Settings,
     pubsub_service: PubSubService,
+    catalog_store: Any | None = None,
 ) -> dict[str, Any]:
     request_id = body.get("requestId", "")
     inputs = body.get("inputs", [])
@@ -366,8 +379,7 @@ async def handle_smart_home_request(
     log.info(f"Handling Google Smart Home intent: {intent} (requestId={request_id})")
 
     if intent == "action.devices.SYNC":
-        catalog_path = settings.get_catalog_file()
-        catalog_data = load_catalog(catalog_path)
+        catalog_data = _resolve_catalog(settings, catalog_store)
         devices = build_sync_devices(catalog_data, default_speaker=settings.default_speaker_name)
         return {
             "requestId": request_id,
@@ -398,8 +410,7 @@ async def handle_smart_home_request(
         }
 
     elif intent == "action.devices.EXECUTE":
-        catalog_path = settings.get_catalog_file()
-        catalog_data = load_catalog(catalog_path)
+        catalog_data = _resolve_catalog(settings, catalog_store)
         catalog_inputs = catalog_data.get("inputs", [])
 
         commands_input = inputs[0].get("payload", {}).get("commands", [])
@@ -488,9 +499,13 @@ async def handle_smart_home_request(
 
     elif intent == "action.devices.DISCONNECT":
         # Google sends DISCONNECT when the user unlinks the integration.
-        # Access/refresh tokens are self-contained JWTs; acknowledge unlink so
-        # Home Graph clears the agent association. No durable cloud session store.
+        # Stop Request Sync until the account is linked again.
         log.info("Google Home DISCONNECT for requestId=%s; acknowledging unlink", request_id)
+        if catalog_store is not None:
+            try:
+                catalog_store.set_linked(False)
+            except Exception as exc:
+                log.warning("Could not persist unlink flag: %s", exc)
         return {"requestId": request_id}
 
     else:

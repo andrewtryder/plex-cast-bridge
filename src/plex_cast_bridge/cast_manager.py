@@ -28,6 +28,7 @@ class CastManager:
     def __init__(
         self,
         default_volume: float = DEFAULT_CAST_VOLUME,
+        max_volume: float = 1.0,
         default_speaker_host: str = "",
         disabled_speakers: set[str] | None = None,
         catalog_path: Path | str | None = None,
@@ -35,6 +36,7 @@ class CastManager:
         self.speakers = {}
         self.lock = threading.RLock()
         self.default_volume = default_volume
+        self.max_volume = max_volume
         self.default_speaker_host = default_speaker_host.strip()
         self.disabled_speakers: set[str] = {s.casefold() for s in (disabled_speakers or set())}
         self.last_discovered: list[dict] = []
@@ -80,6 +82,51 @@ class CastManager:
             else:
                 self.disabled_speakers.add(n)
                 self.disabled_speakers.add(r)
+
+    @staticmethod
+    def _is_cast_connected(speaker) -> bool:
+        """Return False when a Chromecast socket is known-dead (needs reconnect)."""
+        if isinstance(speaker, LocalSpeaker):
+            return True
+        cast = getattr(speaker, "cast", None)
+        if cast is None:
+            return False
+        socket_client = getattr(cast, "socket_client", None)
+        if socket_client is None:
+            return True
+        return bool(getattr(socket_client, "is_connected", True))
+
+    def _discard_speaker(self, name: str):
+        """Drop a cached speaker and tear down its Cast connection."""
+        speaker = self.speakers.pop(name, None)
+        if speaker is None:
+            return
+        if isinstance(speaker, LocalSpeaker):
+            try:
+                speaker.stop()
+            except Exception as exc:
+                log.debug("LocalSpeaker stop during discard failed: %s", exc)
+            return
+        try:
+            speaker.executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:
+            log.debug("Speaker executor shutdown during discard failed: %s", exc)
+        try:
+            speaker.cast.disconnect()
+        except Exception as exc:
+            log.debug("Cast disconnect during discard failed: %s", exc)
+
+    def _connect_from_host(self, name: str, host_tuple: tuple, *, timeout: float = 10):
+        """Open a host-based Cast connection that does not depend on discovery Zeroconf."""
+        cast = pychromecast.get_chromecast_from_host(host_tuple)
+        cast.wait(timeout=timeout)
+        sq = SpeakerQueue(
+            cast,
+            default_volume=min(self.default_volume, self.max_volume),
+            max_volume=self.max_volume,
+        )
+        self.speakers[name] = sq
+        return sq
 
     def discover(self):
         discovered = []
@@ -190,8 +237,12 @@ class CastManager:
             if name.casefold() in ("test speaker", "mac speaker", "local speaker", "mac local"):
                 return self.speakers.setdefault("test speaker", LocalSpeaker(enable_playback=True))
 
-            if name in self.speakers:
-                return self.speakers[name]
+            cached = self.speakers.get(name)
+            if cached is not None:
+                if self._is_cast_connected(cached):
+                    return cached
+                log.warning("Cached Cast connection for '%s' is dead; reconnecting", name)
+                self._discard_speaker(name)
 
             # Generate candidate friendly names (e.g. "Master Bedroom" -> ["Master Bedroom", "Master Bedroom display"])
             candidate_names = [name]
@@ -201,47 +252,8 @@ class CastManager:
             if not cleaned.lower().endswith("speaker"):
                 candidate_names.append(f"{cleaned} speaker")
 
-            # 1. Try standard pychromecast discovery
-            try:
-                casts, browser = pychromecast.get_listed_chromecasts(
-                    friendly_names=candidate_names, discovery_timeout=3
-                )
-                try:
-                    if casts:
-                        cast = casts[0]
-                        cast.wait(timeout=10)
-                        sq = SpeakerQueue(cast, default_volume=self.default_volume)
-                        self.speakers[name] = sq
-                        return sq
-                finally:
-                    browser.stop_discovery()
-            except Exception as exc:
-                log.debug("pychromecast get_listed_chromecasts error: %s", exc)
-
-            # 2. Try native macOS dns-sd discovery & direct host connection
-            if sys.platform == "darwin":
-                dnssd_devices = _discover_via_dnssd()
-                for dev in dnssd_devices:
-                    dev_name = dev["name"].casefold()
-                    for cand in candidate_names:
-                        cand_fold = cand.casefold()
-                        if cand_fold == dev_name or cand_fold in dev_name or dev_name in cand_fold:
-                            log.info(
-                                "Found speaker '%s' via dns-sd matching '%s' at %s:%s",
-                                dev["name"],
-                                name,
-                                dev["host"],
-                                dev["port"],
-                            )
-                            cast = pychromecast.get_chromecast_from_host(
-                                (dev["host"], dev["port"], dev["uuid"], dev["model"], dev["name"])
-                            )
-                            cast.wait(timeout=10)
-                            sq = SpeakerQueue(cast, default_volume=self.default_volume)
-                            self.speakers[name] = sq
-                            return sq
-
-            # 3. Known / catalog speaker direct connection fallback
+            # 1. Prefer known hosts (catalog / last scan). Host-based connections survive
+            # discovery teardown; discovery-tied sockets do not (Zeroconf AssertionError).
             fallback_candidates = []
             seen_cand_hosts = set()
             for spk in (self.last_discovered + self._get_catalog_speakers()):
@@ -266,15 +278,79 @@ class CastManager:
                     port,
                 )
                 try:
-                    cast = pychromecast.get_chromecast_from_host(
-                        (host, port, spk.get("uuid"), spk.get("model", "Google Cast"), spk.get("name", name))
+                    return self._connect_from_host(
+                        name,
+                        (host, port, spk.get("uuid"), spk.get("model", "Google Cast"), spk.get("name", name)),
+                        timeout=8,
                     )
-                    cast.wait(timeout=8)
-                    sq = SpeakerQueue(cast, default_volume=self.default_volume)
-                    self.speakers[name] = sq
-                    return sq
                 except Exception as exc:
                     log.warning("Direct connection to known speaker %s:%s failed: %s", host, port, exc)
+
+            # 2. Native macOS dns-sd discovery & direct host connection
+            if sys.platform == "darwin":
+                dnssd_devices = _discover_via_dnssd()
+                for dev in dnssd_devices:
+                    dev_name = dev["name"].casefold()
+                    for cand in candidate_names:
+                        cand_fold = cand.casefold()
+                        if cand_fold == dev_name or cand_fold in dev_name or dev_name in cand_fold:
+                            log.info(
+                                "Found speaker '%s' via dns-sd matching '%s' at %s:%s",
+                                dev["name"],
+                                name,
+                                dev["host"],
+                                dev["port"],
+                            )
+                            try:
+                                return self._connect_from_host(
+                                    name,
+                                    (dev["host"], dev["port"], dev["uuid"], dev["model"], dev["name"]),
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "dns-sd host connect to %s:%s failed: %s",
+                                    dev["host"],
+                                    dev["port"],
+                                    exc,
+                                )
+
+            # 3. mDNS discovery — only to learn host/port, then reconnect via from_host
+            # so stop_discovery() cannot kill the live socket's Zeroconf loop.
+            try:
+                casts, browser = pychromecast.get_listed_chromecasts(
+                    friendly_names=candidate_names, discovery_timeout=3
+                )
+                host_tuple = None
+                try:
+                    if casts:
+                        info = casts[0].cast_info
+                        host_tuple = (
+                            info.host,
+                            info.port,
+                            str(info.uuid) if getattr(info, "uuid", None) else None,
+                            info.model_name or "Google Cast",
+                            info.friendly_name or name,
+                        )
+                finally:
+                    try:
+                        browser.stop_discovery()
+                    except Exception as exc:
+                        log.debug("stop_discovery failed: %s", exc)
+                    for c in casts or []:
+                        try:
+                            c.disconnect()
+                        except Exception:
+                            pass
+                if host_tuple:
+                    log.info(
+                        "Resolved '%s' via mDNS to %s:%s; connecting host-based",
+                        name,
+                        host_tuple[0],
+                        host_tuple[1],
+                    )
+                    return self._connect_from_host(name, host_tuple)
+            except Exception as exc:
+                log.debug("pychromecast get_listed_chromecasts error: %s", exc)
 
             # 4. Configurable static host fallback via DEFAULT_SPEAKER_HOST
             if self.default_speaker_host:
@@ -285,13 +361,10 @@ class CastManager:
                     port_int = int(port_part)
                 log.info("Attempting direct connection to configured DEFAULT_SPEAKER_HOST %s:%d", host_str, port_int)
                 try:
-                    cast = pychromecast.get_chromecast_from_host(
-                        (host_str, port_int, None, "Google Cast", name)
+                    return self._connect_from_host(
+                        name,
+                        (host_str, port_int, None, "Google Cast", name),
                     )
-                    cast.wait(timeout=10)
-                    sq = SpeakerQueue(cast, default_volume=self.default_volume)
-                    self.speakers[name] = sq
-                    return sq
                 except Exception as exc:
                     log.warning("Direct connection to %s:%d failed: %s", host_str, port_int, exc)
 

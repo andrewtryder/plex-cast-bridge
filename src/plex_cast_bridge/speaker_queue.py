@@ -13,10 +13,57 @@ log = logging.getLogger(__name__)
 DEFAULT_CAST_VOLUME = 0.20
 
 
+def track_art_url(track) -> str | None:
+    """Return a Plex thumb URL for Cast metadata (may include token; not for browsers)."""
+    if track is None:
+        return None
+    thumb = getattr(track, "thumbUrl", None)
+    if thumb:
+        return thumb
+    if getattr(track, "thumb", None) and hasattr(track, "_server"):
+        try:
+            return track._server.url(track.thumb, includeToken=True)
+        except Exception:
+            return None
+    return None
+
+
+def track_art_proxy_path(track) -> str | None:
+    """Browser-safe artwork path served by the bridge (no Plex token in the URL)."""
+    if track is None:
+        return None
+    key = getattr(track, "ratingKey", None)
+    if key is None:
+        return None
+    return f"/api/artwork/{key}"
+
+
+def _browser_art(track) -> str | None:
+    proxy = track_art_proxy_path(track)
+    if proxy:
+        return proxy
+    raw = track_art_url(track)
+    if raw and "X-Plex-Token=" not in str(raw):
+        return raw
+    return None
+
+
+def _track_summary(track) -> dict:
+    return {
+        "rating_key": getattr(track, "ratingKey", None),
+        "title": getattr(track, "title", ""),
+        "artist": getattr(track, "grandparentTitle", ""),
+        "album": getattr(track, "parentTitle", ""),
+        "art": _browser_art(track),
+        "duration_ms": getattr(track, "duration", None),
+    }
+
+
 class SpeakerQueue(MediaStatusListener):
-    def __init__(self, cast, default_volume=DEFAULT_CAST_VOLUME):
+    def __init__(self, cast, default_volume=DEFAULT_CAST_VOLUME, max_volume: float = 1.0):
         self.cast = cast
         self.default_volume = default_volume
+        self.max_volume = max(0.0, min(1.0, float(max_volume)))
         self.queue = deque()
         self.history = deque(maxlen=20)
         self.original = []
@@ -317,7 +364,8 @@ class SpeakerQueue(MediaStatusListener):
             log.warning("Media controller resume/play error on '%s': %s", self.cast.name, exc)
 
     def set_volume(self, volume: float):
-        clamped = max(0.0, min(1.0, float(volume)))
+        capped = min(float(volume), self.max_volume)
+        clamped = max(0.0, min(1.0, capped))
         try:
             self.cast.set_volume(clamped)
         except Exception as exc:
@@ -354,24 +402,76 @@ class SpeakerQueue(MediaStatusListener):
             except Exception as exc:
                 log.debug("Cast quit_app error on '%s' (ignored): %s", self.cast.name, exc)
 
+    def queue_snapshot(self) -> list[dict]:
+        with self.lock:
+            return [_track_summary(t) for t in list(self.queue)]
+
+    def remove_at(self, index: int) -> dict:
+        with self.lock:
+            if index < 0 or index >= len(self.queue):
+                raise ValueError("queue index out of range")
+            items = list(self.queue)
+            removed = items.pop(index)
+            self.queue = deque(items)
+            return _track_summary(removed)
+
+    def move(self, from_index: int, to_index: int) -> None:
+        with self.lock:
+            items = list(self.queue)
+            if from_index < 0 or from_index >= len(items):
+                raise ValueError("from_index out of range")
+            to_index = max(0, min(len(items) - 1, to_index))
+            item = items.pop(from_index)
+            items.insert(to_index, item)
+            self.queue = deque(items)
+
+    def play_next(self, track) -> None:
+        with self.lock:
+            self.queue.appendleft(track)
+
+    def add_end(self, track) -> None:
+        with self.lock:
+            self.queue.append(track)
+
+    def clear_upcoming(self) -> int:
+        with self.lock:
+            n = len(self.queue)
+            self.queue.clear()
+            return n
+
     def status(self):
         with self.lock:
             track = self.current
-            player_state = getattr(self.cast.media_controller.status, "player_state", "UNKNOWN")
-            volume = getattr(getattr(self.cast, "status", None), "volume_level", None)
+            try:
+                player_state = getattr(self.cast.media_controller.status, "player_state", "UNKNOWN")
+            except Exception:
+                player_state = "UNKNOWN"
+            try:
+                volume = getattr(getattr(self.cast, "status", None), "volume_level", None)
+            except Exception:
+                volume = None
+            current_track = None
+            position_ms = None
+            duration_ms = None
+            if track:
+                current_track = _track_summary(track)
+                try:
+                    st = self.cast.media_controller.status
+                    position_ms = int(float(getattr(st, "current_time", 0) or 0) * 1000)
+                    duration_ms = getattr(track, "duration", None)
+                    if duration_ms is None and getattr(st, "duration", None):
+                        duration_ms = int(float(st.duration) * 1000)
+                except Exception:
+                    pass
             return {
-                "speaker": self.cast.name,
+                "speaker": getattr(self.cast, "name", "unknown"),
                 "state": player_state,
                 "volume": volume,
-                "current_track": (
-                    {
-                        "title": track.title,
-                        "artist": getattr(track, "grandparentTitle", ""),
-                        "album": getattr(track, "parentTitle", ""),
-                    }
-                    if track
-                    else None
-                ),
+                "max_volume": self.max_volume,
+                "current_track": current_track,
+                "position_ms": position_ms,
+                "duration_ms": duration_ms,
                 "queue_length": len(self.queue),
+                "up_next": [_track_summary(t) for t in list(self.queue)[:25]],
                 "repeat": self.repeat,
             }

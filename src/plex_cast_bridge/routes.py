@@ -1,23 +1,43 @@
 """HTTP routes for the local Plex Cast Bridge control API."""
 
+import io
+import json
+import logging
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .api_auth import verify_local_api
-from .api_models import Command, SpeakerTest, SpeakerToggle, Transport
+from .api_models import Command, LibraryPlay, QueueMutate, SpeakerTest, SpeakerToggle, Transport
 from .catalog_store import (
+    DATA_DIR,
     PROJECT_ROOT,
     persist_discovered_speakers_to_catalog,
 )
 from .playback_service import play, transport
+from .speaker_queue import track_art_proxy_path
+
+log = logging.getLogger(__name__)
 
 ICON_PATH = PROJECT_ROOT / "assets" / "icon.png"
+ICON_144_PATH = PROJECT_ROOT / "assets" / "icon-144.png"
+TUTORIAL_MANIFEST = PROJECT_ROOT / "assets" / "tutorials" / "manifest.json"
 DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 
 router = APIRouter()
+
+PLEX_REQUIRED_DETAIL = "Plex is not linked. Connect with Plex in Settings, or set PLEX_TOKEN."
+
+
+def _require_plex(request: Request):
+    plex = getattr(request.app.state, "plex", None)
+    if plex is None:
+        raise HTTPException(status_code=503, detail=PLEX_REQUIRED_DETAIL)
+    return plex
 
 
 @router.get("/health", include_in_schema=False)
@@ -32,6 +52,24 @@ async def serve_icon():
     raise HTTPException(status_code=404, detail="Icon not found")
 
 
+@router.get("/assets/icon-144.png", include_in_schema=False)
+async def serve_icon_144():
+    if ICON_144_PATH.exists():
+        return FileResponse(
+            ICON_144_PATH,
+            media_type="image/png",
+            filename="plex-cast-bridge-icon-144.png",
+        )
+    raise HTTPException(status_code=404, detail="Icon not found")
+
+
+@router.get("/assets/tutorials/manifest.json", include_in_schema=False)
+async def serve_tutorial_manifest():
+    if TUTORIAL_MANIFEST.exists():
+        return FileResponse(TUTORIAL_MANIFEST, media_type="application/json")
+    raise HTTPException(status_code=404, detail="Tutorial manifest not found")
+
+
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_ui():
     if DASHBOARD_TEMPLATE.exists():
@@ -42,21 +80,25 @@ async def dashboard_ui():
 @router.post("/api/command", dependencies=[Depends(verify_local_api)])
 async def command_endpoint(request: Request, command: Command):
     state = request.app.state
+    plex = _require_plex(request)
     try:
         return await play(
             dj=state.dj,
-            plex=state.plex,
+            plex=plex,
             cast=state.cast,
             settings=state.settings,
             command=command,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Command failed for query=%r speaker=%r", command.query, command.speaker)
+        raise HTTPException(status_code=500, detail=f"Playback failed: {exc}") from exc
 
 
 @router.get("/api/library/tracks", dependencies=[Depends(verify_local_api)])
 async def library_tracks(request: Request, query: str = "", limit: int = 25):
-    state = request.app.state
+    plex = _require_plex(request)
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
 
@@ -64,7 +106,7 @@ async def library_tracks(request: Request, query: str = "", limit: int = 25):
         kwargs = {"libtype": "track", "maxresults": limit}
         if query:
             kwargs["title"] = query
-        tracks = state.plex.library.search(**kwargs)
+        tracks = plex.library.search(**kwargs)
         return [
             {
                 "title": t.title,
@@ -80,12 +122,13 @@ async def library_tracks(request: Request, query: str = "", limit: int = 25):
 @router.post("/api/speakers/test", dependencies=[Depends(verify_local_api)])
 async def test_speaker_endpoint(request: Request, command: SpeakerTest):
     state = request.app.state
+    plex = _require_plex(request)
 
     def execute():
         tracks = (
-            state.plex.library.search(title=command.query, libtype="track")
+            plex.library.search(title=command.query, libtype="track")
             if command.query
-            else state.plex.library.search(libtype="track", maxresults=1)
+            else plex.library.search(libtype="track", maxresults=1)
         )
         if not tracks:
             raise ValueError("No matching tracks found in the Plex library")
@@ -110,6 +153,18 @@ async def transport_endpoint(request: Request, command: Transport):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Transport '%s' failed for speaker=%r", command.action, command.speaker)
+        raise HTTPException(status_code=500, detail=f"Transport failed: {exc}") from exc
+
+
+def _annotate_speakers(discovered: list[dict]) -> list[dict]:
+    for dev in discovered:
+        model = str(dev.get("model") or "")
+        kind = "group" if "group" in model.lower() else "speaker"
+        dev["kind"] = kind
+        dev["is_group"] = kind == "group"
+    return discovered
 
 
 @router.get("/api/speakers", dependencies=[Depends(verify_local_api)])
@@ -120,10 +175,10 @@ async def speakers_endpoint(request: Request, scan: bool = False):
         if scan or not getattr(state.cast, "last_discovered", None):
             discovered = state.cast.discover()
             persist_discovered_speakers_to_catalog(discovered, state.cast)
-            return discovered
+            return _annotate_speakers(discovered)
         for dev in state.cast.last_discovered:
             dev["enabled"] = not state.cast.is_disabled(dev["name"])
-        return state.cast.last_discovered
+        return _annotate_speakers(list(state.cast.last_discovered))
 
     try:
         return await run_in_threadpool(get_list)
@@ -166,10 +221,314 @@ async def status_endpoint(request: Request):
 
 @router.post("/api/library/refresh", dependencies=[Depends(verify_local_api)])
 async def refresh_endpoint(request: Request):
-    return await run_in_threadpool(request.app.state.plex.refresh)
+    plex = _require_plex(request)
+    return await run_in_threadpool(plex.refresh)
 
 
 @router.get("/api/sync-catalog", dependencies=[Depends(verify_local_api)])
 async def catalog_endpoint(request: Request):
-    catalog = request.app.state.plex.catalog
+    plex = _require_plex(request)
+    catalog = plex.catalog
     return {"genres": catalog["genres"], "artists": catalog["artists"][:100]}
+
+
+@router.get("/api/artwork/{rating_key}", dependencies=[Depends(verify_local_api)])
+async def artwork_proxy(request: Request, rating_key: str):
+    plex = _require_plex(request)
+
+    def fetch():
+        item = plex.server.fetchItem(int(rating_key))
+        thumb = getattr(item, "thumbUrl", None)
+        if not thumb and getattr(item, "thumb", None):
+            thumb = plex.server.url(item.thumb, includeToken=True)
+        if not thumb:
+            raise ValueError("No artwork")
+        import urllib.request
+
+        with urllib.request.urlopen(thumb, timeout=20) as resp:
+            return resp.read(), resp.headers.get("Content-Type", "image/jpeg")
+
+    try:
+        data, content_type = await run_in_threadpool(fetch)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Artwork unavailable: {exc}") from exc
+    return Response(content=data, media_type=content_type)
+
+
+@router.get("/api/queue", dependencies=[Depends(verify_local_api)])
+async def queue_get(request: Request, speaker: str | None = None):
+    state = request.app.state
+    name = speaker or state.settings.default_speaker_name
+    spk = state.cast.get(name)
+    status = spk.status()
+    return {
+        "speaker": name,
+        "current": status.get("current_track"),
+        "up_next": getattr(spk, "queue_snapshot", lambda: status.get("up_next") or [])(),
+        "queue_length": status.get("queue_length", 0),
+    }
+
+
+@router.post("/api/queue", dependencies=[Depends(verify_local_api)])
+async def queue_mutate(request: Request, body: QueueMutate):
+    state = request.app.state
+    plex = _require_plex(request)
+    name = body.speaker or state.settings.default_speaker_name
+    spk = state.cast.get(name)
+
+    def run():
+        if body.action == "clear":
+            n = spk.clear_upcoming() if hasattr(spk, "clear_upcoming") else 0
+            return {"cleared": n, "status": spk.status()}
+        if body.action == "remove":
+            if body.index is None:
+                raise ValueError("index required")
+            removed = spk.remove_at(body.index)
+            return {"removed": removed, "status": spk.status()}
+        if body.action == "move":
+            if body.index is None or body.to_index is None:
+                raise ValueError("index and to_index required")
+            spk.move(body.index, body.to_index)
+            return {"status": spk.status()}
+        if body.action in {"play_next", "add_end"}:
+            if body.rating_key is None:
+                raise ValueError("rating_key required")
+            track = plex.server.fetchItem(int(body.rating_key))
+            if body.action == "play_next":
+                spk.play_next(track)
+            else:
+                spk.add_end(track)
+            return {"status": spk.status()}
+        raise ValueError(f"unsupported action {body.action}")
+
+    try:
+        return await run_in_threadpool(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/library/browse", dependencies=[Depends(verify_local_api)])
+async def library_browse(
+    request: Request,
+    kind: str = "artists",
+    query: str = "",
+    limit: int = 40,
+    offset: int = 0,
+):
+    plex = _require_plex(request)
+    limit = max(1, min(100, limit))
+    offset = max(0, offset)
+
+    def browse():
+        section = plex.library
+        items = []
+        if kind == "genres":
+            choices = []
+            try:
+                choices = list(section.listFilterChoices("genre"))
+            except Exception:
+                choices = [{"title": g} for g in (plex.catalog or {}).get("genres", [])]
+            for g in choices[offset : offset + limit]:
+                items.append({"title": getattr(g, "title", g if isinstance(g, str) else str(g)), "type": "genre"})
+            return {"kind": kind, "items": items, "offset": offset, "limit": limit}
+        if kind == "artists":
+            kwargs = {"libtype": "artist", "maxresults": offset + limit}
+            if query:
+                kwargs["title"] = query
+            artists = plex.library.search(**kwargs)[offset : offset + limit]
+            for a in artists:
+                items.append(
+                    {
+                        "rating_key": getattr(a, "ratingKey", None),
+                        "title": a.title,
+                        "type": "artist",
+                        "art": track_art_proxy_path(a),
+                    }
+                )
+            return {"kind": kind, "items": items, "offset": offset, "limit": limit}
+        if kind == "albums":
+            kwargs = {"libtype": "album", "maxresults": offset + limit}
+            if query:
+                kwargs["title"] = query
+            albums = plex.library.search(**kwargs)[offset : offset + limit]
+            for a in albums:
+                items.append(
+                    {
+                        "rating_key": getattr(a, "ratingKey", None),
+                        "title": a.title,
+                        "artist": getattr(a, "parentTitle", ""),
+                        "type": "album",
+                        "art": track_art_proxy_path(a),
+                    }
+                )
+            return {"kind": kind, "items": items, "offset": offset, "limit": limit}
+        # tracks
+        kwargs = {"libtype": "track", "maxresults": offset + limit}
+        if query:
+            kwargs["title"] = query
+        tracks = plex.library.search(**kwargs)[offset : offset + limit]
+        for t in tracks:
+            items.append(
+                {
+                    "rating_key": getattr(t, "ratingKey", None),
+                    "title": t.title,
+                    "artist": getattr(t, "grandparentTitle", ""),
+                    "album": getattr(t, "parentTitle", ""),
+                    "type": "track",
+                    "art": track_art_proxy_path(t),
+                }
+            )
+        return {"kind": "tracks", "items": items, "offset": offset, "limit": limit}
+
+    try:
+        return await run_in_threadpool(browse)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/api/library/play", dependencies=[Depends(verify_local_api)])
+async def library_play(request: Request, body: LibraryPlay):
+    state = request.app.state
+    plex = _require_plex(request)
+    name = body.speaker or state.settings.default_speaker_name
+
+    def run():
+        item = plex.server.fetchItem(int(body.rating_key))
+        spk = state.cast.get(name)
+        tracks = []
+        itype = getattr(item, "type", None) or getattr(item, "TYPE", "")
+        if str(itype) == "artist":
+            tracks = list(item.tracks())[:100]
+        elif str(itype) == "album":
+            tracks = list(item.tracks())
+        else:
+            tracks = [item]
+        if not tracks:
+            raise ValueError("No tracks found for that item")
+        if body.mode == "replace":
+            spk.replace(tracks, repeat=False)
+        elif body.mode == "play_next":
+            for t in reversed(tracks):
+                spk.play_next(t)
+        else:
+            for t in tracks:
+                spk.add_end(t)
+        return spk.status()
+
+    try:
+        return await run_in_threadpool(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/diagnostics", dependencies=[Depends(verify_local_api)])
+async def diagnostics(request: Request):
+    from . import catalog_sync
+    from . import google_home_setup as gh
+
+    settings = request.app.state.settings
+    plex = getattr(request.app.state, "plex", None)
+    cast = request.app.state.cast
+    sync = catalog_sync.public_sync_status()
+    setup = gh.public_status()
+    checks = [
+        {
+            "id": "local_bridge",
+            "label": "Local bridge",
+            "status": "connected",
+            "detail": "API responding",
+        },
+        {
+            "id": "plex",
+            "label": "Plex",
+            "status": "connected" if plex else "not_configured",
+            "detail": "Linked" if plex else "Connect with Plex",
+        },
+        {
+            "id": "cast",
+            "label": "Cast discovery",
+            "status": "connected" if getattr(cast, "last_discovered", None) else "needs_attention",
+            "detail": f"{len(getattr(cast, 'last_discovered', []) or [])} known device(s)",
+        },
+        {
+            "id": "google_cloud",
+            "label": "Google Cloud gateway",
+            "status": "connected" if setup.get("cloud_run_url") else "not_configured",
+            "detail": setup.get("cloud_run_url") or "Not configured",
+        },
+        {
+            "id": "catalog_sync",
+            "label": "Cloud catalog sync",
+            "status": (
+                "connected"
+                if sync.get("status") == "succeeded"
+                else ("needs_attention" if sync.get("status") == "failed" else "not_configured")
+            ),
+            "detail": sync.get("status"),
+        },
+        {
+            "id": "pubsub",
+            "label": "Pub/Sub listener",
+            "status": "connected" if settings.enable_pubsub_listener else "not_configured",
+            "detail": "enabled" if settings.enable_pubsub_listener else "disabled",
+        },
+        {
+            "id": "home_link",
+            "label": "Google Home linking",
+            "status": "connected" if setup.get("link_confirmed") else "not_configured",
+            "detail": "Confirmed" if setup.get("link_confirmed") else "Unverified",
+        },
+    ]
+    return {
+        "checks": checks,
+        "updated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "technical": {
+            "project_id": settings.gcp_project_id or None,
+            "subscription_id": settings.gcp_pubsub_subscription_id or None,
+            "max_cast_volume": settings.max_cast_volume,
+            "default_cast_volume": settings.default_cast_volume,
+        },
+    }
+
+
+@router.get("/api/backup", dependencies=[Depends(verify_local_api)])
+async def backup_export(request: Request):
+    """Download non-secret configuration backup (excludes tokens, PEMs, SA keys)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        meta = {
+            "schema_version": 1,
+            "created_at": datetime.now(UTC).isoformat(),
+            "includes_secrets": False,
+        }
+        zf.writestr("backup_meta.json", json.dumps(meta, indent=2))
+        cat = DATA_DIR / "catalog.json"
+        if cat.exists():
+            zf.writestr("catalog.json", cat.read_text(encoding="utf-8"))
+        for name in ("google_home_setup.json", "google_home_sync.json"):
+            p = DATA_DIR / name
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                data.pop("catalog_write_key", None)
+                zf.writestr(name, json.dumps(data, indent=2))
+        settings = request.app.state.settings
+        zf.writestr(
+            "settings_public.json",
+            json.dumps(
+                {
+                    "default_cast_volume": settings.default_cast_volume,
+                    "max_cast_volume": settings.max_cast_volume,
+                    "night_cast_volume": settings.night_cast_volume,
+                    "gcp_project_id": settings.gcp_project_id,
+                    "enable_pubsub_listener": settings.enable_pubsub_listener,
+                    "cloud_gateway_url": settings.cloud_gateway_url,
+                },
+                indent=2,
+            ),
+        )
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=plex-cast-bridge-backup.zip"},
+    )

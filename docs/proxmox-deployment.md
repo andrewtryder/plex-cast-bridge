@@ -116,7 +116,7 @@ newgrp docker
 
 ## 4. Directory Structure & Persistent Data
 
-Plex Cast Bridge stores mutable state (speaker enable/disable preferences, room assignments, and dead-letter queue records) in a dedicated host directory mounted into the container at `/data`. Compose resolves `../data` relative to [`deploy/docker-compose.yml`](../deploy/docker-compose.yml), so with the layout below that is `~/plex-cast-bridge/data`.
+Plex Cast Bridge stores mutable state (speaker enable/disable preferences, room assignments, Plex link credentials, and dead-letter queue records) in a dedicated host directory mounted into the container at `/data`. Compose resolves `../data` relative to [`deploy/docker-compose.yml`](../deploy/docker-compose.yml), so with the layout below that is `~/plex-cast-bridge/data`. Treat `/data` as required persistence — not optional scratch space — so Settings → Connect with Plex and speaker toggles survive image rebuilds and `--force-recreate`.
 
 On the VM, create the project directory:
 
@@ -136,9 +136,12 @@ sudo chown -R 10001:10001 ~/plex-cast-bridge/data
 ~/plex-cast-bridge/
 ├── .env                     # Runtime secrets and connection details
 ├── gcp-credentials.json     # Google Cloud Service Account credentials
-├── data/                    # Persistent volume mount
+├── data/                    # Persistent volume mount (DATA_DIR=/data)
 │   ├── catalog.json         # Speaker metadata and toggles (persisted across container updates)
-│   └── dead_letter_queue.jsonl # Poison pill command audit log
+│   ├── dead_letter_queue.jsonl # Poison pill command audit log
+│   ├── plex_connection.json # Plex link status + JWT/access tokens (mode 0600; never expose via API)
+│   ├── plex_device_private.pem # Device key material for Plex JWT login (mode 0600)
+│   └── plex_device_public.pem  # Matching public key for Plex JWT login (mode 0600)
 └── deploy/
     └── docker-compose.yml   # Compose orchestrator configuration
 ```
@@ -161,7 +164,7 @@ Create `.env` inside `~/plex-cast-bridge/`:
 ```bash
 LOCAL_API_KEY="$(openssl rand -hex 32)"
 cat << EOF > ~/plex-cast-bridge/.env
-# Plex Media Server Settings
+# Plex Media Server Settings (optional if you use Settings → Connect with Plex)
 PLEX_URL=http://192.168.1.50:32400
 PLEX_TOKEN=your_plex_x_token_here
 PLEX_MUSIC_SECTION=Music

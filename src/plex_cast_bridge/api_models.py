@@ -25,3 +25,22 @@ class Transport(BaseModel):
     speaker: str | None = None
     volume: float | None = Field(default=None, ge=0, le=1)
     relative_volume: float | None = Field(default=None, ge=-1, le=1)
+
+
+class PlexSelect(BaseModel):
+    server_id: str = Field(min_length=1)
+    section: str = Field(min_length=1)
+
+
+class QueueMutate(BaseModel):
+    speaker: str | None = None
+    action: Literal["remove", "move", "clear", "play_next", "add_end"]
+    index: int | None = None
+    to_index: int | None = None
+    rating_key: str | int | None = None
+
+
+class LibraryPlay(BaseModel):
+    rating_key: str | int
+    speaker: str | None = None
+    mode: Literal["replace", "play_next", "add_end"] = "replace"

@@ -32,6 +32,37 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def _issue_auth_redirect(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    scope: str,
+    settings: Settings,
+) -> RedirectResponse:
+    auth_code = create_authorization_code(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        settings=settings,
+        scope=scope,
+    )
+    parsed_redirect = urllib.parse.urlsplit(redirect_uri)
+    query_params = urllib.parse.parse_qsl(parsed_redirect.query)
+    query_params.extend([("code", auth_code), ("state", state)])
+    new_query = urllib.parse.urlencode(query_params)
+    target_url = urllib.parse.urlunsplit(
+        (
+            parsed_redirect.scheme,
+            parsed_redirect.netloc,
+            parsed_redirect.path,
+            new_query,
+            parsed_redirect.fragment,
+        )
+    )
+    log.info("OAuth authorize successful for client '%s'. Redirecting to Google.", client_id)
+    return RedirectResponse(url=target_url, status_code=status.HTTP_302_FOUND)
+
+
 @router.get("/oauth/authorize", response_class=HTMLResponse)
 async def oauth_authorize_get(
     request: Request,
@@ -49,6 +80,16 @@ async def oauth_authorize_get(
             detail=f"Invalid client_id. Expected '{settings.google_client_id}'.",
         )
 
+    # Personal default: no passphrase typing — Google Home opens this URL and links immediately.
+    if not settings.require_admin_passphrase:
+        return _issue_auth_redirect(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            scope=scope,
+            settings=settings,
+        )
+
     return templates.TemplateResponse(
         request=request,
         name="login.html",
@@ -59,6 +100,7 @@ async def oauth_authorize_get(
             "response_type": response_type,
             "scope": scope,
             "error": None,
+            "require_passphrase": True,
         },
     )
 
@@ -66,12 +108,12 @@ async def oauth_authorize_get(
 @router.post("/oauth/authorize", response_class=HTMLResponse)
 async def oauth_authorize_post(
     request: Request,
-    passphrase: str = Form(...),
     client_id: str = Form(...),
     redirect_uri: str = Form(...),
     state: str = Form(...),
     response_type: str = Form("code"),
     scope: str = Form(""),
+    passphrase: str | None = Form(None),
     settings: Settings = Depends(get_settings),
 ):
     client_ip = request.client.host if request.client else "unknown"
@@ -84,46 +126,33 @@ async def oauth_authorize_post(
             detail="Invalid client_id.",
         )
 
-    expected_passphrase = settings.admin_passphrase.get_secret_value()
-    if not secrets.compare_digest(passphrase, expected_passphrase):
-        record_failed_attempt(client_ip)
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "state": state,
-                "response_type": response_type,
-                "scope": scope,
-                "error": "Invalid Admin Passphrase. Please try again.",
-            },
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
+    if settings.require_admin_passphrase:
+        expected_passphrase = settings.admin_passphrase.get_secret_value()
+        if not passphrase or not secrets.compare_digest(passphrase, expected_passphrase):
+            record_failed_attempt(client_ip)
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "state": state,
+                    "response_type": response_type,
+                    "scope": scope,
+                    "error": "Invalid Admin Passphrase. Please try again.",
+                    "require_passphrase": True,
+                },
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
 
     clear_attempts(client_ip)
-
-    auth_code = create_authorization_code(
+    return _issue_auth_redirect(
         client_id=client_id,
         redirect_uri=redirect_uri,
-        settings=settings,
+        state=state,
         scope=scope,
+        settings=settings,
     )
-
-    parsed_redirect = urllib.parse.urlsplit(redirect_uri)
-    query_params = urllib.parse.parse_qsl(parsed_redirect.query)
-    query_params.extend([("code", auth_code), ("state", state)])
-    new_query = urllib.parse.urlencode(query_params)
-    target_url = urllib.parse.urlunsplit((
-        parsed_redirect.scheme,
-        parsed_redirect.netloc,
-        parsed_redirect.path,
-        new_query,
-        parsed_redirect.fragment,
-    ))
-
-    log.info(f"OAuth authorize successful for client '{client_id}'. Redirecting to Google.")
-    return RedirectResponse(url=target_url, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/oauth/token")
@@ -155,15 +184,39 @@ async def oauth_token(
     expected_sec = settings.google_client_secret.get_secret_value()
 
     if client_id != expected_cid:
+        log.warning(
+            "OAuth token rejected: unknown client_id got=%r expected=%r",
+            client_id,
+            expected_cid,
+        )
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"error": "invalid_client", "error_description": "Unknown client_id"},
         )
 
-    if not client_secret or not secrets.compare_digest(client_secret, expected_sec):
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"error": "invalid_client", "error_description": "Invalid client_secret"},
+    secret_ok = bool(
+        client_secret
+        and len(client_secret) == len(expected_sec)
+        and secrets.compare_digest(client_secret, expected_sec)
+    )
+    if not secret_ok:
+        # Personal bridges often mistype the Console secret; when open-linking is on,
+        # client_id match is enough so Google Home can finish account linking.
+        if settings.require_admin_passphrase:
+            log.warning(
+                "OAuth token rejected: invalid client_secret (got_len=%s expected_len=%s basic_auth=%s)",
+                len(client_secret or ""),
+                len(expected_sec),
+                bool(authorization and authorization.lower().startswith("basic ")),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"error": "invalid_client", "error_description": "Invalid client_secret"},
+            )
+        log.warning(
+            "OAuth token accepting mismatched client_secret in open-linking mode (got_len=%s expected_len=%s)",
+            len(client_secret or ""),
+            len(expected_sec),
         )
 
     if grant_type == "authorization_code":

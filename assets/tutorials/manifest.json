@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "last_verified": "2026-11-08",
+  "notes": "Our wizard UI can be captured with Playwright. Google Console/Home app pages require sanitized real recordings — do not fabricate Google UI.",
+  "steps": [
+    {
+      "id": "welcome",
+      "title": "Welcome",
+      "status": "ready",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "Fresh recreate guide", "href": "/docs/setup/FRESH_RECREATE.md"}
+      ]
+    },
+    {
+      "id": "cloud_auth",
+      "title": "Connect Google Cloud",
+      "status": "needs_capture",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "gcloud auth application-default login", "href": "https://cloud.google.com/docs/authentication/provide-credentials-adc"},
+        {"label": "Google Cloud Console", "href": "https://console.cloud.google.com/"}
+      ]
+    },
+    {
+      "id": "prepare_services",
+      "title": "Prepare cloud services",
+      "status": "needs_capture",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "Cloud Run pricing", "href": "https://cloud.google.com/run/pricing"}
+      ]
+    },
+    {
+      "id": "subscriber_auth",
+      "title": "Local subscriber authentication",
+      "status": "ready",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "Pub/Sub subscriber overview", "href": "https://cloud.google.com/pubsub/docs/subscriber"}
+      ]
+    },
+    {
+      "id": "deploy_gateway",
+      "title": "Deploy cloud gateway",
+      "status": "ready",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "deploy.sh", "href": "/gcp-cloud-run/deploy.sh"}
+      ]
+    },
+    {
+      "id": "developer_console",
+      "title": "Google Home Developer Console",
+      "status": "needs_capture",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "Google Home Developer Console", "href": "https://console.home.google.com/projects"},
+        {"label": "Request Sync docs", "href": "https://developers.home.google.com/cloud-to-cloud/integration/request-sync"}
+      ]
+    },
+    {
+      "id": "link_home",
+      "title": "Link Google Home",
+      "status": "needs_capture",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": [
+        {"label": "Works with Google Home", "href": "https://developers.home.google.com/cloud-to-cloud/integration/account-linking"}
+      ]
+    },
+    {
+      "id": "connection_test",
+      "title": "Connection test",
+      "status": "ready",
+      "video": null,
+      "poster": null,
+      "captions": null,
+      "links": []
+    }
+  ]
+}

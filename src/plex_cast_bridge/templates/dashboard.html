@@ -1,551 +1,2921 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Plex Cast Bridge — Local Control & Speaker Manager</title>
-  <style>
-    :root {
-      --bg: #0f1117;
-      --panel: #181b23;
-      --panel-border: #272b38;
-      --text: #f3f4f6;
-      --muted: #9ca3af;
-      --accent: #e5a00d;
-      --accent-hover: #f5b01d;
-      --blue: #3b82f6;
-      --green: #10b981;
-      --red: #ef4444;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
-    .container {
-      max-width: 1024px;
-      margin: 0 auto;
-      padding: 28px 20px 60px;
-    }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 28px;
-      padding-bottom: 18px;
-      border-bottom: 1px solid var(--panel-border);
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .brand img {
-      width: 48px;
-      height: 48px;
-      border-radius: 11px;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.4);
-    }
-    .brand h1 {
-      margin: 0;
-      font-size: 1.35rem;
-      font-weight: 700;
-    }
-    .brand p {
-      margin: 2px 0 0;
-      font-size: 0.85rem;
-      color: var(--muted);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 20px;
-    }
-    @media (max-width: 820px) {
-      .grid { grid-template-columns: 1fr; }
-    }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: 14px;
-      padding: 20px;
-      margin-bottom: 20px;
-    }
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-    }
-    .card-header h2 {
-      margin: 0;
-      font-size: 1.05rem;
-      font-weight: 600;
-    }
-    .btn {
-      background: #252936;
-      color: var(--text);
-      border: 1px solid #363b4d;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 0.85rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .btn:hover { background: #313748; }
-    .btn-primary {
-      background: var(--accent);
-      color: #111;
-      border-color: var(--accent);
-      font-weight: 600;
-    }
-    .btn-primary:hover { background: var(--accent-hover); }
-    .speaker-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .speaker-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 14px;
-      background: #13161d;
-      border: 1px solid var(--panel-border);
-      border-radius: 10px;
-      transition: opacity 0.2s;
-    }
-    .speaker-item.disabled {
-      opacity: 0.55;
-    }
-    .speaker-meta {
-      display: flex;
-      flex-direction: column;
-    }
-    .speaker-name {
-      font-weight: 600;
-      font-size: 0.95rem;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .badge {
-      font-size: 0.72rem;
-      padding: 2px 7px;
-      border-radius: 999px;
-      background: #262b38;
-      color: var(--muted);
-      font-weight: 500;
-    }
-    .badge.room {
-      background: rgba(229, 160, 13, 0.16);
-      color: var(--accent);
-    }
-    .speaker-sub {
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-top: 2px;
-    }
-    .switch {
-      position: relative;
-      display: inline-block;
-      width: 44px;
-      height: 24px;
-      flex-shrink: 0;
-    }
-    .switch input { opacity: 0; width: 0; height: 0; }
-    .slider {
-      position: absolute;
-      cursor: pointer;
-      inset: 0;
-      background-color: #374151;
-      transition: .2s;
-      border-radius: 24px;
-    }
-    .slider:before {
-      position: absolute;
-      content: "";
-      height: 18px;
-      width: 18px;
-      left: 3px;
-      bottom: 3px;
-      background-color: white;
-      transition: .2s;
-      border-radius: 50%;
-    }
-    input:checked + .slider { background-color: var(--green); }
-    input:checked + .slider:before { transform: translateX(20px); }
-    .form-row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-    input[type="text"], select {
-      background: #12151c;
-      border: 1px solid var(--panel-border);
-      color: var(--text);
-      border-radius: 8px;
-      padding: 10px 12px;
-      font-size: 0.9rem;
-      width: 100%;
-    }
-    input[type="text"]:focus, select:focus {
-      outline: none;
-      border-color: var(--accent);
-    }
-    .transport-bar {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-    .now-playing {
-      padding: 14px;
-      background: #13161d;
-      border: 1px solid var(--panel-border);
-      border-radius: 10px;
-      margin-bottom: 10px;
-    }
-    .now-title { font-weight: 600; font-size: 1rem; color: var(--accent); }
-    .now-sub { font-size: 0.85rem; color: var(--muted); }
-    .toast {
-      font-size: 0.82rem;
-      color: var(--muted);
-      margin-top: 8px;
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#121310">
+<title>Player — Plex Cast Bridge</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121310;
+    --bg-elevated: #1b1c18;
+    --ink: #f0eee7;
+    --secondary: #aaa99f;
+    --muted: #77786f;
+    --rule: #30312b;
+    --rule-strong: #484a40;
+    --accent: #e9a43a;
+    --green: #8dc19c;
+    --ring: #b1c9ff;
+    --shell: 1100px;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select { font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .36; cursor: not-allowed; }
+  button, select, textarea, input { touch-action: manipulation; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
+  ::selection { color: var(--bg); background: #d5b77b; }
+  .sr-only {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .icon {
+    display: inline-block;
+    width: 20px; height: 20px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.65;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .icon.sm { width: 17px; height: 17px; }
+  .icon.lg { width: 25px; height: 25px; }
+  .shell { max-width: var(--shell); padding: 0 28px; margin: 0 auto; }
+  .masthead { border-bottom: 1px solid var(--rule); }
+  .masthead-inner { height: 88px; display: flex; align-items: center; gap: 56px; }
+  .brand {
+    display: flex; align-items: center; gap: 12px;
+    flex: 1; min-width: 0;
+    color: var(--ink); text-decoration: none;
+  }
+  .brand-icon {
+    width: 31px; height: 31px; border-radius: 50%;
+    background: #e8e1d3; color: #1a1b16;
+    display: grid; place-items: center; flex: none;
+  }
+  .brand-icon svg { width: 18px; height: 18px; stroke-width: 2.1; }
+  .brand-name { font-size: 15px; font-weight: 690; letter-spacing: -.025em; white-space: nowrap; }
+  .primary-nav { height: 100%; display: flex; align-items: stretch; gap: 34px; }
+  .primary-nav a {
+    display: grid; align-items: center; position: relative;
+    padding: 0 2px; color: var(--secondary);
+    font-size: 14px; text-decoration: none; font-weight: 560;
+    transition: color .17s;
+  }
+  .primary-nav a:hover,
+  .primary-nav a[aria-current="page"] { color: var(--ink); }
+  .primary-nav a[aria-current="page"]:after {
+    content: ""; height: 2px; background: var(--ink);
+    position: absolute; left: 0; right: 0; bottom: -1px;
+  }
+  .masthead-right {
+    flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0;
+  }
+  .settings-btn {
+    width: 44px; height: 44px; border: 0; border-radius: 50%;
+    background: transparent; color: var(--secondary);
+    display: grid; place-items: center; flex: none;
+    transition: color .17s, background .17s;
+  }
+  .settings-btn:hover,
+  .settings-btn[aria-current="page"] { color: var(--ink); background: #272822; }
+  .connection {
+    text-align: right; white-space: nowrap;
+    font-size: 12px; color: var(--secondary);
+  }
+  .connection .dot {
+    width: 7px; height: 7px; display: inline-block;
+    background: var(--muted); border-radius: 50%;
+    margin-right: 7px; vertical-align: 1px;
+  }
+  .connection.is-ok .dot { background: var(--green); }
+  .connection.is-bad .dot { background: #c47b6a; }
+  .page-settings { max-width: 760px; margin: 0 auto; padding-top: 19px; }
+  .settings-tabs {
+    display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 28px;
+    border-bottom: 1px solid var(--rule); padding-bottom: 12px;
+  }
+  .settings-tab {
+    background: transparent; border: 0; color: var(--muted); font: inherit;
+    font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 8px 4px; cursor: pointer;
+  }
+  .settings-tab[aria-current="true"] { color: var(--ink); border-bottom: 1px solid var(--accent); }
+  .settings-panel { margin-bottom: 28px; }
+  .tutorial-drawer {
+    margin-top: 16px; padding: 14px 0 0; border-top: 1px solid var(--rule);
+  }
+  .advanced-block { margin-top: 16px; color: var(--secondary); font-size: 13px; }
+  .console-values {
+    white-space: pre-wrap; font-size: 12px; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--rule); padding: 12px; overflow: auto;
+  }
+  .gh-paste-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+  .gh-paste-list li {
+    display: grid; grid-template-columns: 140px 1fr auto; gap: 10px; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 13px;
+  }
+  .gh-paste-list .label { color: var(--secondary); }
+  .gh-paste-list code {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12px; color: var(--ink);
+  }
+  .gh-paste-list button { padding: 4px 10px; font-size: 12px; }
+  .gh-howto { margin: 12px 0 0; padding-left: 18px; color: var(--secondary); font-size: 13px; line-height: 1.45; }
+  .gh-howto li { margin: 4px 0; }
+  .gh-icon-card {
+    display: flex; align-items: center; gap: 14px; margin-top: 12px;
+    padding: 12px; border: 1px solid var(--rule); background: #161712;
+  }
+  .gh-icon-card img {
+    width: 72px; height: 72px; border-radius: 50%; background: #0e0f0c;
+    border: 1px solid var(--rule-strong);
+  }
+  .gh-icon-card .meta { display: grid; gap: 6px; }
+  .gh-icon-card .meta strong { color: var(--ink); font-size: 13px; }
+  .gh-icon-card .meta span { color: var(--secondary); font-size: 12px; }
+  .library-results { margin-top: 16px; display: grid; gap: 8px; }
+  .library-item {
+    display: flex; justify-content: space-between; gap: 12px; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 14px;
+  }
+  .up-next { margin-top: 28px; border-top: 1px solid var(--rule); padding-top: 18px; }
+  .up-next summary { cursor: pointer; color: var(--secondary); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .up-next-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .up-next-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--ink); }
+  .diag-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 14px; }
+  .diag-ok { color: var(--green); }
+  .diag-bad { color: #d7a07a; }
+  .gh-wizard-panel { margin-top: 18px; display: grid; gap: 16px; }
+  .gh-stepper {
+    display: flex; gap: 0; overflow-x: auto; overflow-y: hidden;
+    padding: 4px 0 14px; border-bottom: 1px solid var(--rule);
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  .gh-stepper::-webkit-scrollbar { display: none; height: 0; width: 0; }
+  .gh-step {
+    flex: 1 1 0; min-width: 0; max-width: none;
+    background: transparent; border: 0; color: var(--muted);
+    padding: 8px 6px; text-align: left; cursor: default;
+    border-bottom: 2px solid transparent; margin-bottom: -15px;
+  }
+  .gh-step .n {
+    display: inline-grid; place-items: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--rule-strong); font-size: 11px; font-weight: 650;
+    margin-bottom: 6px;
+  }
+  .gh-step .t { display: block; font-size: 11px; line-height: 1.25; letter-spacing: .01em; }
+  .gh-step.is-current { color: var(--ink); border-bottom-color: var(--accent); }
+  .gh-step.is-current .n { border-color: var(--accent); color: var(--accent); }
+  .gh-step.is-done { color: var(--secondary); }
+  .gh-step.is-done .n { border-color: var(--green); color: var(--green); background: #1e2a22; }
+  .gh-step.is-clickable { cursor: pointer; }
+  .gh-step.is-clickable:hover { color: var(--ink); }
+  .gh-checks-wrap {
+    border: 1px solid var(--rule); padding: 12px 14px; background: #161712;
+  }
+  .gh-checks-title {
+    margin: 0 0 8px; font-size: 12px; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .gh-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .gh-checks li {
+    display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start;
+    font-size: 13px; color: var(--secondary); padding: 6px 0; border-bottom: 1px solid var(--rule);
+  }
+  .gh-checks li:last-child { border-bottom: 0; }
+  .gh-checks .mark { font-weight: 700; line-height: 1.2; }
+  .gh-checks .ok .mark { color: var(--green); }
+  .gh-checks .bad .mark { color: #d7a07a; }
+  .gh-checks small { display: block; color: var(--muted); margin-top: 2px; }
+  .gh-next-hint {
+    font-size: 13px; color: var(--secondary); margin: 0;
+    padding: 10px 12px; border-left: 2px solid var(--accent); background: #1a1b16;
+  }
+  .gh-next-hint.is-ok { border-left-color: var(--green); color: var(--green); }
+  .gh-next-hint.is-bad { border-left-color: #c47b6a; color: #d7a07a; }
+  .gh-status-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--secondary); margin: 0;
+  }
+  .gh-status-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none;
+  }
+  .gh-status-pill.is-ok { color: var(--green); }
+  .gh-status-pill.is-ok .dot { background: var(--green); }
+  .gh-status-pill.is-bad { color: #d7a07a; }
+  .gh-status-pill.is-bad .dot { background: #c47b6a; }
+  .gh-nav {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    padding-top: 8px; border-top: 1px solid var(--rule);
+  }
+  .gh-nav-spacer { flex: 1 1 auto; min-width: 12px; }
+  .gh-next-wrap { display: grid; gap: 6px; justify-items: end; }
+  .gh-next-blocked {
+    font-size: 12px; color: #d7a07a; display: none; align-items: center; gap: 6px;
+  }
+  .gh-next-blocked.is-visible { display: inline-flex; }
+  .gh-next-blocked .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #c47b6a; flex: none;
+  }
+  button.accent-button.is-blocked-next {
+    background: #3a2a24; color: #d7a07a; opacity: 1;
+  }
+  .gh-companion {
+    font-size: 12px; color: var(--muted); margin: 0;
+  }
+  .gh-companion.is-ok { color: var(--green); }
+  .gh-field-grid { display: grid; gap: 14px; }
+  .gh-checkrow { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--secondary); }
+  .gh-checkrow input { margin-top: 3px; }
+  .gh-busy {
+    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid currentColor; border-right-color: transparent;
+    animation: gh-spin .7s linear infinite; vertical-align: -2px;
+  }
+  @keyframes gh-spin { to { transform: rotate(360deg); } }
+  .accent-button.is-busy, .ghost-button.is-busy { opacity: .85; pointer-events: none; }
+  .settings-head { margin-bottom: 42px; }
+  .settings-head h1 {
+    font-weight: 500; letter-spacing: -.062em;
+    font-size: clamp(32px, 4vw, 48px); line-height: 1.12; margin: 18px 0 12px;
+  }
+  .settings-head p { font-size: 15px; line-height: 1.6; color: var(--secondary); margin: 0; max-width: 520px; }
+  .conn-card {
+    border-top: 1px solid var(--rule); padding: 28px 0 8px;
+  }
+  .conn-row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 20px; flex-wrap: wrap; margin-bottom: 22px;
+  }
+  .conn-title { font-size: 18px; font-weight: 550; letter-spacing: -.02em; margin: 0 0 8px; }
+  .conn-meta { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 0; }
+  .conn-state {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--secondary); margin-top: 10px;
+  }
+  .conn-state .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none;
+  }
+  .conn-state.is-linked .dot { background: var(--green); }
+  .conn-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .accent-button {
+    border: 0; background: var(--accent); color: #1c1a14;
+    padding: 0 20px; height: 48px; min-width: 160px;
+    display: inline-flex; justify-content: center; align-items: center; gap: 10px;
+    font-weight: 660; font-size: 14px; transition: background .17s, transform .17s;
+  }
+  .accent-button:hover { background: #f9b44d; }
+  .accent-button:active { transform: translateY(1px); }
+  .ghost-button {
+    border: 1px solid var(--rule-strong); background: transparent; color: var(--ink);
+    padding: 0 18px; height: 48px; min-width: 120px;
+    display: inline-flex; justify-content: center; align-items: center;
+    font-size: 14px; font-weight: 560;
+  }
+  .ghost-button:hover { border-color: #c4b6a0; }
+  .picker-grid { display: grid; gap: 18px; margin-top: 8px; }
+  .picker-grid[hidden] { display: none !important; }
+  .field-label { display: block; font-size: 13px; color: var(--secondary); margin-bottom: 8px; }
+  .field-select {
+    appearance: none; width: 100%; min-height: 48px;
+    background: #191a16; color: var(--ink);
+    border: 1px solid var(--rule-strong); padding: 12px 40px 12px 14px;
+  }
+  .field-select option { background: #21231d; color: #f0eee7; }
+  .field-wrap { position: relative; }
+  .field-wrap .icon {
+    position: absolute; right: 12px; top: 15px; pointer-events: none; color: var(--secondary);
+  }
+  main { padding-top: 62px; padding-bottom: calc(90px + var(--safe-bottom)); }
+  .page[hidden] { display: none !important; }
+  .player-layout {
+    display: grid;
+    grid-template-columns: minmax(0, .94fr) minmax(0, 1fr);
+    gap: clamp(44px, 6.2vw, 90px);
+    align-items: center;
+  }
+  .cover {
+    position: relative; width: 100%; aspect-ratio: 1; overflow: hidden;
+    background: #685441; isolation: isolate;
+    border: 1px solid #7d6753; box-shadow: 0 28px 52px #0003;
+  }
+  .cover.has-art { background: #1a1b16; border-color: var(--rule-strong); }
+  .cover-art {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; display: none;
+  }
+  .cover.has-art .cover-art { display: block; }
+  .cover.has-art .cover-placeholder { display: none; }
+  .cover-placeholder { position: absolute; inset: 0; }
+  .cover-placeholder:before {
+    content: ""; position: absolute; inset: -24%;
+    background:
+      radial-gradient(ellipse 44% 50% at 28% 77%, #e8c99c9c, transparent 79%),
+      radial-gradient(ellipse 48% 55% at 73% 23%, #b07865c2, transparent 81%),
+      linear-gradient(155deg, #1e3034 5%, #756653 55%, #be8e65 100%);
+    filter: blur(2px);
+  }
+  .cover-placeholder:after {
+    content: ""; position: absolute; width: 88%; height: 88%;
+    left: 15%; top: 19%; border-radius: 50%;
+    border: 1px solid #e1d0ac5c;
+    box-shadow: 0 0 0 16px #d3b99408, 0 0 0 46px #eddbba13, 0 0 0 90px #f1d5b808;
+    transform: rotate(-22deg);
+  }
+  .cover-disc {
+    position: absolute; z-index: 1; width: 64%; height: 64%;
+    top: 21%; left: 18%; border-radius: 50%;
+    background: repeating-radial-gradient(circle, #1f2529 0 2px, #353a3a 3px 4px, #1f2529 5px 6px);
+    box-shadow: 0 18px 45px #10110e88; opacity: .78;
+  }
+  .cover-disc:before {
+    content: ""; position: absolute; inset: 30%; border-radius: 50%;
+    background: #cba783; box-shadow: 0 0 0 2px #241f1eaa;
+  }
+  .cover-disc:after {
+    content: ""; position: absolute; inset: 47%; border-radius: 50%; background: #1b1a18;
+  }
+  .cover-word {
+    position: absolute; z-index: 2; color: #ebe4d6;
+    text-transform: uppercase; letter-spacing: .22em;
+    font-size: 10px; font-weight: 700; left: 26px; top: 24px;
+  }
+  .cover-sub {
+    z-index: 2; position: absolute; left: 26px; bottom: 24px;
+    font-family: Georgia, "Times New Roman", serif;
+    color: #f4dfc2; font-size: 21px; font-weight: 400; letter-spacing: .025em;
+  }
+  .cover.has-art .cover-word,
+  .cover.has-art .cover-sub { display: none; }
+  .player-info { max-width: 510px; min-width: 0; }
+  .label {
+    font-size: 11px; font-weight: 660; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--secondary);
+  }
+  .track-title {
+    margin: 23px 0 13px; font-weight: 510;
+    font-size: clamp(34px, 3.7vw, 54px);
+    line-height: 1.11; letter-spacing: -.056em;
+    min-height: 1.1em;
+  }
+  .track-artist { margin: 0; color: #d0cdc2; font-size: 18px; letter-spacing: -.01em; min-height: 1.3em; }
+  .track-album { margin: 10px 0 0; color: var(--muted); font-size: 13px; min-height: 1.3em; }
+  .status-line {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--secondary); font-size: 13px; margin-top: 34px; min-height: 1.4em;
+  }
+  .status-line .playing-dot {
+    height: 6px; width: 6px; background: var(--muted); border-radius: 50%; flex: none;
+  }
+  .status-line.is-playing .playing-dot { background: var(--green); }
+  .controls {
+    display: flex; align-items: center; justify-content: flex-start;
+    gap: 18px; margin: 22px 0 30px;
+  }
+  .ctrl {
+    width: 48px; height: 48px; border: 0; border-radius: 50%;
+    color: var(--ink); background: transparent;
+    display: grid; place-items: center;
+    transition: background .2s, transform .2s;
+  }
+  .ctrl:hover { background: #272822; }
+  .ctrl:active { transform: scale(.95); }
+  .ctrl.primary { width: 69px; height: 69px; background: #ece8de; color: #191b16; }
+  .ctrl.primary:hover { background: #fffaf0; }
+  .ctrl.primary .icon { width: 27px; height: 27px; stroke-width: 2; }
+  .plain-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 44px; gap: 8px; background: transparent; border: 0;
+    color: var(--secondary); font-size: 13px; padding: 0 2px;
+    text-decoration: underline; text-decoration-color: transparent;
+    text-underline-offset: 5px; transition: color .2s, text-decoration-color .2s;
+  }
+  .plain-button:hover { color: var(--ink); text-decoration-color: var(--ink); }
+  .rule { border-top: 1px solid var(--rule); }
+  .audio-controls { border-top: 1px solid var(--rule); padding-top: 25px; display: grid; gap: 23px; }
+  .audio-row {
+    display: grid; grid-template-columns: 79px minmax(0, 1fr) auto;
+    align-items: center; gap: 14px;
+  }
+  .audio-label { font-size: 13px; color: var(--secondary); }
+  .output-wrap { position: relative; min-width: 0; }
+  .output-select {
+    appearance: none; background: transparent; border: 0;
+    padding: 12px 30px 12px 0; color: var(--ink); font-size: 14px;
+    width: 100%; min-height: 44px; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  }
+  .output-select option { color: #f0eee7; background: #21231d; }
+  .output-wrap .icon {
+    position: absolute; right: 8px; top: 14px; pointer-events: none; color: var(--secondary);
+  }
+  .audio-value {
+    color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums;
+    min-width: 37px; text-align: right;
+  }
+  input[type=range] {
+    --pct: 20%; appearance: none; width: 100%; height: 26px; margin: 0;
+    cursor: pointer; background: transparent; outline-offset: 4px;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 3px; border-radius: 4px;
+    background: linear-gradient(to right, #eeeae0 0%, #eeeae0 var(--pct), #4c4c42 var(--pct), #4c4c42 100%);
+  }
+  input[type=range]::-moz-range-track { height: 3px; border-radius: 4px; background: #4c4c42; }
+  input[type=range]::-moz-range-progress { height: 3px; border-radius: 4px; background: #eeeae0; }
+  input[type=range]::-webkit-slider-thumb {
+    appearance: none; border: 0; background: #eeeae0;
+    height: 13px; width: 13px; border-radius: 50%; margin-top: -5px;
+  }
+  input[type=range]::-moz-range-thumb {
+    border: 0; background: #eeeae0; height: 13px; width: 13px; border-radius: 50%;
+  }
+  .section-top { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .section-title { font-size: 21px; font-weight: 530; letter-spacing: -.035em; margin: 0; }
+  .speaker-settings { margin-top: 88px; padding-top: 30px; }
+  .section-description {
+    font-size: 13px; color: var(--muted); margin: 9px 0 23px; line-height: 1.5;
+  }
+  .device-list { border-top: 1px solid var(--rule); }
+  .device {
+    display: grid; grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 13px; align-items: start; min-height: 74px;
+    padding: 14px 3px; border-bottom: 1px solid var(--rule);
+  }
+  .device-icon { color: #999990; margin-top: 4px; }
+  .device-name {
+    display: block; font-size: 14px; letter-spacing: -.012em; font-weight: 520;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .device-desc {
+    display: block; font-size: 12px; color: var(--muted); margin-top: 5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .device.is-disabled .device-name { color: #92938a; }
+  .device-meta {
+    margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.5;
+  }
+  .device-meta[hidden] { display: none !important; }
+  .device-toggle-meta {
+    margin-top: 6px; padding: 0; border: 0; background: transparent;
+    color: var(--secondary); font-size: 12px; min-height: 32px;
+    text-decoration: underline; text-decoration-color: transparent;
+    text-underline-offset: 3px; cursor: pointer;
+  }
+  .device-toggle-meta:hover { color: var(--ink); text-decoration-color: var(--ink); }
+  .device-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .switch {
+    display: inline-flex; min-height: 44px; min-width: 48px;
+    align-items: center; justify-content: center; cursor: pointer;
+  }
+  .switch input {
+    appearance: none; width: 42px; height: 24px;
+    border: 1px solid #66675f; border-radius: 30px; background: #40413b;
+    position: relative; margin: 0; cursor: pointer;
+    transition: background .2s, border .2s;
+  }
+  .switch input:before {
+    content: ""; position: absolute; width: 16px; height: 16px;
+    border-radius: 50%; background: #d6d5cb; top: 3px; left: 3px;
+    transition: transform .2s;
+  }
+  .switch input:checked { background: #6b9d7d; border-color: #6b9d7d; }
+  .switch input:checked:before { transform: translateX(17px); background: #101510; }
+  .switch input:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
+  .empty-row, .error-row {
+    padding: 22px 3px; border-bottom: 1px solid var(--rule);
+    font-size: 13px; color: var(--muted); line-height: 1.5;
+  }
+  .below-note { font-size: 12px; color: var(--muted); margin-top: 17px; line-height: 1.6; }
+  .page-dj { max-width: 760px; margin: 0 auto; padding-top: 19px; }
+  .dj-head { margin-bottom: 55px; }
+  .dj-head h1 {
+    font-weight: 500; letter-spacing: -.062em;
+    font-size: clamp(38px, 5vw, 62px); line-height: 1.1;
+    max-width: 700px; margin: 23px 0 15px;
+  }
+  .dj-head p {
+    font-size: 16px; line-height: 1.6; color: var(--secondary);
+    max-width: 500px; margin: 0;
+  }
+  .prompt-wrap {
+    border: 1px solid var(--rule-strong); background: #191a16;
+    transition: border-color .2s; padding: 20px 23px 17px;
+  }
+  .prompt-wrap:focus-within { border-color: #c4b6a0; }
+  #promptText {
+    resize: vertical; display: block; min-height: 123px; width: 100%;
+    background: transparent; color: var(--ink); border: 0; outline: 0;
+    font-size: 22px; line-height: 1.45; letter-spacing: -.025em;
+    padding: 0; caret-color: var(--accent);
+  }
+  #promptText::placeholder { color: #74776d; opacity: 1; }
+  .prompt-bottom {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; border-top: 1px solid var(--rule); padding-top: 15px;
+  }
+  .mode-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+  .mode-item {
+    display: flex; gap: 8px; align-items: center;
+    font-size: 13px; color: var(--secondary); cursor: pointer; min-height: 34px;
+  }
+  .mode-item input {
+    appearance: none; width: 15px; height: 15px; border-radius: 50%;
+    border: 1px solid #818278; margin: 0; display: grid; place-items: center; cursor: pointer;
+  }
+  .mode-item input:checked { border-color: var(--ink); }
+  .mode-item input:checked:before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ink);
+  }
+  .mode-item:has(:checked) { color: var(--ink); }
+  .mode-item input:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  .counter { color: var(--muted); font-size: 12px; }
+  .submit-row {
+    display: flex; gap: 16px; align-items: center;
+    justify-content: space-between; flex-wrap: wrap; margin-top: 25px;
+  }
+  .submit-note {
+    font-size: 13px; color: var(--secondary);
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+  }
+  .submit-note .icon { color: #a6a69a; }
+  .dj-submit {
+    border: 0; background: var(--accent); color: #1c1a14;
+    padding: 0 23px; height: 53px; min-width: 180px;
+    display: inline-flex; justify-content: center; align-items: center; gap: 12px;
+    font-weight: 660; font-size: 14px; transition: background .17s, transform .17s;
+  }
+  .dj-submit:hover { background: #f9b44d; }
+  .dj-submit:active { transform: translateY(1px); }
+  .recents { margin-top: 91px; border-top: 1px solid var(--rule); padding-top: 26px; }
+  .recent-head {
+    display: flex; justify-content: space-between; gap: 15px;
+    align-items: baseline; margin-bottom: 10px;
+  }
+  .recent-head h2 { font-size: 17px; font-weight: 550; letter-spacing: -.03em; margin: 0; }
+  .recent-head p { font-size: 12px; color: var(--muted); margin: 0; }
+  .recent {
+    width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--rule);
+    min-height: 58px; display: flex; align-items: center; justify-content: space-between;
+    gap: 15px; background: transparent; color: var(--secondary); font-size: 14px;
+    padding: 0 3px; transition: color .2s, padding .2s;
+  }
+  .recent:hover { color: var(--ink); padding-left: 8px; }
+  .footnote {
+    padding: 23px 0 calc(44px + var(--safe-bottom));
+    border-top: 1px solid var(--rule);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; color: var(--muted); font-size: 12px; flex-wrap: wrap;
+  }
+  .feedback {
+    position: fixed; bottom: calc(23px + var(--safe-bottom)); right: 25px;
+    background: #282c26; border: 1px solid #565c50;
+    max-width: min(370px, calc(100vw - 32px));
+    color: var(--ink); padding: 13px 18px; font-size: 13px; line-height: 1.4;
+    box-shadow: 0 12px 28px #0005; z-index: 5;
+    opacity: 0; transform: translateY(8px); pointer-events: none;
+    transition: transform .2s, opacity .2s;
+  }
+  .feedback.show { opacity: 1; transform: translateY(0); }
+  .divider-symbol { color: #707168; padding: 0 6px; }
+  @media (min-width: 1100px) { .player-layout { padding-right: 15px; } }
+  @media (max-width: 800px) {
+    .shell { padding: 0 22px; }
+    .masthead-inner { height: 76px; gap: 24px; }
+    .primary-nav { gap: 22px; }
+    main { padding-top: 38px; }
+    .player-layout { gap: 28px; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
+    .track-title { font-size: 34px; }
+    .track-artist { font-size: 16px; }
+    .status-line { margin-top: 22px; }
+    .controls { gap: 10px; margin: 13px 0 19px; }
+    .ctrl.primary { width: 58px; height: 58px; }
+    .speaker-settings { margin-top: 62px; }
+    .page-dj { padding-top: 5px; }
+  }
+  @media (max-width: 640px) {
+    .shell { padding: 0 20px; }
+    .masthead-inner { height: 72px; gap: 14px; }
+    .brand-name { font-size: 13px; max-width: 145px; white-space: normal; line-height: 1.25; }
+    .brand-icon { width: 29px; height: 29px; }
+    .primary-nav { gap: 16px; }
+    .primary-nav a { font-size: 13px; }
+    .connection { display: none; }
+    .settings-btn { width: 44px; height: 44px; }
+    .page-settings { padding-top: 12px; }
+    .conn-row { flex-direction: column; align-items: stretch; }
+    .accent-button, .ghost-button { width: 100%; }
+    main { padding-top: 27px; padding-bottom: calc(50px + var(--safe-bottom)); }
+    .player-layout { grid-template-columns: minmax(0, 1fr); gap: 28px; max-width: 450px; margin: 0 auto; }
+    .cover { max-width: 400px; margin: 0 auto; }
+    .cover-word { font-size: 9px; }
+    .cover-sub { font-size: 18px; }
+    .player-info { max-width: none; }
+    .track-title { font-size: clamp(33px, 9vw, 42px); margin: 12px 0 8px; }
+    .track-artist { font-size: 16px; }
+    .track-album { font-size: 12px; }
+    .status-line { margin-top: 22px; }
+    .controls { justify-content: center; margin: 11px 0 18px; gap: 20px; }
+    .ctrl { width: 48px; height: 48px; }
+    .ctrl.primary { width: 64px; height: 64px; }
+    .audio-controls { padding-top: 12px; gap: 13px; }
+    .speaker-settings { margin-top: 55px; padding-top: 23px; }
+    .section-title { font-size: 19px; }
+    .device { min-height: 71px; }
+    .page-dj { padding-top: 29px; }
+    .dj-head { margin-bottom: 34px; }
+    .dj-head h1 { font-size: clamp(39px, 10vw, 49px); margin-top: 17px; }
+    .dj-head p { font-size: 14px; }
+    .prompt-wrap { padding: 18px; }
+    #promptText { font-size: 19px; min-height: 140px; }
+    .submit-row { flex-direction: column; align-items: stretch; gap: 18px; }
+    .dj-submit { width: 100%; min-height: 54px; }
+    .recents { margin-top: 65px; }
+    .footnote { padding: 22px 0 calc(30px + var(--safe-bottom)); }
+  }
+  @media (max-width: 360px) {
+    .brand-name { font-size: 12px; }
+    .masthead-inner { gap: 10px; }
+    .primary-nav { gap: 11px; }
+    .shell { padding: 0 16px; }
+    .controls { gap: 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *:before, *:after { transition: none !important; animation: none !important; }
+  }
+</style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <div class="brand">
-        <img src="/assets/icon.png" alt="Plex Cast Bridge" onerror="this.style.display='none'" />
-        <div>
-          <h1>Plex Cast Bridge</h1>
-          <p>Local Cast Discovery, Speaker Enable/Disable Manager & Smart DJ Console</p>
-        </div>
-      </div>
-      <div>
-        <button id="rescanBtn" class="btn">Rescan LAN Speakers</button>
-      </div>
-    </header>
+<svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <symbol id="play-icon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" stroke="none" fill="currentColor"/></symbol>
+  <symbol id="pause-icon" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/></symbol>
+  <symbol id="previous-icon" viewBox="0 0 24 24"><path d="m20 5-11 7 11 7zM4 5v14"/></symbol>
+  <symbol id="next-icon" viewBox="0 0 24 24"><path d="m4 5 11 7-11 7zM20 5v14"/></symbol>
+  <symbol id="down-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="speaker-icon" viewBox="0 0 24 24"><rect x="5" y="2.5" width="14" height="19" rx="2"/><circle cx="12" cy="15" r="3.5"/><path d="M11.9 7h.2"/></symbol>
+  <symbol id="display-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M9 21h6m-3-4v4"/></symbol>
+  <symbol id="group-icon" viewBox="0 0 24 24"><rect x="3" y="6" width="8" height="13" rx="1.5"/><rect x="14" y="3" width="7" height="16" rx="1.5"/><path d="M6 15h2m9 0h1"/></symbol>
+  <symbol id="refresh-icon" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.4 5.7M20 4v7h-7"/></symbol>
+  <symbol id="arrow-icon" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+  <symbol id="stop-icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+  <symbol id="wave-icon" viewBox="0 0 24 24"><path d="M2 12h3m3-5v10m4-14v18m4-13v8m3-4h3"/></symbol>
+  <symbol id="settings-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2.2M12 19.8V22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2 12h2.2M19.8 12H22M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"/></symbol>
+</svg>
 
-    <div class="grid">
-      <div>
-        <div class="card">
-          <div class="card-header">
-            <h2>Discovered Cast Speakers & Rooms</h2>
-            <span id="speakerCount" class="badge">Scanning...</span>
-          </div>
-          <p style="font-size:0.83rem; color:var(--muted); margin-top:0; margin-bottom:14px;">
-            Toggle speakers on or off. Disabled speakers cannot be cast to and are excluded when syncing rooms to Google Home.
-          </p>
-          <div id="speakerList" class="speaker-list"></div>
-        </div>
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a href="#player" class="brand" aria-label="Plex Cast Bridge home">
+      <span class="brand-icon" aria-hidden="true"><svg class="icon"><use href="#wave-icon"/></svg></span>
+      <span class="brand-name">Plex Cast Bridge</span>
+    </a>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a id="navPlayer" href="#player" aria-current="page">Player</a>
+      <a id="navDj" href="#dj">DJ</a>
+    </nav>
+    <div class="masthead-right">
+      <div class="connection" id="connectionStatus" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span><span id="connectionLabel">Connecting…</span>
       </div>
+      <a href="#settings" class="settings-btn" id="navSettings" aria-label="Settings" title="Settings">
+        <svg class="icon" aria-hidden="true"><use href="#settings-icon"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
 
-      <div>
-        <div class="card">
-          <div class="card-header">
-            <h2>Smart DJ & Playback Control</h2>
-          </div>
-          <div class="form-row">
-            <select id="targetSpeakerSelect"></select>
-          </div>
-          <div class="form-row">
-            <input type="text" id="queryInput" placeholder="e.g. DJ Shadow, or DJ Shadow radio, or 90s trip hop" />
-            <button id="playBtn" class="btn btn-primary">Play</button>
-          </div>
-          <div class="transport-bar">
-            <button id="pauseBtn" class="btn">Pause</button>
-            <button id="resumeBtn" class="btn">Resume</button>
-            <button id="prevBtn" class="btn">Prev</button>
-            <button id="nextBtn" class="btn">Next</button>
-            <button id="stopBtn" class="btn">Stop</button>
-            <button id="volDownBtn" class="btn">Vol -5%</button>
-            <button id="volUpBtn" class="btn">Vol +5%</button>
-          </div>
-          <div id="actionStatus" class="toast">Ready. Saying an artist name plays 100% that artist; add "radio" for a 50/50 station mix.</div>
+<div class="shell">
+<main id="main">
+  <section class="page" id="playerPage" aria-label="Player">
+    <div class="player-layout">
+      <div class="cover" id="cover" role="img" aria-label="Album artwork placeholder">
+        <img class="cover-art" id="coverArt" alt="" hidden>
+        <div class="cover-placeholder" aria-hidden="true">
+          <div class="cover-disc"></div>
         </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h2>Active Speaker Sessions</h2>
-            <button id="refreshStatusBtn" class="btn">Refresh</button>
+        <span class="cover-word">Plex / Listen</span>
+        <span class="cover-sub" id="coverSub">The listening room</span>
+      </div>
+      <div class="player-info">
+        <span class="label">Now playing</span>
+        <h1 class="track-title" id="trackTitle">Nothing playing</h1>
+        <p class="track-artist" id="trackArtist">Choose a speaker and ask the DJ</p>
+        <p class="track-album" id="trackAlbum"></p>
+        <div class="status-line" id="statusLine">
+          <span class="playing-dot" id="playingDot" aria-hidden="true"></span>
+          <span id="playbackState">Idle</span>
+          <span class="divider-symbol" aria-hidden="true">·</span>
+          <span id="playingRoom">No output</span>
+        </div>
+        <div class="controls" aria-label="Playback controls">
+          <button type="button" class="ctrl" id="previousTrack" aria-label="Previous track" title="Previous track">
+            <svg class="icon lg" aria-hidden="true"><use href="#previous-icon"/></svg>
+          </button>
+          <button type="button" class="ctrl primary" id="pauseResume" aria-label="Play" title="Play or pause">
+            <svg class="icon lg" id="pauseResumeIcon" aria-hidden="true"><use href="#play-icon"/></svg>
+          </button>
+          <button type="button" class="ctrl" id="nextTrack" aria-label="Next track" title="Next track">
+            <svg class="icon lg" aria-hidden="true"><use href="#next-icon"/></svg>
+          </button>
+          <button type="button" class="plain-button" id="stopTrack" title="Stop playback">
+            <svg class="icon sm" aria-hidden="true"><use href="#stop-icon"/></svg><span>Stop</span>
+          </button>
+        </div>
+        <div class="audio-controls">
+          <div class="audio-row">
+            <label for="outputSelect" class="audio-label">Output</label>
+            <div class="output-wrap">
+              <select id="outputSelect" class="output-select" aria-label="Output speaker"></select>
+              <svg class="icon sm" aria-hidden="true"><use href="#down-icon"/></svg>
+            </div>
           </div>
-          <div id="activeSessions">
-            <div class="now-sub">No active streams yet.</div>
+          <div class="audio-row">
+            <label for="volume" class="audio-label">Volume</label>
+            <input id="volume" type="range" min="0" max="100" value="20" style="--pct:20%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="20" aria-label="Volume">
+            <output class="audio-value" id="volumeValue" for="volume">20%</output>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <script>
-    let speakers = [];
+    <details class="up-next" id="upNextSection">
+      <summary>Up next</summary>
+      <ul class="up-next-list" id="upNextList"></ul>
+      <div class="conn-actions" style="margin-top:12px">
+        <button type="button" class="ghost-button" id="clearQueueBtn">Clear upcoming</button>
+      </div>
+    </details>
 
-    // Bootstrap key from ?api_key= (deprecated) or localStorage; prefer X-API-Key header thereafter.
-    const urlParams = new URLSearchParams(window.location.search);
-    const bootstrappedKey = urlParams.get('api_key');
-    const localApiKey = bootstrappedKey || localStorage.getItem('plex_cast_api_key') || '';
-    if (bootstrappedKey) {
-      localStorage.setItem('plex_cast_api_key', bootstrappedKey);
-      urlParams.delete('api_key');
-      const cleaned = urlParams.toString();
-      const nextUrl = window.location.pathname + (cleaned ? `?${cleaned}` : '') + window.location.hash;
-      window.history.replaceState({}, document.title, nextUrl);
+    <section class="speaker-settings rule" id="speakers" aria-labelledby="speakerHeading">
+      <div class="section-top">
+        <h2 id="speakerHeading" class="section-title">Speakers &amp; settings</h2>
+        <button type="button" class="plain-button" id="scanButton">
+          <svg class="icon sm" aria-hidden="true"><use href="#refresh-icon"/></svg>
+          <span id="scanButtonLabel">Rescan</span>
+        </button>
+      </div>
+      <p class="section-description">Choose which speakers can receive music. Disabled speakers are excluded from Google Home room sync.</p>
+      <div id="deviceList" class="device-list" aria-live="polite"></div>
+      <p class="below-note" id="deviceHint">Room names and IP details are managed by the bridge. The player uses one Cast target or an existing Cast Group at a time.</p>
+    </section>
+  </section>
+
+  <section class="page page-dj" id="djPage" hidden aria-label="Smart DJ">
+    <div class="dj-head">
+      <span class="label">Smart DJ</span>
+      <h1>What do you feel like listening to?</h1>
+      <p>Just describe a sound, artist, album or mood. Your Plex library does the rest.</p>
+    </div>
+    <form id="djForm">
+      <div class="prompt-wrap">
+        <label class="sr-only" for="promptText">Tell Smart DJ what to play</label>
+        <textarea id="promptText" placeholder="DJ Shadow, 90s trip-hop, something mellow…" spellcheck="true" required maxlength="500"></textarea>
+        <div class="prompt-bottom">
+          <div class="mode-picker" role="radiogroup" aria-label="DJ mode">
+            <label class="mode-item"><input type="radio" name="djMode" value="artist" checked><span>Artist only</span></label>
+            <label class="mode-item"><input type="radio" name="djMode" value="radio"><span>Radio mix</span></label>
+          </div>
+          <span class="counter" id="modeExplainer">100% that artist</span>
+        </div>
+      </div>
+      <div class="submit-row">
+        <div class="submit-note">
+          <svg class="icon sm" aria-hidden="true"><use href="#speaker-icon"/></svg>
+          <span>Playing on <strong id="djTargetName">No output</strong></span>
+        </div>
+        <button type="submit" class="dj-submit" id="djSubmit">
+          <span id="djSubmitLabel">Play music</span>
+          <svg class="icon sm" aria-hidden="true"><use href="#arrow-icon"/></svg>
+        </button>
+      </div>
+    </form>
+    <div class="recents">
+      <div class="recent-head">
+        <h2>Recent requests</h2>
+        <p id="recentsHint">Saved after you play something</p>
+      </div>
+      <div id="recentList"></div>
+    </div>
+  </section>
+
+  <section class="page page-settings" id="settingsPage" hidden aria-label="Settings">
+    <div class="settings-head">
+      <span class="label">Settings</span>
+      <h1>Connections</h1>
+      <p>Link Plex and Google Home. Local dashboard access still uses your API key.</p>
+    </div>
+
+    <nav class="settings-tabs" aria-label="Settings sections">
+      <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
+      <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
+      <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
+      <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
+    </nav>
+
+    <div class="settings-panel" data-settings-panel="connections">
+    <div class="conn-card">
+      <div class="conn-row">
+        <div>
+          <h2 class="conn-title">Plex Media Server</h2>
+          <p class="conn-meta">Connect your music library through Plex’s own sign-in. No manually copied token required.</p>
+          <div class="conn-state" id="plexLinkState">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="plexLinkLabel">Checking…</span>
+          </div>
+        </div>
+        <div class="conn-actions">
+          <button type="button" class="accent-button" id="plexConnectBtn">
+            <span id="plexConnectLabel">Connect with Plex</span>
+          </button>
+          <button type="button" class="ghost-button" id="plexDisconnectBtn" hidden>Disconnect</button>
+        </div>
+      </div>
+      <div class="picker-grid" id="plexPicker" hidden>
+        <div>
+          <label class="field-label" for="plexServerSelect">Plex server</label>
+          <div class="field-wrap">
+            <select id="plexServerSelect" class="field-select" aria-label="Plex server"></select>
+            <svg class="icon sm" aria-hidden="true"><use href="#down-icon"/></svg>
+          </div>
+        </div>
+        <div>
+          <label class="field-label" for="plexSectionSelect">Music library</label>
+          <div class="field-wrap">
+            <select id="plexSectionSelect" class="field-select" aria-label="Music library"></select>
+            <svg class="icon sm" aria-hidden="true"><use href="#down-icon"/></svg>
+          </div>
+        </div>
+        <div class="conn-actions">
+          <button type="button" class="accent-button" id="plexSelectBtn">Use this library</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="conn-card" id="googleHomeCard">
+      <div class="conn-row">
+        <div>
+          <h2 class="conn-title">Google Home</h2>
+          <p class="conn-meta">Connect Plex Cast Bridge to Google Home to play music with your voice.</p>
+          <div class="conn-state" id="ghLinkState">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="ghLinkLabel">Checking…</span>
+          </div>
+          <p class="conn-meta" id="ghSyncNote" hidden></p>
+        </div>
+        <div class="conn-actions">
+          <button type="button" class="accent-button" id="ghSetupBtn">Set up Google Home</button>
+          <button type="button" class="ghost-button" id="ghSyncBtn">Sync Google Home</button>
+        </div>
+      </div>
+      <div id="ghWizard" hidden>
+        <nav class="gh-stepper" id="ghStepper" aria-label="Google Home setup steps"></nav>
+        <p class="conn-meta" id="ghWizardStepLabel">Step</p>
+        <p id="ghWizardBody" class="conn-meta"></p>
+        <div class="gh-wizard-panel">
+          <div id="ghWizardFields" class="gh-field-grid"></div>
+          <div class="gh-checks-wrap" id="ghChecksWrap" hidden>
+            <p class="gh-checks-title" id="ghChecksTitle">This step</p>
+            <ul id="ghVerifyChecks" class="gh-checks" aria-live="polite"></ul>
+          </div>
+          <p class="gh-next-hint" id="ghNextHint">Complete the step action below, then Next unlocks.</p>
+          <p class="gh-companion" id="ghCompanionStatus">Companion: checking…</p>
+          <div class="gh-nav" id="ghWizardActions">
+            <button type="button" class="ghost-button" id="ghBackBtn">Back</button>
+            <button type="button" class="ghost-button" id="ghDoStepBtn">Do this step</button>
+            <span class="gh-nav-spacer" aria-hidden="true"></span>
+            <div class="gh-next-wrap">
+              <span class="gh-next-blocked" id="ghNextBlocked"><span class="dot" aria-hidden="true"></span><span id="ghNextBlockedText">Next locked</span></span>
+              <button type="button" class="accent-button is-blocked-next" id="ghNextBtn" disabled>Next</button>
+            </div>
+          </div>
+          <div class="conn-actions">
+            <button type="button" class="ghost-button" id="ghWizardHow">Show me how</button>
+            <button type="button" class="ghost-button" id="ghWizardHide">Hide setup</button>
+          </div>
+        </div>
+        <div id="ghTutorial" class="tutorial-drawer" hidden>
+          <p class="conn-meta">Short walkthrough for this step. Recordings for Google Console pages are marked needs_capture until captured.</p>
+          <ul id="ghTutorialLinks" class="conn-meta"></ul>
+        </div>
+        <details class="advanced-block">
+          <summary>Advanced / logs</summary>
+          <pre id="ghConsoleValues" class="console-values"></pre>
+        </details>
+      </div>
+    </div>
+    </div>
+
+    <div class="settings-panel" data-settings-panel="playback" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Volume safety</h2>
+        <p class="conn-meta">Limits apply to Cast transport from this bridge. Default and maximum are also set in server environment.</p>
+        <label class="field-label" for="maxVolumeHint">Maximum volume (server-enforced)</label>
+        <p class="conn-meta" id="maxVolumeHint">Loaded from diagnostics</p>
+      </div>
+      <div class="conn-card">
+        <h2 class="conn-title">Library</h2>
+        <p class="conn-meta">Browse without turning this into a full Plex clone.</p>
+        <div class="field-wrap">
+          <input id="libraryQuery" class="field-select" placeholder="Search tracks or artists" aria-label="Library search">
+        </div>
+        <div class="conn-actions" style="margin-top:0.75rem">
+          <button type="button" class="ghost-button" id="librarySearchBtn">Search</button>
+        </div>
+        <div id="libraryResults" class="library-results"></div>
+      </div>
+    </div>
+
+    <div class="settings-panel" data-settings-panel="diagnostics" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Diagnostics</h2>
+        <p class="conn-meta">Plain-language connection health. Expand for technical detail.</p>
+        <div id="diagList"></div>
+        <div class="conn-actions" style="margin-top:1rem">
+          <button type="button" class="accent-button" id="diagRefreshBtn">Recheck</button>
+          <button type="button" class="ghost-button" id="diagTestBtn">Run Google Home test</button>
+        </div>
+        <details class="advanced-block"><summary>Technical</summary><pre id="diagTechnical" class="console-values"></pre></details>
+      </div>
+    </div>
+
+    <div class="settings-panel" data-settings-panel="backup" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Backup &amp; restore</h2>
+        <p class="conn-meta">Downloads speaker catalog and non-secret setup state. Tokens, PEMs, and Google service-account keys are excluded.</p>
+        <div class="conn-actions">
+          <a class="accent-button" id="backupDownloadBtn" href="/api/backup">Download backup</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footnote">
+  <span>Plex Cast Bridge <span class="divider-symbol">/</span> A quieter way to listen</span>
+  <span>Local control</span>
+</footer>
+</div>
+
+<div class="feedback" id="feedback" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const SPEAKER_KEY = 'plex_cast_selected_speaker';
+  const RECENT_KEY = 'plex_cast_recent_queries';
+  const MAX_RECENTS = 8;
+  const POLL_MS = 5000;
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const bootstrappedKey = urlParams.get('api_key');
+  const localApiKey = bootstrappedKey || localStorage.getItem('plex_cast_api_key') || '';
+  if (bootstrappedKey) {
+    localStorage.setItem('plex_cast_api_key', bootstrappedKey);
+    urlParams.delete('api_key');
+    const cleaned = urlParams.toString();
+    const nextUrl = window.location.pathname + (cleaned ? `?${cleaned}` : '') + window.location.hash;
+    window.history.replaceState({}, document.title, nextUrl);
+  }
+
+  let speakers = [];
+  let selected = localStorage.getItem(SPEAKER_KEY) || '';
+  let lastPlayback = null;
+  let toastTimer = null;
+  let volumeTimer = null;
+  let statusInFlight = false;
+  let commandPending = false;
+  let authFailed = false;
+  let bridgeOk = null;
+  let volumeDragging = false;
+  let plexStatus = { linked: false, plex_ready: false };
+  let plexPollTimer = null;
+  let plexConnecting = false;
+
+  function authHeaders(extra = {}) {
+    const h = { 'Content-Type': 'application/json', ...extra };
+    if (localApiKey) h['X-API-Key'] = localApiKey;
+    return h;
+  }
+
+  async function readJson(res) {
+    const text = await res.text();
+    if (!text) {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return null;
     }
+    try {
+      return JSON.parse(text);
+    } catch {
+      const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 160);
+      throw new Error(snippet || `HTTP ${res.status}`);
+    }
+  }
 
-    function authHeaders(extra = {}) {
-      const h = { 'Content-Type': 'application/json', ...extra };
-      if (localApiKey) {
-        h['X-API-Key'] = localApiKey;
+  function errorDetail(data, fallback) {
+    if (!data) return fallback;
+    const detail = data.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((d) => d.msg || JSON.stringify(d)).join('; ') || fallback;
+    }
+    return fallback;
+  }
+
+  function announce(message) {
+    const el = $('feedback');
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  async function copyText(text) {
+    const value = String(text ?? '');
+    if (!value) throw new Error('Nothing to copy');
+    // navigator.clipboard requires a secure context (HTTPS/localhost). LAN HTTP needs a fallback.
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } finally {
+      ta.remove();
+    }
+    if (!ok) throw new Error('Copy command failed');
+  }
+
+  function setConnection(ok, label) {
+    bridgeOk = ok;
+    const wrap = $('connectionStatus');
+    wrap.classList.toggle('is-ok', ok === true);
+    wrap.classList.toggle('is-bad', ok === false);
+    $('connectionLabel').textContent = label;
+  }
+
+  function deviceKind(spk) {
+    const model = String(spk.model || '').toLowerCase();
+    if (model.includes('group')) return 'group';
+    if (model.includes('hub') || model.includes('display') || String(spk.name || '').toLowerCase().includes('display')) {
+      return 'display';
+    }
+    return 'speaker';
+  }
+
+  function iconForKind(kind) {
+    if (kind === 'display') return '#display-icon';
+    if (kind === 'group') return '#group-icon';
+    return '#speaker-icon';
+  }
+
+  function enabledSpeakers() {
+    return speakers.filter((s) => s.enabled);
+  }
+
+  function currentDevice() {
+    return speakers.find((d) => d.name === selected) || null;
+  }
+
+  function roomLabel(spk) {
+    if (!spk) return 'No output';
+    return spk.room || spk.name || 'Speaker';
+  }
+
+  function isPlayingState(state) {
+    const s = String(state || '').toUpperCase();
+    return s === 'PLAYING' || s === 'BUFFERING';
+  }
+
+  function buildDjQuery(raw, mode) {
+    const q = raw.trim();
+    if (mode !== 'radio') return q;
+    if (/\b(radio|station|mix|similar)\b/i.test(q)) return q;
+    // Leave decade/genre/mood prompts free-form; only nudge artist-like prompts.
+    if (/\d0s\b/i.test(q) || /\b(like|mood|genre|trip-?hop|jazz|rock|soul|funk|ambient|electronic|classical|punk|metal|country|folk|indie|hip-?hop|mellow|chill)\b/i.test(q)) {
+      return q;
+    }
+    return `${q} radio`;
+  }
+
+  function loadRecents() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string' && x.trim()).slice(0, MAX_RECENTS) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveRecent(query) {
+    const q = query.trim();
+    if (!q) return;
+    const next = [q, ...loadRecents().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, MAX_RECENTS);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    renderRecents();
+  }
+
+  function renderRecents() {
+    const list = $('recentList');
+    const items = loadRecents();
+    list.replaceChildren();
+    $('recentsHint').textContent = items.length ? 'Tap to reuse' : 'Saved after you play something';
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-row';
+      empty.style.borderBottom = '0';
+      empty.textContent = 'No recent requests yet.';
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach((q) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'recent';
+      btn.setAttribute('aria-label', `Use recent request: ${q}`);
+      const span = document.createElement('span');
+      span.textContent = q;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'icon sm');
+      svg.setAttribute('aria-hidden', 'true');
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttribute('href', '#arrow-icon');
+      svg.appendChild(use);
+      btn.append(span, svg);
+      btn.addEventListener('click', () => {
+        $('promptText').value = q;
+        $('promptText').focus();
+      });
+      list.appendChild(btn);
+    });
+  }
+
+  function updateView() {
+    const hash = location.hash || '#player';
+    const settings = hash === '#settings';
+    const dj = hash === '#dj';
+    const player = !settings && !dj;
+    $('playerPage').hidden = !player;
+    $('djPage').hidden = !dj;
+    $('settingsPage').hidden = !settings;
+    $('navPlayer').removeAttribute('aria-current');
+    $('navDj').removeAttribute('aria-current');
+    $('navSettings').removeAttribute('aria-current');
+    if (settings) {
+      $('navSettings').setAttribute('aria-current', 'page');
+      document.title = 'Settings — Plex Cast Bridge';
+      refreshPlexStatus();
+    } else if (dj) {
+      $('navDj').setAttribute('aria-current', 'page');
+      document.title = 'Smart DJ — Plex Cast Bridge';
+    } else {
+      $('navPlayer').setAttribute('aria-current', 'page');
+      document.title = 'Player — Plex Cast Bridge';
+    }
+    window.scrollTo(0, 0);
+  }
+
+  function renderPlexStatus() {
+    const linked = Boolean(plexStatus.linked || plexStatus.plex_ready);
+    const stateEl = $('plexLinkState');
+    stateEl.classList.toggle('is-linked', linked);
+    let label = 'Not linked';
+    if (linked) {
+      const bits = [];
+      if (plexStatus.friendly_name || plexStatus.username) bits.push(plexStatus.friendly_name || plexStatus.username);
+      if (plexStatus.server_name) bits.push(plexStatus.server_name);
+      if (plexStatus.music_section) bits.push(plexStatus.music_section);
+      label = bits.length ? `Linked · ${bits.join(' · ')}` : 'Linked';
+    } else if (plexConnecting) {
+      label = 'Waiting for Plex authorization…';
+    }
+    $('plexLinkLabel').textContent = label;
+    $('plexConnectBtn').hidden = linked;
+    $('plexDisconnectBtn').hidden = !linked;
+    $('plexConnectLabel').textContent = plexConnecting ? 'Waiting…' : 'Connect with Plex';
+    $('plexConnectBtn').disabled = plexConnecting;
+    if (!linked) {
+      $('djSubmit').title = 'Connect Plex in Settings before playing';
+    } else {
+      $('djSubmit').removeAttribute('title');
+    }
+  }
+
+  async function refreshPlexStatus() {
+    try {
+      plexStatus = await api('/api/plex/status');
+      renderPlexStatus();
+      if (bridgeOk !== false && !authFailed) {
+        setConnection(true, plexStatus.linked ? 'Local bridge connected' : 'Bridge online · Plex not linked');
       }
-      return h;
+    } catch (err) {
+      if (!authFailed) setConnection(false, 'Bridge unreachable');
+      $('plexLinkLabel').textContent = err.message || 'Could not load Plex status';
     }
+  }
 
-    async function scanSpeakers(forceScan = false) {
-      const countEl = document.getElementById('speakerCount');
-      countEl.textContent = forceScan ? 'Scanning LAN...' : 'Loading...';
-      try {
-        const res = await fetch(`/api/speakers?scan=${forceScan}`, { headers: authHeaders() });
-        if (res.status === 401) {
-          countEl.textContent = 'Auth Required';
-          document.getElementById('actionStatus').textContent = 'Unauthorized: Set LOCAL_API_KEY and pass it via X-API-Key (or one-time ?api_key= bootstrap).';
-          return;
+  function stopPlexPoll() {
+    if (plexPollTimer) {
+      clearInterval(plexPollTimer);
+      plexPollTimer = null;
+    }
+  }
+
+  async function loadPlexServersAndSections() {
+    const servers = await api('/api/plex/servers');
+    const serverSel = $('plexServerSelect');
+    serverSel.replaceChildren();
+    (servers || []).forEach((s) => {
+      serverSel.add(new Option(s.name || s.id, s.id));
+    });
+    if (!servers || !servers.length) {
+      announce('No Plex servers found on this account');
+      return;
+    }
+    $('plexPicker').hidden = false;
+    await loadPlexSections();
+  }
+
+  async function loadPlexSections() {
+    const serverId = $('plexServerSelect').value;
+    if (!serverId) return;
+    const sections = await api(`/api/plex/sections?server_id=${encodeURIComponent(serverId)}`);
+    const sectionSel = $('plexSectionSelect');
+    sectionSel.replaceChildren();
+    const musicFirst = [...(sections || [])].sort((a, b) => {
+      const am = /artist|music/i.test(a.type || '') ? 0 : 1;
+      const bm = /artist|music/i.test(b.type || '') ? 0 : 1;
+      return am - bm;
+    });
+    musicFirst.forEach((s) => {
+      sectionSel.add(new Option(`${s.title} (${s.type})`, s.title));
+    });
+  }
+
+  async function startPlexConnect() {
+    if (plexConnecting) return;
+    plexConnecting = true;
+    renderPlexStatus();
+    try {
+      const data = await api('/api/plex/connect/start', { method: 'POST', body: '{}' });
+      if (data.auth_url) {
+        window.open(data.auth_url, '_blank', 'noopener');
+      }
+      announce('Complete sign-in in the Plex tab, then return here.');
+      stopPlexPoll();
+      plexPollTimer = setInterval(async () => {
+        try {
+          const st = await api('/api/plex/connect/status');
+          if (st.state === 'authorized') {
+            stopPlexPoll();
+            plexConnecting = false;
+            announce('Plex authorized. Choose your server and music library.');
+            await loadPlexServersAndSections();
+            await refreshPlexStatus();
+          } else if (st.state === 'expired' || st.state === 'error') {
+            stopPlexPoll();
+            plexConnecting = false;
+            renderPlexStatus();
+            announce(st.detail || 'Plex login failed');
+          }
+        } catch (err) {
+          stopPlexPoll();
+          plexConnecting = false;
+          renderPlexStatus();
+          announce(err.message || 'Plex login poll failed');
         }
-        speakers = await res.json();
-        renderSpeakers();
-      } catch (err) {
-        countEl.textContent = 'Error';
+      }, 2000);
+    } catch (err) {
+      plexConnecting = false;
+      renderPlexStatus();
+      announce(err.message || 'Could not start Plex login');
+    }
+  }
+
+  async function confirmPlexSelection() {
+    const server_id = $('plexServerSelect').value;
+    const section = $('plexSectionSelect').value;
+    if (!server_id || !section) {
+      announce('Select a server and music library');
+      return;
+    }
+    try {
+      plexStatus = await api('/api/plex/select', {
+        method: 'POST',
+        body: JSON.stringify({ server_id, section }),
+      });
+      $('plexPicker').hidden = true;
+      renderPlexStatus();
+      announce(`Connected to ${section} on ${plexStatus.server_name || 'Plex'}`);
+    } catch (err) {
+      announce(err.message || 'Could not save Plex selection');
+    }
+  }
+
+  async function disconnectPlex() {
+    try {
+      plexStatus = await api('/api/plex/disconnect', { method: 'POST', body: '{}' });
+      $('plexPicker').hidden = true;
+      renderPlexStatus();
+      announce('Plex disconnected');
+    } catch (err) {
+      announce(err.message || 'Could not disconnect Plex');
+    }
+  }
+
+  function paintVolume(pct) {
+    const v = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    $('volume').value = String(v);
+    $('volume').style.setProperty('--pct', `${v}%`);
+    $('volume').setAttribute('aria-valuenow', String(v));
+    $('volumeValue').textContent = `${v}%`;
+  }
+
+  function setTransportEnabled(enabled) {
+    ['previousTrack', 'pauseResume', 'nextTrack', 'stopTrack', 'volume', 'outputSelect'].forEach((id) => {
+      const el = $(id);
+      if (id === 'outputSelect') {
+        el.disabled = !enabledSpeakers().length;
+      } else if (id === 'volume') {
+        el.disabled = !enabled;
+      } else {
+        el.disabled = !enabled || commandPending;
+      }
+    });
+    $('djSubmit').disabled = !enabled || commandPending;
+  }
+
+  function updateOutputSelect() {
+    const opts = enabledSpeakers();
+    if (selected && !opts.some((d) => d.name === selected)) {
+      selected = opts[0]?.name || '';
+    }
+    if (!selected && opts.length) {
+      const preferred = opts.find((d) => String(d.name).toLowerCase().includes('master bedroom'));
+      selected = (preferred || opts[0]).name;
+    }
+    if (selected) localStorage.setItem(SPEAKER_KEY, selected);
+
+    const sel = $('outputSelect');
+    const prev = sel.value;
+    sel.replaceChildren();
+    if (!opts.length) {
+      sel.add(new Option(speakers.length ? 'No speakers enabled' : 'No speakers found', ''));
+      sel.disabled = true;
+      selected = '';
+    } else {
+      sel.disabled = false;
+      opts.forEach((d) => {
+        sel.add(new Option(`${roomLabel(d)} — ${d.name}`, d.name));
+      });
+      sel.value = selected;
+      if (sel.value !== selected && opts[0]) {
+        selected = opts[0].name;
+        sel.value = selected;
       }
     }
 
-    function renderSpeakers() {
-      const list = document.getElementById('speakerList');
-      const select = document.getElementById('targetSpeakerSelect');
-      const prevSelected = select.value;
-      list.textContent = '';
-      select.textContent = '';
+    $('playingRoom').textContent = roomLabel(currentDevice());
+    $('djTargetName').textContent = roomLabel(currentDevice());
+    setTransportEnabled(Boolean(selected));
+    if (prev && prev !== sel.value && !volumeDragging) {
+      // keep UI quiet on first load
+    }
+  }
 
-      document.getElementById('speakerCount').textContent = `${speakers.length} Devices`;
+  function applyPlayback(playback) {
+    lastPlayback = playback || null;
+    const track = playback?.current_track;
+    const state = playback?.state || 'IDLE';
+    const playing = isPlayingState(state);
 
-      speakers.forEach(spk => {
-        const item = document.createElement('div');
-        item.className = 'speaker-item' + (spk.enabled ? '' : ' disabled');
+    $('trackTitle').textContent = track?.title || (playback ? 'Idle' : 'Nothing playing');
+    $('trackArtist').textContent = track?.artist || (playback ? 'No track loaded' : 'Choose a speaker and ask the DJ');
+    $('trackAlbum').textContent = track?.album || '';
 
-        const metaDiv = document.createElement('div');
-        metaDiv.className = 'speaker-meta';
+    $('playbackState').textContent = playing ? 'Playing' : (state === 'PAUSED' ? 'Paused' : (state === 'IDLE' || state === 'UNKNOWN' ? (track ? 'Idle' : 'Idle') : state));
+    $('statusLine').classList.toggle('is-playing', playing);
+    $('pauseResume').setAttribute('aria-label', playing ? 'Pause playback' : 'Resume playback');
+    $('pauseResumeIcon').querySelector('use').setAttribute('href', playing ? '#pause-icon' : '#play-icon');
 
-        const nameDiv = document.createElement('div');
-        nameDiv.className = 'speaker-name';
+    if (playback?.speaker) {
+      const match = speakers.find((s) => s.name === playback.speaker);
+      if (match?.enabled) {
+        selected = match.name;
+        localStorage.setItem(SPEAKER_KEY, selected);
+        if ($('outputSelect').value !== selected && enabledSpeakers().some((s) => s.name === selected)) {
+          $('outputSelect').value = selected;
+        }
+        $('playingRoom').textContent = roomLabel(match);
+        $('djTargetName').textContent = roomLabel(match);
+      } else {
+        $('playingRoom').textContent = playback.speaker;
+      }
+    } else {
+      $('playingRoom').textContent = roomLabel(currentDevice());
+    }
 
-        const nameSpan = document.createElement('span');
-        nameSpan.textContent = spk.name || 'Unknown Speaker';
-        nameDiv.appendChild(nameSpan);
+    const art = track?.art;
+    const cover = $('cover');
+    const img = $('coverArt');
+    if (art) {
+      cover.classList.add('has-art');
+      cover.setAttribute('aria-label', `Album artwork for ${track.title || 'current track'}`);
+      img.hidden = false;
+      setCoverArt(art);
+    } else {
+      cover.classList.remove('has-art');
+      cover.setAttribute('aria-label', 'Album artwork placeholder');
+      img.hidden = true;
+      img.removeAttribute('src');
+      $('coverSub').textContent = roomLabel(currentDevice()) === 'No output' ? 'The listening room' : roomLabel(currentDevice());
+    }
 
-        const roomBadge = document.createElement('span');
-        roomBadge.className = 'badge room';
-        roomBadge.textContent = spk.room || spk.name || 'Room';
-        nameDiv.appendChild(roomBadge);
-        metaDiv.appendChild(nameDiv);
+    if (!volumeDragging && playback?.volume != null && Number.isFinite(Number(playback.volume))) {
+      const maxV = playback?.max_volume != null ? Number(playback.max_volume) : 1;
+      const pct = Math.min(Number(playback.volume), maxV) * 100;
+      paintVolume(pct);
+      $('volume').max = String(Math.round(maxV * 100));
+    }
 
-        const subDiv = document.createElement('div');
-        subDiv.className = 'speaker-sub';
-        const modelStr = spk.model || 'Google Cast';
-        const hostStr = spk.host ? `${spk.host}${spk.port ? ':' + spk.port : ''}` : 'Local';
-        subDiv.textContent = `${modelStr} • ${hostStr}`;
-        metaDiv.appendChild(subDiv);
+    renderUpNext(playback?.up_next || []);
+  }
 
-        item.appendChild(metaDiv);
+  let coverObjectUrl = null;
+  async function setCoverArt(art) {
+    const img = $('coverArt');
+    if (!art) return;
+    if (art.startsWith('/api/')) {
+      try {
+        const res = await fetch(art, { headers: authHeaders() });
+        if (!res.ok) throw new Error('art');
+        const blob = await res.blob();
+        if (coverObjectUrl) URL.revokeObjectURL(coverObjectUrl);
+        coverObjectUrl = URL.createObjectURL(blob);
+        img.src = coverObjectUrl;
+      } catch {
+        img.hidden = true;
+      }
+      return;
+    }
+    // Legacy absolute URLs (should not include tokens after upgrade).
+    if (String(art).includes('X-Plex-Token=')) {
+      img.hidden = true;
+      return;
+    }
+    if (img.src !== art) img.src = art;
+  }
 
-        const switchLabel = document.createElement('label');
-        switchLabel.className = 'switch';
-        switchLabel.title = spk.enabled ? 'Enabled' : 'Disabled';
-
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = Boolean(spk.enabled);
-        checkbox.addEventListener('change', () => toggleSpeaker(spk.name, checkbox.checked));
-
-        const sliderSpan = document.createElement('span');
-        sliderSpan.className = 'slider';
-
-        switchLabel.appendChild(checkbox);
-        switchLabel.appendChild(sliderSpan);
-        item.appendChild(switchLabel);
-
-        list.appendChild(item);
-
-        if (spk.enabled) {
-          const opt = document.createElement('option');
-          opt.value = spk.name;
-          opt.textContent = `${spk.room || spk.name} (${spk.name})`;
-          if (String(spk.name).toLowerCase().includes('master bedroom')) opt.selected = true;
-          select.appendChild(opt);
+  function renderUpNext(items) {
+    const list = $('upNextList');
+    if (!list) return;
+    list.replaceChildren();
+    (items || []).slice(0, 12).forEach((t, idx) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${t.title || 'Track'} — ${t.artist || ''}</span>`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ghost-button';
+      btn.textContent = 'Remove';
+      btn.addEventListener('click', async () => {
+        try {
+          await api('/api/queue', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'remove', index: idx, speaker: selected }),
+          });
+          await refreshStatus();
+        } catch (err) {
+          announce(err.message || 'Could not update queue');
         }
       });
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  }
 
-      if (prevSelected && Array.from(select.options).some(o => o.value === prevSelected)) {
-        select.value = prevSelected;
-      }
+  function renderDevices() {
+    const list = $('deviceList');
+    list.replaceChildren();
+
+    if (authFailed) {
+      const row = document.createElement('div');
+      row.className = 'error-row';
+      row.textContent = 'Unauthorized. Set LOCAL_API_KEY and open this page with ?api_key=… once to store it.';
+      list.appendChild(row);
+      return;
     }
 
-    async function toggleSpeaker(name, enabled) {
-      const statusEl = document.getElementById('actionStatus');
-      statusEl.textContent = `${enabled ? 'Enabling' : 'Disabling'} '${name}'...`;
+    if (!speakers.length) {
+      const row = document.createElement('div');
+      row.className = 'empty-row';
+      row.textContent = bridgeOk === false
+        ? 'Bridge unreachable. Check that the local service is running.'
+        : 'No speakers discovered yet. Try Rescan.';
+      list.appendChild(row);
+      return;
+    }
+
+    speakers.forEach((d) => {
+      const kind = deviceKind(d);
+      const row = document.createElement('div');
+      row.className = 'device' + (d.enabled ? '' : ' is-disabled');
+
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('class', 'icon device-icon');
+      icon.setAttribute('aria-hidden', 'true');
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttribute('href', iconForKind(kind));
+      icon.appendChild(use);
+
+      const text = document.createElement('div');
+      const name = document.createElement('span');
+      name.className = 'device-name';
+      name.textContent = roomLabel(d);
+      const sub = document.createElement('span');
+      sub.className = 'device-desc';
+      sub.textContent = `${d.name} · ${d.model || 'Google Cast'}`;
+      text.append(name, sub);
+
+      const meta = document.createElement('div');
+      meta.className = 'device-meta';
+      meta.hidden = true;
+      const bits = [];
+      if (d.host) bits.push(`${d.host}${d.port ? ':' + d.port : ''}`);
+      if (d.model) bits.push(d.model);
+      if (d.uuid) bits.push(`id ${String(d.uuid).slice(0, 8)}…`);
+      meta.textContent = bits.length ? bits.join(' · ') : 'No technical details available.';
+
+      const toggleMeta = document.createElement('button');
+      toggleMeta.type = 'button';
+      toggleMeta.className = 'device-toggle-meta';
+      toggleMeta.textContent = 'Details';
+      toggleMeta.setAttribute('aria-expanded', 'false');
+      toggleMeta.addEventListener('click', () => {
+        const open = meta.hidden;
+        meta.hidden = !open;
+        toggleMeta.textContent = open ? 'Hide details' : 'Details';
+        toggleMeta.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      text.append(toggleMeta, meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'device-actions';
+      const label = document.createElement('label');
+      label.className = 'switch';
+      label.title = `${d.enabled ? 'Disable' : 'Enable'} ${roomLabel(d)}`;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.setAttribute('role', 'switch');
+      input.checked = Boolean(d.enabled);
+      input.setAttribute('aria-label', `Enable ${d.name}`);
+      input.addEventListener('change', () => toggleSpeaker(d.name, input.checked, input));
+      label.appendChild(input);
+      actions.appendChild(label);
+
+      row.append(icon, text, actions);
+      list.appendChild(row);
+    });
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: { ...authHeaders(), ...(options.headers || {}) },
+    });
+    if (res.status === 401) {
+      authFailed = true;
+      setConnection(false, 'Auth required');
+      throw new Error('Unauthorized: pass LOCAL_API_KEY via ?api_key= once, or set the X-API-Key header.');
+    }
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(errorDetail(data, `HTTP ${res.status}`));
+    authFailed = false;
+    setConnection(true, 'Local bridge connected');
+    return data;
+  }
+
+  async function loadSpeakers(forceScan = false) {
+    const label = $('scanButtonLabel');
+    const btn = $('scanButton');
+    if (forceScan) {
+      btn.disabled = true;
+      label.textContent = 'Scanning…';
+    }
+    try {
+      speakers = await api(`/api/speakers?scan=${forceScan ? 'true' : 'false'}`);
+      if (!Array.isArray(speakers)) speakers = [];
+      renderDevices();
+      updateOutputSelect();
+      if (forceScan) announce(`Scan complete. Found ${speakers.length} device${speakers.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      if (bridgeOk !== false && !authFailed) setConnection(false, 'Bridge unreachable');
+      renderDevices();
+      updateOutputSelect();
+      if (forceScan || !speakers.length) announce(err.message || 'Could not load speakers');
+    } finally {
+      btn.disabled = false;
+      label.textContent = 'Rescan';
+    }
+  }
+
+  async function toggleSpeaker(name, enabled, inputEl) {
+    const previous = speakers.map((s) => ({ ...s }));
+    speakers = speakers.map((s) => (s.name === name ? { ...s, enabled } : s));
+    renderDevices();
+    updateOutputSelect();
+    try {
+      const data = await api('/api/speakers/toggle', {
+        method: 'POST',
+        body: JSON.stringify({ speaker: name, enabled }),
+      });
+      if (Array.isArray(data.speakers)) speakers = data.speakers;
+      renderDevices();
+      updateOutputSelect();
+      announce(`${name} ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      speakers = previous;
+      renderDevices();
+      updateOutputSelect();
+      if (inputEl) inputEl.checked = !enabled;
+      announce(err.message || 'Could not update speaker');
+    }
+  }
+
+  async function refreshStatus() {
+    if (statusInFlight) return;
+    statusInFlight = true;
+    try {
+      const data = await api('/api/status');
+      const sessions = data && typeof data === 'object' ? data : {};
+      const keys = Object.keys(sessions);
+      let playback = null;
+      if (selected && sessions[selected]) {
+        playback = sessions[selected];
+      } else if (keys.length) {
+        playback = sessions[keys[0]];
+      }
+      applyPlayback(playback);
+    } catch (err) {
+      if (!authFailed) setConnection(false, 'Bridge unreachable');
+    } finally {
+      statusInFlight = false;
+    }
+  }
+
+  async function sendTransport(action, extra = {}) {
+    if (!selected || commandPending) return;
+    commandPending = true;
+    setTransportEnabled(true);
+    try {
+      const data = await api('/api/transport', {
+        method: 'POST',
+        body: JSON.stringify({ action, speaker: selected, ...extra }),
+      });
+      applyPlayback(data);
+      return data;
+    } catch (err) {
+      announce(err.message || `Transport ${action} failed`);
+      throw err;
+    } finally {
+      commandPending = false;
+      setTransportEnabled(Boolean(selected));
+    }
+  }
+
+  async function sendCommand(query) {
+    if (!selected || commandPending) return;
+    const q = query.trim();
+    if (!q) return;
+    commandPending = true;
+    $('djSubmitLabel').textContent = 'Playing…';
+    setTransportEnabled(true);
+    try {
+      const data = await api('/api/command', {
+        method: 'POST',
+        body: JSON.stringify({ query: q, speaker: selected }),
+      });
+      if (data.playback) applyPlayback(data.playback);
+      saveRecent(q);
+      location.hash = '#player';
+      const track = data.playback?.current_track;
+      announce(track ? `Playing ${track.title} — ${track.artist}` : `Playing on ${roomLabel(currentDevice())}`);
+      refreshStatus();
+    } catch (err) {
+      announce(err.message || 'Playback failed');
+    } finally {
+      commandPending = false;
+      $('djSubmitLabel').textContent = 'Play music';
+      setTransportEnabled(Boolean(selected));
+    }
+  }
+
+  // Events
+  $('outputSelect').addEventListener('change', (e) => {
+    selected = e.target.value;
+    if (selected) localStorage.setItem(SPEAKER_KEY, selected);
+    $('playingRoom').textContent = roomLabel(currentDevice());
+    $('djTargetName').textContent = roomLabel(currentDevice());
+    $('coverSub').textContent = roomLabel(currentDevice());
+    announce(`Output set to ${roomLabel(currentDevice())}`);
+    refreshStatus();
+  });
+
+  $('volume').addEventListener('pointerdown', () => { volumeDragging = true; });
+  $('volume').addEventListener('pointerup', () => { volumeDragging = false; });
+  $('volume').addEventListener('input', (e) => {
+    paintVolume(e.target.value);
+  });
+  $('volume').addEventListener('change', (e) => {
+    volumeDragging = false;
+    const pct = Number(e.target.value);
+    paintVolume(pct);
+    clearTimeout(volumeTimer);
+    volumeTimer = setTimeout(async () => {
+      const previous = lastPlayback?.volume;
       try {
-        const res = await fetch('/api/speakers/toggle', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ speaker: name, enabled })
+        await sendTransport('volume', { volume: pct / 100 });
+      } catch {
+        if (previous != null) paintVolume(previous * 100);
+      }
+    }, 80);
+  });
+
+  $('pauseResume').addEventListener('click', async () => {
+    if (!selected) return;
+    const playing = isPlayingState(lastPlayback?.state);
+    await sendTransport(playing ? 'pause' : 'resume');
+  });
+  $('nextTrack').addEventListener('click', () => sendTransport('next'));
+  $('previousTrack').addEventListener('click', () => sendTransport('previous'));
+  $('stopTrack').addEventListener('click', async () => {
+    await sendTransport('stop');
+    announce('Playback stopped');
+  });
+  $('scanButton').addEventListener('click', () => loadSpeakers(true));
+
+  document.querySelectorAll('[name="djMode"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      const mode = document.querySelector('[name="djMode"]:checked').value;
+      $('modeExplainer').textContent = mode === 'radio' ? '50/50 with similar' : '100% that artist';
+    });
+  });
+
+  $('djForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const raw = $('promptText').value.trim();
+    if (!raw) return;
+    if (!plexStatus.linked && !plexStatus.plex_ready) {
+      announce('Connect Plex in Settings before playing');
+      location.hash = '#settings';
+      return;
+    }
+    if (!selected) {
+      announce('Enable a speaker before playing');
+      return;
+    }
+    const mode = document.querySelector('[name="djMode"]:checked').value;
+    sendCommand(buildDjQuery(raw, mode));
+  });
+
+  $('plexConnectBtn').addEventListener('click', startPlexConnect);
+  $('plexDisconnectBtn').addEventListener('click', disconnectPlex);
+  $('plexSelectBtn').addEventListener('click', confirmPlexSelection);
+  $('plexServerSelect').addEventListener('change', () => {
+    loadPlexSections().catch((err) => announce(err.message || 'Could not load libraries'));
+  });
+
+  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tab = btn.getAttribute('data-settings-tab');
+      document.querySelectorAll('[data-settings-tab]').forEach((b) => b.setAttribute('aria-current', b === btn ? 'true' : 'false'));
+      document.querySelectorAll('[data-settings-panel]').forEach((p) => {
+        p.hidden = p.getAttribute('data-settings-panel') !== tab;
+      });
+      if (tab === 'diagnostics') refreshDiagnostics();
+      if (tab === 'connections') refreshGoogleHome();
+    });
+  });
+
+  let ghWizardOpen = false;
+  const GH_COMPANION = 'http://127.0.0.1:18765';
+  const GH_STEPS = [
+    { id: 'welcome', short: 'Welcome', title: 'Welcome', body: 'Confirm Plex and Cast are ready, then verify this checklist.', action: 'verify', actionLabel: 'Check prerequisites' },
+    { id: 'cloud_auth', short: 'Cloud', title: 'Connect Google Cloud', body: 'Create a new GCP project or attach an existing one (for example plex-cast-bridge), then verify.', action: 'create_project', actionLabel: 'Create project on this Mac' },
+    { id: 'prepare_services', short: 'Services', title: 'Prepare cloud services', body: 'Link billing for this project, then provision APIs and resources on this Mac.', action: 'provision', actionLabel: 'Run provision on this Mac' },
+    { id: 'subscriber_auth', short: 'Secrets', title: 'Local subscriber auth', body: 'Mint secrets on this Mac and keep the catalog write key on the bridge.', action: 'mint', actionLabel: 'Mint secrets on this Mac' },
+    { id: 'deploy_gateway', short: 'Deploy', title: 'Deploy cloud gateway', body: 'Deploy the Cloud Run gateway from this Mac (or paste an existing HTTPS URL), then verify health.', action: 'deploy', actionLabel: 'Deploy Cloud Run' },
+    { id: 'developer_console', short: 'Console', title: 'Developer Console', body: 'Paste OAuth values into Google Home Developer Console, then verify.', action: 'verify', actionLabel: 'Verify console setup' },
+    { id: 'link_home', short: 'Link', title: 'Link Google Home', body: 'In the Google Home app, link [test] Plex Cast Bridge using the admin passphrase, assign rooms, then confirm.', action: 'verify', actionLabel: 'Verify Google Home link' },
+    { id: 'connection_test', short: 'Test', title: 'Connection test', body: 'Run end-to-end diagnostics. Finish when critical checks pass.', action: 'test', actionLabel: 'Run connection test' },
+  ];
+  let ghStepIndex = 0;
+  let ghSetupCache = {};
+  let ghStepVerified = false;
+  let ghCompanionAuth = null;
+  let ghBusy = false;
+  let ghDoMode = 'action';
+
+  async function companionFetch(path, options) {
+    const res = await fetch(`${GH_COMPANION}${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    if (!res.ok) throw new Error(data.error || data.detail || `Companion HTTP ${res.status}`);
+    return data;
+  }
+
+  async function refreshCompanionStatus() {
+    const el = $('ghCompanionStatus');
+    try {
+      await companionFetch('/health');
+      ghCompanionAuth = await companionFetch('/auth/status');
+      el.classList.add('is-ok');
+      el.textContent = ghCompanionAuth.ok
+        ? `Companion ready · ${ghCompanionAuth.account || 'gcloud'} · ADC ok`
+        : `Companion up · gcloud needs login: ${ghCompanionAuth.detail || 'auth incomplete'}`;
+      return true;
+    } catch (_) {
+      ghCompanionAuth = null;
+      el.classList.remove('is-ok');
+      el.textContent = 'Companion offline — on this Mac run: uv run python scripts/gh_setup_companion.py serve';
+      return false;
+    }
+  }
+
+  function fieldInput(id, label, placeholder, value) {
+    return `<label class="field-label" for="${id}">${label}</label>
+      <div class="field-wrap"><input id="${id}" class="field-select" placeholder="${placeholder || ''}" value="${value || ''}" autocomplete="off"></div>`;
+  }
+
+  function setGhBusy(on, label) {
+    ghBusy = Boolean(on);
+    const doBtn = $('ghDoStepBtn');
+    const nextBtn = $('ghNextBtn');
+    const backBtn = $('ghBackBtn');
+    doBtn.classList.toggle('is-busy', ghBusy);
+    nextBtn.classList.toggle('is-busy', ghBusy);
+    backBtn.disabled = ghBusy;
+    if (ghBusy) {
+      doBtn.disabled = true;
+      nextBtn.disabled = true;
+      doBtn.innerHTML = `<span class="gh-busy" aria-hidden="true"></span> ${label || 'Working…'}`;
+    } else {
+      updateGhActionButtons();
+    }
+  }
+
+  function renderGhStepper() {
+    const nav = $('ghStepper');
+    nav.replaceChildren();
+    const completed = new Set(ghSetupCache.completed_steps || []);
+    const verified = ghSetupCache.verified || {};
+    GH_STEPS.forEach((step, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gh-step';
+      if (idx === ghStepIndex) btn.classList.add('is-current');
+      if (completed.has(step.id) || verified[step.id]) btn.classList.add('is-done');
+      const canJump = idx <= ghStepIndex || completed.has(GH_STEPS[idx - 1]?.id) || verified[GH_STEPS[idx - 1]?.id];
+      if (canJump && idx !== ghStepIndex) btn.classList.add('is-clickable');
+      btn.innerHTML = `<span class="n">${completed.has(step.id) || verified[step.id] ? '✓' : idx + 1}</span><span class="t">${step.short}</span>`;
+      btn.addEventListener('click', () => {
+        if (!canJump || ghBusy) return;
+        ghStepIndex = idx;
+        renderGhWizardStep();
+      });
+      nav.appendChild(btn);
+    });
+  }
+
+  function renderGhFields() {
+    const step = GH_STEPS[ghStepIndex];
+    const box = $('ghWizardFields');
+    const s = ghSetupCache || {};
+    const progress = s.provision_progress || {};
+    if (step.id === 'welcome') {
+      box.innerHTML = `<p class="conn-meta">Uses the Plex card above and speakers from Player. This checklist is only for Google Home setup readiness.</p>`;
+    } else if (step.id === 'cloud_auth') {
+      const mode = s.mode === 'attach_existing' ? 'attach_existing' : 'create_new_project';
+      box.innerHTML = `
+        <fieldset class="gh-field-grid" style="border:0;padding:0;margin:0">
+          <legend class="field-label">Project source</legend>
+          <label class="gh-checkrow"><input type="radio" name="ghProjectMode" value="create_new_project" ${mode !== 'attach_existing' ? 'checked' : ''}> Create a new GCP project</label>
+          <label class="gh-checkrow"><input type="radio" name="ghProjectMode" value="attach_existing" ${mode === 'attach_existing' ? 'checked' : ''}> Use an existing GCP project</label>
+        </fieldset>
+        ${fieldInput('ghProjectId', mode === 'attach_existing' ? 'Existing GCP project ID' : 'New GCP project ID', mode === 'attach_existing' ? 'e.g. plex-cast-bridge' : 'e.g. plex-cast-home-a7f3', s.project_id || (mode === 'attach_existing' ? 'plex-cast-bridge' : ''))}
+        <p class="conn-meta" id="ghProjectModeHint">${mode === 'attach_existing'
+          ? 'We verify the project is ACTIVE with your local gcloud, then continue inside it.'
+          : 'Deleted project IDs cannot be reused. Prefer a fresh ID only when you need a brand-new project.'}</p>`;
+      box.querySelectorAll('input[name="ghProjectMode"]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const next = box.querySelector('input[name="ghProjectMode"]:checked')?.value || 'create_new_project';
+          const typed = $('ghProjectId')?.value?.trim() || '';
+          ghSetupCache = {
+            ...ghSetupCache,
+            mode: next,
+            project_id: typed || (next === 'attach_existing' ? 'plex-cast-bridge' : ghSetupCache.project_id),
+          };
+          renderGhFields();
+          updateGhActionButtons();
         });
-        const data = await res.json();
-        speakers = data.speakers || speakers;
-        renderSpeakers();
-        statusEl.textContent = `'${name}' is now ${enabled ? 'enabled' : 'disabled'} (saved to catalog.json).`;
-      } catch (err) {
-        statusEl.textContent = `Error toggling speaker: ${err}`;
-      }
-    }
-
-    async function sendPlay() {
-      const query = document.getElementById('queryInput').value.trim();
-      const speaker = document.getElementById('targetSpeakerSelect').value;
-      if (!query) return;
-      const statusEl = document.getElementById('actionStatus');
-      statusEl.textContent = `Routing '${query}' to ${speaker}...`;
-      try {
-        const res = await fetch('/api/command', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ query, speaker })
+      });
+    } else if (step.id === 'prepare_services') {
+      const billingUrl = s.billing_url || `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(s.project_id || '')}`;
+      const billingOk = Boolean(s.billing_confirmed) || progress.confirm_billing === 'ok';
+      box.innerHTML = `
+        <p class="conn-meta">Project: <code>${s.project_id || '(set in previous step)'}</code></p>
+        <p class="gh-status-pill ${billingOk ? 'is-ok' : 'is-bad'}" id="ghBillingStatus">
+          <span class="dot" aria-hidden="true"></span>
+          <span>${billingOk ? 'Billing linked' : 'Billing not linked yet'}</span>
+        </p>
+        <p class="conn-meta">Google requires a billing account for Cloud Run / Pub/Sub even on personal free-tier usage. <a href="${billingUrl}" target="_blank" rel="noopener">Open billing console</a> or use Do this step to link your open Default Billing Account, then provision.</p>
+        <p class="conn-meta" id="ghProvisionNote">Progress: ${Object.keys(progress).length ? JSON.stringify(progress) : 'not started'}</p>`;
+    } else if (step.id === 'subscriber_auth') {
+      box.innerHTML = `
+        ${fieldInput('ghCatalogWriteKey', 'CATALOG_WRITE_KEY (auto-filled after mint)', 'paste from mint output', '')}
+        <div class="gh-icon-card" id="ghSecretsPassphraseCard" hidden>
+          <div class="meta" style="width:100%">
+            <strong>Admin passphrase (for Google Home linking)</strong>
+            <span>You’ll enter this on the OAuth login page when linking in the Google Home app — not your Google password.</span>
+            <ul class="gh-paste-list" id="ghSecretsPasteList"></ul>
+          </div>
+        </div>
+        <p class="conn-meta">Mint writes secrets to <code>gcp-cloud-run/.env</code> on this Mac. Only the catalog write key is stored on the bridge.</p>`;
+    } else if (step.id === 'deploy_gateway') {
+      box.innerHTML = `
+        ${fieldInput('ghCloudRunUrl', 'Cloud Run service URL', 'https://….run.app', s.cloud_run_url || '')}
+        <p class="conn-meta">Click <strong>Deploy Cloud Run</strong> on this Mac (takes a few minutes). The URL fills in automatically. Or paste an existing <code>*.run.app</code> URL, then Check this step.</p>`;
+    } else if (step.id === 'developer_console') {
+      const oauth = s.oauth || {};
+      box.innerHTML = `
+        <p class="conn-meta">Google’s Developer Console can’t be prefilled from apps — copy each value below into it. This Home Console project is <em>separate</em> from your GCP project.</p>
+        <div class="conn-actions">
+          <button type="button" class="ghost-button" id="ghLoadPastePack">Load copy pack from this Mac</button>
+          <a class="ghost-button" href="https://console.home.google.com/projects" target="_blank" rel="noopener">Open Developer Console</a>
+        </div>
+        <div class="gh-icon-card">
+          <img src="/assets/icon-144.png" alt="Plex Cast Bridge 144px icon" width="72" height="72" />
+          <div class="meta">
+            <strong>App branding icon (144×144 PNG)</strong>
+            <span>Download and upload this in Developer Console → App branding. Device type: <strong>TV</strong> or <strong>Audio Video Receiver</strong>.</span>
+            <div class="conn-actions">
+              <a class="ghost-button" href="/assets/icon-144.png" download="plex-cast-bridge-icon-144.png">Download icon</a>
+            </div>
+          </div>
+        </div>
+        <ol class="gh-howto" id="ghConsoleHowto">
+          <li>Open your Home Console project → Add <strong>Cloud-to-cloud</strong> → Setup &amp; configuration</li>
+          <li>Name: Plex Cast Bridge · Device type: <strong>TV</strong> or <strong>Audio Video Receiver</strong></li>
+          <li>Upload the 144×144 icon from this step · leave <strong>Local fulfillment</strong> and <strong>App Flip</strong> off</li>
+          <li>Paste Client ID / secret / Authorization / Token / Fulfillment URLs</li>
+          <li>Save in Google’s console, then click <strong>Save &amp; verify console</strong> here</li>
+        </ol>
+        <ul class="gh-paste-list" id="ghPasteList"></ul>
+        ${fieldInput('ghClientId', 'OAuth client ID (confirm)', 'from mint', oauth.client_id || '')}`;
+      const renderPaste = (vals) => {
+        const rows = [
+          ['Integration name', vals.integration_name],
+          ['Device type', vals.device_type || 'TV or Audio Video Receiver'],
+          ['Client ID', vals.client_id],
+          ['Client secret', vals.client_secret],
+          ['Admin passphrase', vals.admin_passphrase],
+          ['Authorization URL', vals.authorization_url],
+          ['Token URL', vals.token_url],
+          ['Fulfillment URL', vals.fulfillment_url],
+        ].filter(([, v]) => v);
+        const ul = $('ghPasteList');
+        ul.replaceChildren();
+        rows.forEach(([label, value]) => {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="label"></span><code></code><button type="button" class="ghost-button">Copy</button>`;
+          li.querySelector('.label').textContent = label;
+          li.querySelector('code').textContent = value;
+          li.querySelector('code').title = value;
+          li.querySelector('button').addEventListener('click', async () => {
+            try {
+              await copyText(value);
+              announce(`Copied ${label}`);
+            } catch (_) {
+              announce('Copy failed — select the value manually');
+            }
+          });
+          ul.appendChild(li);
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Command failed');
-        const mode = data.intent?.mode || 'artist';
-        const track = data.playback?.current_track;
-        statusEl.textContent = `Playing (${mode}): ${track ? track.title + ' — ' + track.artist : 'Started'} on ${speaker}`;
-        refreshStatus();
-      } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
-      }
-    }
-
-    async function sendTransport(action) {
-      const speaker = document.getElementById('targetSpeakerSelect').value;
-      const statusEl = document.getElementById('actionStatus');
-      statusEl.textContent = `Sending '${action}' to ${speaker}...`;
-      try {
-        const res = await fetch('/api/transport', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ action, speaker })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Transport failed');
-        statusEl.textContent = `Transport '${action}' executed on ${speaker}.`;
-        refreshStatus();
-      } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
-      }
-    }
-
-    async function sendVolume(delta) {
-      const speaker = document.getElementById('targetSpeakerSelect').value;
-      const statusEl = document.getElementById('actionStatus');
-      try {
-        const res = await fetch('/api/transport', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ action: 'volume', speaker, relative_volume: delta })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Volume change failed');
-        const volPct = data.volume != null ? Math.round(data.volume * 100) + '%' : 'updated';
-        statusEl.textContent = `Volume on ${speaker}: ${volPct}`;
-        refreshStatus();
-      } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
-      }
-    }
-
-    async function refreshStatus() {
-      try {
-        const res = await fetch('/api/status', { headers: authHeaders() });
-        const data = await res.json();
-        const container = document.getElementById('activeSessions');
-        const keys = Object.keys(data);
-        if (keys.length === 0) {
-          container.textContent = '';
-          const sub = document.createElement('div');
-          sub.className = 'now-sub';
-          sub.textContent = 'No active streams yet.';
-          container.appendChild(sub);
+        if (vals.client_id && $('ghClientId')) $('ghClientId').value = vals.client_id;
+        if (Array.isArray(vals.steps) && vals.steps.length) {
+          const ol = $('ghConsoleHowto');
+          ol.replaceChildren();
+          vals.steps.forEach((t) => {
+            const li = document.createElement('li');
+            li.textContent = t;
+            ol.appendChild(li);
+          });
+        }
+        $('ghConsoleValues').textContent = JSON.stringify({
+          ...vals,
+          client_secret: vals.client_secret ? '[copied via Copy button — not logged]' : null,
+        }, null, 2);
+      };
+      // Prefill URLs from wizard state immediately; secret comes from companion.
+      renderPaste({
+        integration_name: 'Plex Cast Bridge',
+        device_type: 'TV or Audio Video Receiver',
+        client_id: oauth.client_id,
+        authorization_url: oauth.authorization_url,
+        token_url: oauth.token_url,
+        fulfillment_url: oauth.fulfillment_url,
+      });
+      $('ghLoadPastePack')?.addEventListener('click', async () => {
+        try {
+          await refreshCompanionStatus();
+          const vals = await companionFetch('/console-paste');
+          renderPaste(vals);
+          announce(vals.client_secret ? 'Paste pack ready — use Copy on each row' : 'Loaded URLs; client secret missing in gcp-cloud-run/.env');
+        } catch (err) {
+          announce(err.message || 'Could not load paste pack (is companion running?)');
+        }
+      });
+    } else if (step.id === 'link_home') {
+      box.innerHTML = `
+        <p class="conn-meta">No typing needed — linking is one-tap. Use <strong>Back</strong> anytime to revisit earlier steps.</p>
+        <ol class="gh-howto" id="ghLinkHowto">
+          <li>On your phone, open the <strong>Google Home</strong> app (same Google account as Developer Console)</li>
+          <li><strong>Devices</strong> → <strong>Add / +</strong> → <strong>Works with Google</strong></li>
+          <li>Search for <strong>[test] Plex Cast Bridge</strong> and tap it</li>
+          <li>Allow the browser/login sheet — it should finish automatically (no passphrase)</li>
+          <li>Assign each new device to a room in Google Home</li>
+          <li>Return here and click <strong>Confirm linked</strong></li>
+        </ol>
+        <details class="advanced-block" style="margin-top:12px">
+          <summary>Optional: passphrase mode / copy admin passphrase</summary>
+          <p class="conn-meta">Only needed if you set <code>REQUIRE_ADMIN_PASSPHRASE=true</code> on Cloud Run.</p>
+          <ul class="gh-paste-list" id="ghLinkPasteList"></ul>
+          <div class="conn-actions" style="margin-top:8px">
+            <button type="button" class="ghost-button" id="ghLoadLinkSecrets">Load passphrase from this Mac</button>
+          </div>
+        </details>`;
+      const renderLinkPaste = (vals) => {
+        const ul = $('ghLinkPasteList');
+        ul.replaceChildren();
+        const rows = [['Admin passphrase', vals.admin_passphrase]].filter(([, v]) => v);
+        if (!rows.length) {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="label">Admin passphrase</span><code>Not found — click Load</code>`;
+          ul.appendChild(li);
           return;
         }
-
-        container.textContent = '';
-        keys.forEach(k => {
-          const s = data[k];
-          const t = s.current_track;
-          const vol = s.volume != null ? Math.round(s.volume * 100) + '%' : '—';
-
-          const card = document.createElement('div');
-          card.className = 'now-playing';
-
-          const row = document.createElement('div');
-          row.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
-
-          const spkTitle = document.createElement('strong');
-          spkTitle.textContent = s.speaker || 'Cast Device';
-          row.appendChild(spkTitle);
-
-          const badge = document.createElement('span');
-          badge.className = 'badge';
-          badge.textContent = `${s.state || 'UNKNOWN'} • Vol ${vol}`;
-          row.appendChild(badge);
-          card.appendChild(row);
-
-          const trackTitle = document.createElement('div');
-          trackTitle.className = 'now-title';
-          trackTitle.style.marginTop = '6px';
-          trackTitle.textContent = t ? t.title : 'Idle';
-          card.appendChild(trackTitle);
-
-          const trackSub = document.createElement('div');
-          trackSub.className = 'now-sub';
-          const artistAlbum = t ? `${t.artist}${t.album ? ' — ' + t.album : ''}` : 'No track loaded';
-          trackSub.textContent = `${artistAlbum} • ${s.queue_length || 0} in queue`;
-          card.appendChild(trackSub);
-
-          container.appendChild(card);
+        rows.forEach(([label, value]) => {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="label"></span><code></code><button type="button" class="ghost-button">Copy</button>`;
+          li.querySelector('.label').textContent = label;
+          li.querySelector('code').textContent = value;
+          li.querySelector('code').title = value;
+          li.querySelector('button').addEventListener('click', async () => {
+            try { await copyText(value); announce(`Copied ${label}`); }
+            catch (_) { announce('Copy failed — select the value manually'); }
+          });
+          ul.appendChild(li);
         });
-      } catch (err) {}
+        if (Array.isArray(vals.link_steps) && vals.link_steps.length) {
+          const ol = $('ghLinkHowto');
+          // Keep the no-passphrase howto; don't overwrite with old passphrase steps.
+        }
+      };
+      $('ghLoadLinkSecrets')?.addEventListener('click', async () => {
+        try {
+          await refreshCompanionStatus();
+          const vals = await companionFetch('/console-paste');
+          renderLinkPaste(vals);
+          announce(vals.admin_passphrase ? 'Passphrase loaded' : 'Admin passphrase missing in gcp-cloud-run/.env');
+        } catch (err) {
+          announce(err.message || 'Could not load passphrase (is companion running?)');
+        }
+      });
+    } else if (step.id === 'connection_test') {
+      box.innerHTML = `<p class="conn-meta">${s.last_test?.summary || 'No test run yet. Click Do this step to run diagnostics.'}</p>`;
+    } else {
+      box.replaceChildren();
+    }
+  }
+
+  function renderGhChecks(checks) {
+    const wrap = $('ghChecksWrap');
+    const ul = $('ghVerifyChecks');
+    ul.replaceChildren();
+    if (!checks || !checks.length) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+    $('ghChecksTitle').textContent = `Checks for ${GH_STEPS[ghStepIndex].title}`;
+    checks.forEach((c) => {
+      const li = document.createElement('li');
+      li.className = c.ok ? 'ok' : 'bad';
+      li.innerHTML = `<span class="mark" aria-hidden="true">${c.ok ? '✓' : '!'}</span>
+        <span><strong>${c.name}</strong> — ${c.detail || ''}${c.recovery && !c.ok ? `<small>${c.recovery}</small>` : ''}</span>`;
+      ul.appendChild(li);
+    });
+  }
+
+  function updateGhActionButtons() {
+    const step = GH_STEPS[ghStepIndex];
+    const doBtn = $('ghDoStepBtn');
+    const nextBtn = $('ghNextBtn');
+    const backBtn = $('ghBackBtn');
+    const blocked = $('ghNextBlocked');
+    const blockedText = $('ghNextBlockedText');
+    backBtn.disabled = ghBusy || ghStepIndex <= 0;
+    doBtn.disabled = ghBusy;
+
+    const cloudMode = (document.querySelector('input[name="ghProjectMode"]:checked')?.value)
+      || ghSetupCache.mode
+      || 'create_new_project';
+    const cloudActionLabel = cloudMode === 'attach_existing'
+      ? 'Use existing project'
+      : 'Create project';
+    const progress = ghSetupCache.provision_progress || {};
+    const billingOk = Boolean(ghSetupCache.billing_confirmed) || progress.confirm_billing === 'ok';
+    const billingNeedsLink = step.id === 'prepare_services' && !billingOk;
+
+    if (step.id === 'cloud_auth') {
+      ghDoMode = 'create_or_attach';
+      doBtn.textContent = cloudActionLabel;
+    } else if (step.id === 'prepare_services') {
+      if (billingNeedsLink) {
+        ghDoMode = 'check_billing';
+        doBtn.textContent = 'Refresh billing status';
+      } else {
+        ghDoMode = 'provision';
+        doBtn.textContent = 'Provision services';
+      }
+    } else if (step.id === 'subscriber_auth') {
+      ghDoMode = 'mint';
+      doBtn.textContent = 'Mint secrets';
+    } else if (step.id === 'deploy_gateway') {
+      const hasUrl = Boolean(($('ghCloudRunUrl')?.value || s.cloud_run_url || '').trim());
+      if (hasUrl && !ghStepVerified) {
+        ghDoMode = 'verify';
+        doBtn.textContent = 'Check this step';
+      } else {
+        ghDoMode = 'deploy';
+        doBtn.textContent = hasUrl ? 'Redeploy Cloud Run' : 'Deploy Cloud Run';
+      }
+    } else if (step.id === 'developer_console') {
+      ghDoMode = 'mark_console';
+      doBtn.textContent = 'Save & verify console';
+    } else if (step.id === 'link_home') {
+      ghDoMode = 'confirm_link';
+      doBtn.textContent = 'Confirm linked';
+    } else if (step.id === 'connection_test') {
+      ghDoMode = 'test';
+      doBtn.textContent = 'Run connection test';
+    } else {
+      ghDoMode = 'verify';
+      doBtn.textContent = 'Check this step';
     }
 
-    // Attach event listeners safely without inline handlers
-    document.getElementById('rescanBtn').addEventListener('click', () => scanSpeakers(true));
-    document.getElementById('playBtn').addEventListener('click', sendPlay);
-    document.getElementById('queryInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendPlay();
-    });
-    document.getElementById('pauseBtn').addEventListener('click', () => sendTransport('pause'));
-    document.getElementById('resumeBtn').addEventListener('click', () => sendTransport('resume'));
-    document.getElementById('prevBtn').addEventListener('click', () => sendTransport('previous'));
-    document.getElementById('nextBtn').addEventListener('click', () => sendTransport('next'));
-    document.getElementById('stopBtn').addEventListener('click', () => sendTransport('stop'));
-    document.getElementById('volDownBtn').addEventListener('click', () => sendVolume(-0.05));
-    document.getElementById('volUpBtn').addEventListener('click', () => sendVolume(0.05));
-    document.getElementById('refreshStatusBtn').addEventListener('click', refreshStatus);
+    if (ghStepVerified) {
+      nextBtn.disabled = ghBusy;
+      nextBtn.classList.remove('is-blocked-next');
+      nextBtn.textContent = ghStepIndex >= GH_STEPS.length - 1 ? 'Finish' : 'Next';
+      blocked.classList.remove('is-visible');
+      $('ghNextHint').className = 'gh-next-hint is-ok';
+      $('ghNextHint').textContent = 'Step complete. Click Next to continue.';
+      return;
+    }
 
-    scanSpeakers(false);
-    refreshStatus();
-    setInterval(refreshStatus, 5000);
-  </script>
+    nextBtn.disabled = true;
+    nextBtn.classList.add('is-blocked-next');
+    nextBtn.textContent = 'Next';
+    blocked.classList.add('is-visible');
+    if (billingNeedsLink) {
+      blockedText.textContent = 'Next locked — billing not linked';
+      $('ghNextHint').className = 'gh-next-hint is-bad';
+      $('ghNextHint').textContent = 'If you already linked billing in Google Cloud, click Refresh billing status. Otherwise open the billing console, then refresh.';
+    } else {
+      blockedText.textContent = 'Next locked — finish this step first';
+      $('ghNextHint').className = 'gh-next-hint is-bad';
+      $('ghNextHint').textContent = `Click “${doBtn.textContent}”, wait for checks to pass, then Next unlocks.`;
+    }
+  }
+
+  async function refreshGoogleHome(opts = {}) {
+    try {
+      const data = await api('/api/google-home/status');
+      const sync = data.catalog_sync || {};
+      const setup = data.setup || {};
+      ghSetupCache = setup;
+      const ready = Boolean(setup.cloud_run_url && setup.link_confirmed);
+      $('ghLinkLabel').textContent = ready ? 'Linked' : (setup.cloud_run_url ? 'Configured — link pending' : 'Not configured');
+      $('ghLinkState').classList.toggle('is-linked', ready);
+      $('ghSyncNote').hidden = false;
+      $('ghSyncNote').textContent = sync.note || '';
+      $('ghSetupBtn').textContent = ghWizardOpen ? 'Setup in progress' : (setup.completed_steps?.length ? 'Resume Google Home setup' : 'Set up Google Home');
+      if (ghWizardOpen && opts.followServerStep && setup.current_step) {
+        const idx = GH_STEPS.findIndex((s) => s.id === setup.current_step);
+        if (idx >= 0) ghStepIndex = idx;
+      }
+      if (ghWizardOpen) {
+        renderGhWizardStep();
+        await refreshCompanionStatus();
+      }
+    } catch (err) {
+      $('ghLinkLabel').textContent = 'Unavailable';
+    }
+  }
+
+  function renderGhWizardStep() {
+    const step = GH_STEPS[ghStepIndex] || GH_STEPS[0];
+    $('ghWizardStepLabel').textContent = `Step ${ghStepIndex + 1} of ${GH_STEPS.length} — ${step.title}`;
+    $('ghWizardBody').textContent = step.body;
+    renderGhStepper();
+    renderGhFields();
+    ghStepVerified = Boolean((ghSetupCache.verified || {})[step.id]);
+    if (ghSetupCache.last_verify?.step === step.id) {
+      renderGhChecks(ghSetupCache.last_verify.checks || []);
+      if (ghSetupCache.last_verify.ok === false) {
+        $('ghNextHint').className = 'gh-next-hint is-bad';
+        $('ghNextHint').textContent = 'Fix the failed checks, then try again.';
+      }
+    } else {
+      renderGhChecks([]);
+    }
+    updateGhActionButtons();
+  }
+
+  function collectStepPatch() {
+    const step = GH_STEPS[ghStepIndex];
+    const patch = {};
+    if (step.id === 'cloud_auth') {
+      const projectId = $('ghProjectId')?.value?.trim();
+      if (projectId) patch.project_id = projectId;
+      const mode = document.querySelector('input[name="ghProjectMode"]:checked')?.value || 'create_new_project';
+      patch.mode = mode;
+      patch.prefer_new_project = mode !== 'attach_existing';
+      if (ghCompanionAuth) patch.companion_auth = ghCompanionAuth;
+    }
+    if (step.id === 'prepare_services') {
+      const progress = ghSetupCache.provision_progress || {};
+      patch.billing_confirmed = Boolean(ghSetupCache.billing_confirmed) || progress.confirm_billing === 'ok';
+      if (ghSetupCache.project_id) {
+        patch.billing_url = `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(ghSetupCache.project_id)}`;
+      }
+    }
+    if (step.id === 'subscriber_auth') {
+      const key = $('ghCatalogWriteKey')?.value?.trim();
+      if (key) patch.catalog_write_key = key;
+      if (ghSetupCache.cloud_run_url) patch.cloud_gateway_url = ghSetupCache.cloud_run_url;
+    }
+    if (step.id === 'deploy_gateway') {
+      const url = $('ghCloudRunUrl')?.value?.trim();
+      if (url) patch.cloud_gateway_url = url;
+    }
+    if (step.id === 'developer_console') {
+      const clientId = $('ghClientId')?.value?.trim();
+      if (clientId) patch.client_id = clientId;
+      patch.developer_console_done = Boolean(clientId) || Boolean(ghSetupCache.developer_console_done);
+    }
+    if (step.id === 'link_home') {
+      patch.link_confirmed = true;
+    }
+    return patch;
+  }
+
+  function selectedCloudMode() {
+    return document.querySelector('input[name="ghProjectMode"]:checked')?.value || ghSetupCache.mode || 'create_new_project';
+  }
+
+  async function createOrAttachGhProject() {
+    const projectId = $('ghProjectId')?.value?.trim();
+    if (!projectId) { announce('Enter a project ID first'); return; }
+    const mode = selectedCloudMode();
+    const attaching = mode === 'attach_existing';
+    setGhBusy(true, attaching ? 'Checking existing project…' : 'Creating project…');
+    try {
+      await refreshCompanionStatus();
+      const result = attaching
+        ? await companionFetch('/projects/attach', {
+            method: 'POST',
+            body: JSON.stringify({ project_id: projectId }),
+          })
+        : await companionFetch('/projects/create', {
+            method: 'POST',
+            body: JSON.stringify({ project_id: projectId, confirm_billable: true }),
+          });
+      $('ghConsoleValues').textContent = JSON.stringify(result, null, 2);
+      const progress = {
+        ...(ghSetupCache.provision_progress || {}),
+        ...(attaching
+          ? { attach_project: result.status, create_project: result.status }
+          : { create_project: result.status }),
+      };
+      const verify = await api('/api/google-home/wizard/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          step: 'cloud_auth',
+          patch: {
+            project_id: projectId,
+            prefer_new_project: !attaching,
+            mode: attaching ? 'attach_existing' : 'create_new_project',
+            provision_progress: progress,
+            companion_auth: ghCompanionAuth,
+          },
+        }),
+      });
+      ghSetupCache = verify.setup || ghSetupCache;
+      ghStepVerified = Boolean(verify.ok);
+      renderGhChecks(verify.checks || []);
+      announce(result.status === 'failed' ? (result.detail || 'Project action failed') : (attaching ? `Using existing project ${projectId}` : `Project ${result.status}`));
+      updateGhActionButtons();
+    } catch (err) {
+      announce(err.message || 'Project action failed');
+      $('ghNextHint').className = 'gh-next-hint is-bad';
+      $('ghNextHint').textContent = err.message || 'Failed — check Advanced / logs';
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function runGhProvision() {
+    const projectId = ghSetupCache.project_id || $('ghProjectId')?.value?.trim();
+    if (!projectId) { announce('Set project ID in the previous step'); return; }
+    const steps = ['confirm_billing', 'enable_apis', 'ensure_firestore', 'ensure_pubsub', 'ensure_service_account', 'ensure_catalog_bucket'];
+    const labels = {
+      confirm_billing: 'Checking billing link…',
+      enable_apis: 'Enabling APIs (can take a few minutes)…',
+      ensure_firestore: 'Creating Firestore…',
+      ensure_pubsub: 'Creating Pub/Sub…',
+      ensure_service_account: 'Creating service account…',
+      ensure_catalog_bucket: 'Creating catalog bucket…',
+    };
+    const progress = { ...(ghSetupCache.provision_progress || {}) };
+    setGhBusy(true, 'Provisioning…');
+    try {
+      await refreshCompanionStatus();
+      for (const step of steps) {
+        setGhBusy(true, labels[step] || `Provisioning ${step}…`);
+        if ($('ghProvisionNote')) $('ghProvisionNote').textContent = `Running: ${step}…`;
+        let result;
+        try {
+          result = await companionFetch('/provision/step', {
+            method: 'POST',
+            body: JSON.stringify({ project_id: projectId, step, confirm_billable: true, dry_run: false }),
+          });
+        } catch (err) {
+          // Companion may return HTTP 500 with a structured result body
+          progress[step] = 'failed';
+          if ($('ghProvisionNote')) $('ghProvisionNote').textContent = `Failed at ${step}: ${err.message || err}`;
+          $('ghConsoleValues').textContent = String(err.message || err);
+          break;
+        }
+        const status = result.result?.status || result.status;
+        progress[step] = status;
+        if (result.result?.url) {
+          progress.billing_url = result.result.url;
+          ghSetupCache.billing_url = result.result.url;
+        }
+        if ($('ghProvisionNote')) $('ghProvisionNote').textContent = `Progress: ${step} → ${status}`;
+        $('ghConsoleValues').textContent = JSON.stringify({ progress, last: result }, null, 2);
+        await api('/api/google-home/wizard/verify', {
+          method: 'POST',
+          body: JSON.stringify({
+            step: 'prepare_services',
+            patch: {
+              billing_confirmed: progress.confirm_billing === 'ok',
+              billing_url: progress.billing_url || `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(projectId)}`,
+              provision_progress: progress,
+            },
+          }),
+        }).catch(() => null);
+        if (status === 'needs_user') {
+          announce('Billing still not linked');
+          $('ghNextHint').className = 'gh-next-hint is-bad';
+          $('ghNextHint').textContent = 'Billing not linked yet. Click Do this step to link billing, or open the billing console.';
+          break;
+        }
+        if (status === 'failed') break;
+      }
+      const verify = await api('/api/google-home/wizard/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          step: 'prepare_services',
+          patch: {
+            billing_confirmed: progress.confirm_billing === 'ok',
+            billing_url: progress.billing_url || `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(projectId)}`,
+            provision_progress: progress,
+          },
+        }),
+      });
+      ghSetupCache = verify.setup || ghSetupCache;
+      ghStepVerified = Boolean(verify.ok);
+      renderGhChecks(verify.checks || []);
+      announce(verify.ok ? 'Provision verified — click Next' : 'Provision finished — fix failed checks');
+      updateGhActionButtons();
+      renderGhFields();
+    } catch (err) {
+      announce(err.message || 'Provision failed');
+      $('ghNextHint').className = 'gh-next-hint is-bad';
+      $('ghNextHint').textContent = err.message || 'Provision failed — open Advanced / logs';
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function mintGhSecrets() {
+    const projectId = ghSetupCache.project_id;
+    if (!projectId) { announce('Project ID missing'); return; }
+    setGhBusy(true, 'Minting secrets…');
+    try {
+      await refreshCompanionStatus();
+      const result = await companionFetch('/provision/step', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, step: 'mint_local_secrets', confirm_billable: true, dry_run: false }),
+      });
+      const generated = result.result?.generated || {};
+      $('ghConsoleValues').textContent = JSON.stringify({
+        ...result,
+        result: {
+          ...(result.result || {}),
+          generated: {
+            ...generated,
+            GOOGLE_CLIENT_SECRET: generated.GOOGLE_CLIENT_SECRET ? '[set]' : null,
+            OAUTH_SIGNING_SECRET: generated.OAUTH_SIGNING_SECRET ? '[set]' : null,
+            WEBHOOK_API_KEY: generated.WEBHOOK_API_KEY ? '[set]' : null,
+          },
+        },
+      }, null, 2);
+      if (generated.CATALOG_WRITE_KEY && $('ghCatalogWriteKey')) {
+        $('ghCatalogWriteKey').value = generated.CATALOG_WRITE_KEY;
+      }
+      if (generated.ADMIN_PASSPHRASE) {
+        const card = $('ghSecretsPassphraseCard');
+        const ul = $('ghSecretsPasteList');
+        if (card && ul) {
+          card.hidden = false;
+          ul.replaceChildren();
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="label">Admin passphrase</span><code></code><button type="button" class="ghost-button">Copy</button>`;
+          li.querySelector('code').textContent = generated.ADMIN_PASSPHRASE;
+          li.querySelector('button').addEventListener('click', async () => {
+            try { await copyText(generated.ADMIN_PASSPHRASE); announce('Copied Admin passphrase'); }
+            catch (_) { announce('Copy failed — select the value manually'); }
+          });
+          ul.appendChild(li);
+        }
+      }
+      const verify = await api('/api/google-home/wizard/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          step: 'subscriber_auth',
+          patch: {
+            client_id: generated.GOOGLE_CLIENT_ID,
+            catalog_write_key: generated.CATALOG_WRITE_KEY,
+            cloud_gateway_url: ghSetupCache.cloud_run_url || undefined,
+          },
+        }),
+      });
+      ghSetupCache = verify.setup || ghSetupCache;
+      ghStepVerified = Boolean(verify.ok);
+      renderGhChecks(verify.checks || []);
+      announce(verify.ok ? 'Secrets saved — save the admin passphrase for linking' : 'Secrets minted — review checks');
+      updateGhActionButtons();
+    } catch (err) {
+      announce(err.message || 'Mint failed');
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function deployGhGateway() {
+    const projectId = ghSetupCache.project_id;
+    if (!projectId) { announce('Project ID missing'); return; }
+    setGhBusy(true, 'Deploying Cloud Run… this can take a few minutes');
+    try {
+      await refreshCompanionStatus();
+      const result = await companionFetch('/provision/step', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, step: 'deploy_cloud_run', confirm_billable: true, dry_run: false }),
+      });
+      $('ghConsoleValues').textContent = JSON.stringify(result, null, 2);
+      const url = result.result?.cloud_run_url || '';
+      if (!url || result.result?.status === 'failed') {
+        throw new Error(result.result?.detail || result.error || 'Deploy failed');
+      }
+      if ($('ghCloudRunUrl')) $('ghCloudRunUrl').value = url;
+      const verify = await api('/api/google-home/wizard/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          step: 'deploy_gateway',
+          patch: { cloud_gateway_url: url },
+        }),
+      });
+      ghSetupCache = verify.setup || ghSetupCache;
+      ghStepVerified = Boolean(verify.ok);
+      renderGhChecks(verify.checks || []);
+      renderGhWizardStep();
+      announce(verify.ok ? 'Gateway deployed — click Next' : 'Deployed — health check failed');
+      updateGhActionButtons();
+    } catch (err) {
+      announce(err.message || 'Deploy failed');
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function verifyGhStep() {
+    const step = GH_STEPS[ghStepIndex];
+    setGhBusy(true, 'Verifying…');
+    try {
+      if (step.id === 'cloud_auth' || step.id === 'prepare_services' || step.id === 'subscriber_auth') {
+        await refreshCompanionStatus();
+      }
+      const patch = collectStepPatch();
+      if (step.id === 'cloud_auth' && ghCompanionAuth) patch.companion_auth = ghCompanionAuth;
+      const result = await api('/api/google-home/wizard/verify', {
+        method: 'POST',
+        body: JSON.stringify({ step: step.id, patch }),
+      });
+      renderGhChecks(result.checks || []);
+      ghStepVerified = Boolean(result.ok);
+      ghSetupCache = result.setup || ghSetupCache;
+      $('ghConsoleValues').textContent = JSON.stringify(result, null, 2);
+      announce(result.ok ? 'Verified — click Next' : 'Verification failed — fix checks');
+      updateGhActionButtons();
+      renderGhStepper();
+    } catch (err) {
+      ghStepVerified = false;
+      announce(err.message || 'Verify failed');
+      updateGhActionButtons();
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function advanceGhStep() {
+    const step = GH_STEPS[ghStepIndex];
+    if (!ghStepVerified) {
+      announce('Finish this step before Next');
+      return;
+    }
+    const finishing = ghStepIndex >= GH_STEPS.length - 1;
+    setGhBusy(true, finishing ? 'Finishing…' : 'Continuing…');
+    try {
+      await api('/api/google-home/wizard/advance', {
+        method: 'POST',
+        body: JSON.stringify({ step: step.id, patch: collectStepPatch() }),
+      });
+      if (finishing) {
+        $('ghWizard').hidden = true;
+        ghWizardOpen = false;
+        announce('Google Home setup complete');
+        await refreshGoogleHome();
+        return;
+      }
+      ghStepIndex = Math.min(ghStepIndex + 1, GH_STEPS.length - 1);
+      ghStepVerified = false;
+      await refreshGoogleHome({ followServerStep: true });
+    } catch (err) {
+      announce(err.message || 'Could not continue');
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function persistBillingProgress(progress, billingOk) {
+    const verify = await api('/api/google-home/wizard/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        step: 'prepare_services',
+        patch: {
+          billing_confirmed: Boolean(billingOk),
+          billing_url: progress.billing_url || `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(ghSetupCache.project_id || '')}`,
+          provision_progress: progress,
+        },
+      }),
+    });
+    ghSetupCache = verify.setup || ghSetupCache;
+    ghStepVerified = Boolean(verify.ok);
+    renderGhChecks(verify.checks || []);
+    updateGhActionButtons();
+    renderGhFields();
+    return verify;
+  }
+
+  async function checkOrLinkBilling() {
+    const projectId = ghSetupCache.project_id;
+    if (!projectId) { announce('Project ID missing'); return; }
+    setGhBusy(true, 'Checking billing…');
+    try {
+      await refreshCompanionStatus();
+      // Always re-read GCP first — console links don't update wizard state by themselves.
+      const checked = await companionFetch('/provision/step', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, step: 'confirm_billing', confirm_billable: true, dry_run: false }),
+      });
+      $('ghConsoleValues').textContent = JSON.stringify(checked, null, 2);
+      let status = checked.result?.status || checked.status;
+      const progress = { ...(ghSetupCache.provision_progress || {}) };
+      if (checked.result?.url) progress.billing_url = checked.result.url;
+      progress.confirm_billing = status;
+
+      if (status === 'ok') {
+        await persistBillingProgress(progress, true);
+        announce('Billing is linked — provisioning next');
+        setGhBusy(false);
+        return runGhProvision();
+      }
+
+      // Not linked yet — try attaching the open Default Billing Account.
+      setGhBusy(true, 'Linking billing…');
+      const linked = await companionFetch('/provision/step', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, step: 'link_billing', confirm_billable: true, dry_run: false }),
+      });
+      $('ghConsoleValues').textContent = JSON.stringify(linked, null, 2);
+      status = linked.result?.status || linked.status;
+      progress.link_billing = status;
+      progress.confirm_billing = status === 'ok' ? 'ok' : status;
+      if (linked.result?.url) progress.billing_url = linked.result.url;
+      await persistBillingProgress(progress, status === 'ok');
+      if (status === 'ok') {
+        announce('Billing linked — provisioning next');
+        setGhBusy(false);
+        return runGhProvision();
+      }
+      announce(linked.result?.detail || checked.result?.detail || 'Billing still not linked');
+    } catch (err) {
+      announce(err.message || 'Billing check failed');
+    } finally {
+      setGhBusy(false);
+    }
+  }
+
+  async function runGhDoStep() {
+    if (ghBusy) return;
+    if (ghDoMode === 'create_or_attach') return createOrAttachGhProject();
+    if (ghDoMode === 'check_billing' || ghDoMode === 'link_billing') return checkOrLinkBilling();
+    if (ghDoMode === 'provision') return runGhProvision();
+    if (ghDoMode === 'mint') return mintGhSecrets();
+    if (ghDoMode === 'deploy') return deployGhGateway();
+    if (ghDoMode === 'mark_console') {
+      const patch = collectStepPatch();
+      if (!patch.client_id) { announce('Paste the OAuth client ID first'); return; }
+      patch.developer_console_done = true;
+      setGhBusy(true, 'Verifying…');
+      try {
+        const result = await api('/api/google-home/wizard/verify', {
+          method: 'POST',
+          body: JSON.stringify({ step: 'developer_console', patch }),
+        });
+        ghSetupCache = result.setup || ghSetupCache;
+        ghStepVerified = Boolean(result.ok);
+        renderGhChecks(result.checks || []);
+        updateGhActionButtons();
+        announce(result.ok ? 'Console step verified — click Next' : 'Console checks failed');
+      } catch (err) {
+        announce(err.message || 'Verify failed');
+      } finally {
+        setGhBusy(false);
+      }
+      return;
+    }
+    if (ghDoMode === 'confirm_link') {
+      setGhBusy(true, 'Confirming…');
+      try {
+        await api('/api/google-home/link/confirm', { method: 'POST', body: JSON.stringify({ confirmed: true }) });
+        const result = await api('/api/google-home/wizard/verify', {
+          method: 'POST',
+          body: JSON.stringify({ step: 'link_home', patch: { link_confirmed: true } }),
+        });
+        ghSetupCache = result.setup || ghSetupCache;
+        ghStepVerified = Boolean(result.ok);
+        renderGhChecks(result.checks || []);
+        updateGhActionButtons();
+        announce(result.ok ? 'Link confirmed — click Next' : 'Link confirmation failed');
+      } catch (err) {
+        announce(err.message || 'Confirm failed');
+      } finally {
+        setGhBusy(false);
+      }
+      return;
+    }
+    if (ghDoMode === 'test') {
+      setGhBusy(true, 'Running test…');
+      try {
+        const test = await api('/api/google-home/test', { method: 'POST', body: '{}' });
+        $('ghConsoleValues').textContent = JSON.stringify(test, null, 2);
+        setGhBusy(false);
+        return verifyGhStep();
+      } catch (err) {
+        announce(err.message || 'Test failed');
+        setGhBusy(false);
+      }
+      return;
+    }
+    return verifyGhStep();
+  }
+
+  $('ghSetupBtn').addEventListener('click', async () => {
+    ghWizardOpen = true;
+    $('ghWizard').hidden = false;
+    ghStepIndex = 0;
+    ghStepVerified = false;
+    renderGhWizardStep();
+    await refreshCompanionStatus();
+    await refreshGoogleHome({ followServerStep: true });
+  });
+  $('ghWizardHide').addEventListener('click', () => {
+    $('ghWizard').hidden = true;
+    ghWizardOpen = false;
+    $('ghSetupBtn').textContent = 'Resume Google Home setup';
+  });
+  $('ghWizardHow').addEventListener('click', async () => {
+    const drawer = $('ghTutorial');
+    drawer.hidden = !drawer.hidden;
+    if (!drawer.hidden) {
+      try {
+        const man = await fetch('/assets/tutorials/manifest.json').then((r) => r.json());
+        const step = GH_STEPS[ghStepIndex]?.id;
+        const entry = (man.steps || []).find((s) => s.id === step) || man.steps?.[0];
+        const ul = $('ghTutorialLinks');
+        ul.replaceChildren();
+        (entry?.links || []).forEach((link) => {
+          const li = document.createElement('li');
+          li.innerHTML = `<a href="${link.href}" target="_blank" rel="noopener">${link.label}</a>`;
+          ul.appendChild(li);
+        });
+        if (entry?.status === 'needs_capture') {
+          const li = document.createElement('li');
+          li.textContent = 'Recording status: needs_capture';
+          ul.appendChild(li);
+        }
+      } catch (_) {
+        $('ghTutorialLinks').innerHTML = '<li>Tutorial manifest unavailable</li>';
+      }
+    }
+  });
+  $('ghBackBtn').addEventListener('click', () => {
+    if (ghBusy || ghStepIndex <= 0) return;
+    ghStepIndex -= 1;
+    ghStepVerified = Boolean((ghSetupCache.verified || {})[GH_STEPS[ghStepIndex].id]);
+    renderGhWizardStep();
+  });
+  $('ghDoStepBtn').addEventListener('click', () => runGhDoStep());
+  $('ghNextBtn').addEventListener('click', () => {
+    if (!ghStepVerified || ghBusy) {
+      announce('Finish this step before Next');
+      return;
+    }
+    advanceGhStep();
+  });
+  $('ghSyncBtn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/google-home/sync', { method: 'POST', body: '{}' });
+      announce(res.last_push_status || res.status || 'Sync requested');
+      await refreshGoogleHome();
+    } catch (err) {
+      announce(err.message || 'Sync failed');
+    }
+  });
+
+  async function refreshDiagnostics() {
+    try {
+      const data = await api('/api/diagnostics');
+      const list = $('diagList');
+      list.replaceChildren();
+      (data.checks || []).forEach((c) => {
+        const row = document.createElement('div');
+        row.className = 'diag-row';
+        const st = c.status === 'connected' ? 'Connected' : (c.status === 'needs_attention' ? 'Needs attention' : 'Not configured');
+        row.innerHTML = `<span>${c.label}<br><small>${c.detail || ''}</small></span><span class="${c.status === 'connected' ? 'diag-ok' : 'diag-bad'}">${st}</span>`;
+        list.appendChild(row);
+      });
+      $('diagTechnical').textContent = JSON.stringify(data.technical || {}, null, 2);
+      if (data.technical?.max_cast_volume != null) {
+        $('maxVolumeHint').textContent = `Default ${Math.round((data.technical.default_cast_volume || 0) * 100)}% · max ${Math.round(data.technical.max_cast_volume * 100)}%`;
+      }
+    } catch (err) {
+      announce(err.message || 'Diagnostics failed');
+    }
+  }
+  $('diagRefreshBtn').addEventListener('click', refreshDiagnostics);
+  $('diagTestBtn').addEventListener('click', async () => {
+    try {
+      const test = await api('/api/google-home/test', { method: 'POST', body: '{}' });
+      announce(test.summary || 'Test complete');
+      await refreshDiagnostics();
+    } catch (err) {
+      announce(err.message || 'Test failed');
+    }
+  });
+
+  $('librarySearchBtn').addEventListener('click', async () => {
+    const q = $('libraryQuery').value.trim();
+    try {
+      const data = await api(`/api/library/browse?kind=tracks&query=${encodeURIComponent(q)}&limit=20`);
+      const box = $('libraryResults');
+      box.replaceChildren();
+      (data.items || []).forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'library-item';
+        row.innerHTML = `<span>${item.title} — ${item.artist || ''}</span>`;
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'ghost-button';
+        play.textContent = 'Play';
+        play.addEventListener('click', async () => {
+          await api('/api/library/play', {
+            method: 'POST',
+            body: JSON.stringify({ rating_key: item.rating_key, speaker: selected, mode: 'replace' }),
+          });
+          announce(`Playing ${item.title}`);
+          await refreshStatus();
+        });
+        row.appendChild(play);
+        box.appendChild(row);
+      });
+    } catch (err) {
+      announce(err.message || 'Library search failed');
+    }
+  });
+
+  $('clearQueueBtn')?.addEventListener('click', async () => {
+    try {
+      await api('/api/queue', { method: 'POST', body: JSON.stringify({ action: 'clear', speaker: selected }) });
+      await refreshStatus();
+    } catch (err) {
+      announce(err.message || 'Could not clear queue');
+    }
+  });
+
+  $('backupDownloadBtn')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/api/backup', { headers: authHeaders() });
+      if (!res.ok) throw new Error('Backup failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'plex-cast-bridge-backup.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      announce(err.message || 'Backup failed');
+    }
+  });
+
+  window.addEventListener('hashchange', updateView);
+  if (!location.hash) location.hash = '#player';
+  updateView();
+  renderRecents();
+  paintVolume(20);
+  setTransportEnabled(false);
+  setConnection(null, 'Connecting…');
+  renderPlexStatus();
+
+  (async () => {
+    await loadSpeakers(false);
+    await refreshStatus();
+    await refreshPlexStatus();
+    await refreshGoogleHome();
+    setInterval(() => {
+      if (document.visibilityState === 'visible') refreshStatus();
+    }, POLL_MS);
+  })();
+})();
+</script>
 </body>
 </html>

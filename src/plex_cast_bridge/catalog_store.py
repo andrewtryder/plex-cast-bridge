@@ -149,6 +149,12 @@ def persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: Cas
                         shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
                     except Exception as exc:
                         log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
+                try:
+                    from . import catalog_sync
+
+                    catalog_sync.bump_and_schedule_push()
+                except Exception as exc:
+                    log.warning("Could not schedule Google Home catalog push: %s", exc)
         except Exception as exc:
             log.warning("Could not persist speaker states to catalog.json: %s", exc)
             raise

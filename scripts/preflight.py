@@ -53,16 +53,22 @@ def check_env(file_vals: dict[str, str]) -> bool:
     ok = True
     plex_url = _env("PLEX_URL", file_vals)
     plex_token = _env("PLEX_TOKEN", file_vals)
+    data_dir = _env("DATA_DIR", file_vals) or "data"
+    conn_path = Path(data_dir) / "plex_connection.json"
+    has_store = conn_path.exists()
     if plex_url:
         _ok(f"PLEX_URL={plex_url}")
     else:
-        _fail("PLEX_URL is missing")
-        ok = False
+        _warn("PLEX_URL unset — required for env-token mode; Connect with Plex can discover servers instead")
     if plex_token:
         _ok("PLEX_TOKEN is set")
+    elif has_store:
+        _ok(f"PLEX_TOKEN unset; found connection store at {conn_path}")
     else:
-        _fail("PLEX_TOKEN is missing")
-        ok = False
+        _warn(
+            "PLEX_TOKEN unset and no plex_connection.json — "
+            "link Plex in Settings → Connect with Plex after startup"
+        )
 
     local_key = _env("LOCAL_API_KEY", file_vals)
     allow_unauth = _env("ALLOW_UNAUTHENTICATED_LOCAL_API", file_vals).lower() in {
@@ -95,8 +101,8 @@ def check_plex(file_vals: dict[str, str]) -> bool:
     plex_token = _env("PLEX_TOKEN", file_vals)
     section = _env("PLEX_MUSIC_SECTION", file_vals) or "Music"
     if not plex_url or not plex_token:
-        _fail("Skipping Plex probe (missing URL or token)")
-        return False
+        _warn("Skipping Plex probe (no PLEX_URL/PLEX_TOKEN — use Settings → Connect with Plex after startup)")
+        return True
 
     identity = f"{plex_url}/identity"
     try:

@@ -20,14 +20,17 @@ Edit `.env`:
 
 | Variable | Required | Notes |
 |---|---|---|
-| `PLEX_URL` | Yes | e.g. `http://192.168.1.50:32400` |
-| `PLEX_TOKEN` | Yes | Plex `X-Plex-Token` |
-| `PLEX_MUSIC_SECTION` | Yes | Usually `Music` |
+| `PLEX_URL` | No† | e.g. `http://192.168.1.50:32400` |
+| `PLEX_TOKEN` | No† | Plex `X-Plex-Token` (legacy / headless) |
+| `PLEX_MUSIC_SECTION` | No† | Usually `Music` |
 | `LOCAL_API_KEY` | Yes* | `openssl rand -hex 32` |
 | `GEMINI_API_KEY` | No | Needed for theme / mood mixes |
 | `ENABLE_PUBSUB_LISTENER` | No | Leave `false` until Google Home is set up |
+| `DATA_DIR` | No | Defaults to `/data` in Docker; stores `plex_connection.json` + device keys |
 
 \* Or set `ALLOW_UNAUTHENTICATED_LOCAL_API=true` only on a trusted home LAN.
+
+† Preferred setup: open the dashboard Settings gear → **Connect with Plex**, authorize on plex.tv, then pick your server and Music library. Env `PLEX_TOKEN` remains supported for existing installs.
 
 Pub/Sub credentials are **not** required for dashboard-only installs. Compose still mounts `./gcp-credentials.json`; create an empty placeholder until you enable voice:
 
