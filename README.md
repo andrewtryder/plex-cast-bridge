@@ -41,7 +41,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, use the Settings gear to **Connect with Plex** (or rely on env token), discover speakers, and play.
+Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, use the Settings gear to **Connect with Plex** (or rely on env token), discover speakers, and play. Default/max Cast volumes can be edited under **Settings → Playback** (stored in `data/app_settings.json`; see [docs/setup/APP_SETTINGS.md](docs/setup/APP_SETTINGS.md)).
 
 Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
 

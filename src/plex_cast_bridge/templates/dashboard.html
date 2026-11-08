@@ -927,20 +927,24 @@
     <div class="settings-panel" data-settings-panel="playback" hidden>
       <div class="conn-card">
         <h2 class="conn-title">Volume safety</h2>
-        <p class="conn-meta">Limits apply to Cast transport from this bridge. Default and maximum are also set in server environment.</p>
-        <label class="field-label" for="maxVolumeHint">Maximum volume (server-enforced)</label>
-        <p class="conn-meta" id="maxVolumeHint">Loaded from diagnostics</p>
+        <p class="conn-meta">Startup / clamp limits for Cast from this bridge. Saved to <code>data/app_settings.json</code> (overrides env). Live transport volume stays on the Player page.</p>
+        <div class="field-wrap">
+          <label class="field-label" for="defaultVolumeInput">Default volume (%)</label>
+          <input id="defaultVolumeInput" class="field-select" type="number" min="0" max="100" step="1" inputmode="numeric" aria-label="Default cast volume percent">
+        </div>
+        <div class="field-wrap" style="margin-top:0.75rem">
+          <label class="field-label" for="maxVolumeInput">Maximum volume (%)</label>
+          <input id="maxVolumeInput" class="field-select" type="number" min="0" max="100" step="1" inputmode="numeric" aria-label="Maximum cast volume percent">
+        </div>
+        <p class="conn-meta" id="volumeSettingsHint" style="margin-top:0.75rem">Loading…</p>
+        <div class="conn-actions" style="margin-top:0.75rem">
+          <button type="button" class="accent-button" id="saveVolumeSettingsBtn">Save volumes</button>
+        </div>
       </div>
       <div class="conn-card">
         <h2 class="conn-title">Library</h2>
-        <p class="conn-meta">Browse without turning this into a full Plex clone.</p>
-        <div class="field-wrap">
-          <input id="libraryQuery" class="field-select" placeholder="Search tracks or artists" aria-label="Library search">
-        </div>
-        <div class="conn-actions" style="margin-top:0.75rem">
-          <button type="button" class="ghost-button" id="librarySearchBtn">Search</button>
-        </div>
-        <div id="libraryResults" class="library-results"></div>
+        <p class="conn-meta" id="librarySummaryMeta">Linked music library summary.</p>
+        <div id="librarySummary" class="conn-meta">Loading…</div>
       </div>
     </div>
 
@@ -1822,6 +1826,7 @@
       });
       if (tab === 'diagnostics') refreshDiagnostics();
       if (tab === 'connections') refreshGoogleHome();
+      if (tab === 'playback') refreshPlaybackSettings();
     });
   });
 
@@ -2823,9 +2828,6 @@
         list.appendChild(row);
       });
       $('diagTechnical').textContent = JSON.stringify(data.technical || {}, null, 2);
-      if (data.technical?.max_cast_volume != null) {
-        $('maxVolumeHint').textContent = `Default ${Math.round((data.technical.default_cast_volume || 0) * 100)}% · max ${Math.round(data.technical.max_cast_volume * 100)}%`;
-      }
     } catch (err) {
       announce(err.message || 'Diagnostics failed');
     }
@@ -2841,33 +2843,66 @@
     }
   });
 
-  $('librarySearchBtn').addEventListener('click', async () => {
-    const q = $('libraryQuery').value.trim();
+  function pctFromUnit(v) {
+    if (v == null || Number.isNaN(Number(v))) return '';
+    return String(Math.round(Number(v) * 100));
+  }
+  function unitFromPct(raw) {
+    const n = Number(raw);
+    if (Number.isNaN(n)) return null;
+    return Math.max(0, Math.min(100, n)) / 100;
+  }
+  function renderLibrarySummary(library) {
+    const box = $('librarySummary');
+    const meta = $('librarySummaryMeta');
+    if (!library || !library.linked) {
+      meta.textContent = 'No music library linked yet.';
+      box.textContent = 'Connect with Plex under Settings → Connections.';
+      return;
+    }
+    meta.textContent = library.section ? `Section: ${library.section}` : 'Linked music library.';
+    const parts = [];
+    if (library.artists != null) parts.push(`${library.artists.toLocaleString()} artists`);
+    if (library.albums != null) parts.push(`${library.albums.toLocaleString()} albums`);
+    if (library.tracks != null) parts.push(`${library.tracks.toLocaleString()} tracks`);
+    box.textContent = parts.length ? parts.join(' · ') : 'Library linked (counts unavailable).';
+  }
+  async function refreshPlaybackSettings() {
     try {
-      const data = await api(`/api/library/browse?kind=tracks&query=${encodeURIComponent(q)}&limit=20`);
-      const box = $('libraryResults');
-      box.replaceChildren();
-      (data.items || []).forEach((item) => {
-        const row = document.createElement('div');
-        row.className = 'library-item';
-        row.innerHTML = `<span>${item.title} — ${item.artist || ''}</span>`;
-        const play = document.createElement('button');
-        play.type = 'button';
-        play.className = 'ghost-button';
-        play.textContent = 'Play';
-        play.addEventListener('click', async () => {
-          await api('/api/library/play', {
-            method: 'POST',
-            body: JSON.stringify({ rating_key: item.rating_key, speaker: selected, mode: 'replace' }),
-          });
-          announce(`Playing ${item.title}`);
-          await refreshStatus();
-        });
-        row.appendChild(play);
-        box.appendChild(row);
-      });
+      const data = await api('/api/settings');
+      const vols = data.volumes || {};
+      $('defaultVolumeInput').value = pctFromUnit(vols.default_cast_volume);
+      $('maxVolumeInput').value = pctFromUnit(vols.max_cast_volume);
+      const stored = data.stored?.configured;
+      $('volumeSettingsHint').textContent = stored
+        ? 'Using values from data/app_settings.json (overrides .env).'
+        : 'Using defaults from .env / server config. Save to create data/app_settings.json.';
+      renderLibrarySummary(data.library);
     } catch (err) {
-      announce(err.message || 'Library search failed');
+      $('volumeSettingsHint').textContent = err.message || 'Could not load settings';
+      $('librarySummary').textContent = 'Unavailable';
+    }
+  }
+  $('saveVolumeSettingsBtn').addEventListener('click', async () => {
+    const default_cast_volume = unitFromPct($('defaultVolumeInput').value);
+    const max_cast_volume = unitFromPct($('maxVolumeInput').value);
+    if (default_cast_volume == null || max_cast_volume == null) {
+      announce('Enter default and max volume as percents (0–100)');
+      return;
+    }
+    if (default_cast_volume > max_cast_volume) {
+      announce('Default volume cannot exceed maximum');
+      return;
+    }
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ default_cast_volume, max_cast_volume }),
+      });
+      announce('Volume settings saved');
+      await refreshPlaybackSettings();
+    } catch (err) {
+      announce(err.message || 'Could not save volume settings');
     }
   });
 

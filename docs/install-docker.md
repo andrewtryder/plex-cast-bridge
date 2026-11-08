@@ -26,11 +26,14 @@ Edit `.env`:
 | `LOCAL_API_KEY` | Yes* | `openssl rand -hex 32` |
 | `GEMINI_API_KEY` | No | Needed for theme / mood mixes |
 | `ENABLE_PUBSUB_LISTENER` | No | Leave `false` until Google Home is set up |
-| `DATA_DIR` | No | Defaults to `/data` in Docker; stores `plex_connection.json` + device keys |
+| `DATA_DIR` | No | Defaults to `/data` in Docker; stores `plex_connection.json`, optional `app_settings.json`, device keys |
+| `DEFAULT_CAST_VOLUME` / `MAX_CAST_VOLUME` | No | Bootstrap volumes (0–1). Overridden after **Settings → Playback → Save** writes `app_settings.json` |
 
 \* Or set `ALLOW_UNAUTHENTICATED_LOCAL_API=true` only on a trusted home LAN.
 
 † Preferred setup: open the dashboard Settings gear → **Connect with Plex**, authorize on plex.tv, then pick your server and Music library. Env `PLEX_TOKEN` remains supported for existing installs.
+
+Volume and library summary details: **[setup/APP_SETTINGS.md](setup/APP_SETTINGS.md)**.
 
 Pub/Sub credentials are **not** required for dashboard-only installs. Compose still mounts `./gcp-credentials.json`; create an empty placeholder until you enable voice:
 
@@ -69,11 +72,12 @@ Visit `http://<host>:8000/?api_key=<LOCAL_API_KEY>` once (the key is stripped fr
 
 From the dashboard:
 
-1. Discover Cast speakers
-2. Enable the rooms you want
+1. Settings gear → **Connections** → **Connect with Plex** (unless you already set `PLEX_TOKEN`)
+2. Discover Cast speakers and enable the rooms you want
 3. Play a test artist or album from the Smart DJ controls
+4. Optional: **Settings → Playback** to set default/max volume (creates `./data/app_settings.json`)
 
-Persistent speaker state and catalog updates land in `./data/`.
+Persistent speaker state, optional app settings, and catalog updates land in `./data/`.
 
 ## 5. Sync your Plex catalog (recommended)
 

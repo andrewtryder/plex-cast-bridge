@@ -55,6 +55,9 @@ def test_dashboard_template_has_player_and_dj_views():
     assert "/api/transport" in html
     assert "/api/plex/connect/start" in html
     assert "Connect with Plex" in html
+    assert "saveVolumeSettingsBtn" in html
+    assert "/api/settings" in html
+    assert "librarySearchBtn" not in html
     assert "Demo data only" not in html
     assert "tracks=[" not in html
 

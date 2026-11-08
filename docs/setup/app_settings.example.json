@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "default_cast_volume": 0.2,
+  "max_cast_volume": 0.85,
+  "night_cast_volume": 0.15
+}

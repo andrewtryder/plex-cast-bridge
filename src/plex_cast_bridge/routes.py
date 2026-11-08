@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .api_auth import verify_local_api
 from .api_models import Command, LibraryPlay, QueueMutate, SpeakerTest, SpeakerToggle, Transport
+from .app_settings_store import apply_to_settings, load as load_app_settings, public_dict, save as save_app_settings
 from .catalog_store import (
     DATA_DIR,
     PROJECT_ROOT,
@@ -491,6 +492,83 @@ async def diagnostics(request: Request):
     }
 
 
+@router.get("/api/settings", dependencies=[Depends(verify_local_api)])
+async def get_settings(request: Request):
+    """Public non-secret settings + library summary for Settings → Playback."""
+    settings = request.app.state.settings
+    stored = public_dict(load_app_settings())
+    volumes = {
+        "default_cast_volume": settings.default_cast_volume,
+        "max_cast_volume": settings.max_cast_volume,
+        "night_cast_volume": settings.night_cast_volume,
+    }
+    plex = getattr(request.app.state, "plex", None)
+    if plex is None:
+        library = {"linked": False, "section": None, "artists": None, "albums": None, "tracks": None}
+    else:
+        try:
+            library = await run_in_threadpool(plex.library_summary)
+        except Exception as exc:
+            log.warning("library_summary failed: %s", exc)
+            library = {
+                "linked": True,
+                "section": getattr(settings, "plex_music_section", None),
+                "artists": None,
+                "albums": None,
+                "tracks": None,
+            }
+    return {
+        "volumes": volumes,
+        "stored": stored,
+        "library": library,
+    }
+
+
+@router.patch("/api/settings", dependencies=[Depends(verify_local_api)])
+async def patch_settings(request: Request):
+    """Update editable volumes; persist to data/app_settings.json and apply live."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    patch: dict = {}
+    for key in ("default_cast_volume", "max_cast_volume", "night_cast_volume"):
+        if key not in body:
+            continue
+        val = body[key]
+        if val is None and key == "night_cast_volume":
+            patch[key] = None
+            continue
+        try:
+            patch[key] = float(val)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"{key} must be a number") from exc
+        if not 0.0 <= patch[key] <= 1.0:
+            raise HTTPException(status_code=400, detail=f"{key} must be between 0 and 1")
+
+    if not patch:
+        raise HTTPException(status_code=400, detail="No editable settings provided")
+
+    # Validate default <= max using merged view before save.
+    settings = request.app.state.settings
+    merged_default = patch.get("default_cast_volume", settings.default_cast_volume)
+    merged_max = patch.get("max_cast_volume", settings.max_cast_volume)
+    if merged_default > merged_max:
+        raise HTTPException(status_code=400, detail="default_cast_volume cannot exceed max_cast_volume")
+
+    stored = await run_in_threadpool(save_app_settings, patch)
+    apply_to_settings(settings, stored)
+    cast = getattr(request.app.state, "cast", None)
+    if cast is not None:
+        cast.default_volume = settings.default_cast_volume
+        cast.max_volume = settings.max_cast_volume
+
+    return await get_settings(request)
+
+
 @router.get("/api/backup", dependencies=[Depends(verify_local_api)])
 async def backup_export(request: Request):
     """Download non-secret configuration backup (excludes tokens, PEMs, SA keys)."""
@@ -505,6 +583,9 @@ async def backup_export(request: Request):
         cat = DATA_DIR / "catalog.json"
         if cat.exists():
             zf.writestr("catalog.json", cat.read_text(encoding="utf-8"))
+        app_settings = DATA_DIR / "app_settings.json"
+        if app_settings.exists():
+            zf.writestr("app_settings.json", app_settings.read_text(encoding="utf-8"))
         for name in ("google_home_setup.json", "google_home_sync.json"):
             p = DATA_DIR / name
             if p.exists():

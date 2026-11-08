@@ -16,6 +16,7 @@ from .catalog_store import (
 )
 
 # Re-export for tests that historically imported get_catalog_path from main.
+from .app_settings_store import apply_to_settings, load as load_app_settings
 from .config import Settings
 from .playback_service import play, transport
 from .plex_auth import PlexAuthService, init_plex_service
@@ -77,6 +78,15 @@ async def _init_plex_flexible(settings: Settings, auth: PlexAuthService):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
+    stored = load_app_settings()
+    if stored:
+        apply_to_settings(settings, stored)
+        log.info(
+            "Loaded app settings from %s (default_cast_volume=%.2f max_cast_volume=%.2f)",
+            "data/app_settings.json",
+            settings.default_cast_volume,
+            settings.max_cast_volume,
+        )
     app.state.settings = settings
     app.state.plex_auth = PlexAuthService()
     if not settings.local_api_key or not settings.local_api_key.get_secret_value():
