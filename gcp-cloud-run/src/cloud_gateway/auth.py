@@ -286,8 +286,21 @@ async def verify_webhook_api_key(
             detail="Missing X-API-Key header",
         )
     settings: Settings = request.app.state.settings
-    expected = settings.get_webhook_key()
-    if not secrets.compare_digest(x_api_key, expected):
+    candidates: list[str] = []
+    webhook = settings.get_webhook_key()
+    if webhook:
+        candidates.append(webhook)
+    if settings.catalog_write_key:
+        catalog_key = settings.catalog_write_key.get_secret_value()
+        if catalog_key and catalog_key not in candidates:
+            candidates.append(catalog_key)
+    # compare_digest requires equal-length strings; check each candidate separately.
+    ok = False
+    for expected in candidates:
+        if len(x_api_key) == len(expected) and secrets.compare_digest(x_api_key, expected):
+            ok = True
+            break
+    if not ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid X-API-Key",

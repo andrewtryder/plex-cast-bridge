@@ -20,6 +20,7 @@ from .app_settings_store import apply_to_settings, load as load_app_settings
 from .config import Settings
 from .playback_service import play, transport
 from .plex_auth import PlexAuthService, init_plex_service
+from .google_home_routes import router as google_home_router
 from .plex_routes import router as plex_router
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
@@ -163,6 +164,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plex Cast Bridge", lifespan=lifespan)
 app.include_router(router)
 app.include_router(plex_router)
+app.include_router(google_home_router)
 
 # Re-export symbols historically imported from plex_cast_bridge.main
 __all__ = [
