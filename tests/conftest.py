@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ALLOW_UNAUTHENTICATED_LOCAL_API", "true")
 
 from cloud_gateway.auth import create_token_pair
+from cloud_gateway.catalog_sync import CatalogCloudStore
 from cloud_gateway.config import Settings
 from cloud_gateway.main import app
 from cloud_gateway.pubsub_service import PubSubService
@@ -62,6 +63,9 @@ def test_settings(tmp_path):
         CATALOG_PATH=str(catalog_file),
         MOCK_PUBSUB=True,
         ENVIRONMENT="test",
+        USE_CLOUD_CATALOG=True,
+        CATALOG_WRITE_KEY="test-catalog-key",
+        REQUIRE_ADMIN_PASSPHRASE=True,
     )
 
 
@@ -72,6 +76,12 @@ def client(test_settings):
         project_id=test_settings.gcp_project_id,
         topic_id=test_settings.gcp_pubsub_topic_id,
         mock=True,
+    )
+    # Fresh mock store per test so catalog uploads cannot leak across cases.
+    app.state.catalog_store = CatalogCloudStore(
+        project_id=test_settings.gcp_project_id,
+        mock=True,
+        allow_memory_fallback=True,
     )
     with TestClient(app) as test_client:
         yield test_client
