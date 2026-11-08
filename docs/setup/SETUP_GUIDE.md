@@ -2,6 +2,10 @@
 
 This guide adds **Hey Google** control on top of a working local bridge. Complete [Docker install](../install-docker.md) (or the Mac emulator) first so Plex + Cast playback already works.
 
+**Preferred path:** use **Settings → Connections → Google Home** in the dashboard wizard, plus [FRESH_RECREATE.md](FRESH_RECREATE.md) for the canonical wipe/rebuild checklist. This document remains the long-form manual reference.
+
+Speaker/library changes now sync to Cloud Run via `PUT /internal/catalog` (no redeploy). Use **Sync Google Home** after linking. Room assignment still happens in the Google Home app.
+
 Personal / household use is supported via a **test** Cloud-to-cloud integration. Public Google Home certification is a separate process and is **not** required to use this project at home.
 
 ---

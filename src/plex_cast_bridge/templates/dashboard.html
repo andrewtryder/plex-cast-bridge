@@ -827,6 +827,8 @@
     <nav class="settings-tabs" aria-label="Settings sections">
       <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
       <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
+      <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
+      <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
     </nav>
 
     <div class="settings-panel" data-settings-panel="connections">
@@ -942,6 +944,39 @@
         <h2 class="conn-title">Library</h2>
         <p class="conn-meta" id="librarySummaryMeta">Linked music library summary.</p>
         <div id="librarySummary" class="conn-meta">Loading…</div>
+      </div>
+    </div>
+
+
+    <div class="settings-panel" data-settings-panel="diagnostics" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Diagnostics</h2>
+        <p class="conn-meta">Plain-language connection health. Expand for technical detail.</p>
+        <div id="diagList"></div>
+        <div class="conn-actions" style="margin-top:1rem">
+          <button type="button" class="accent-button" id="diagRefreshBtn">Recheck</button>
+          <button type="button" class="ghost-button" id="diagTestBtn">Run Google Home test</button>
+        </div>
+        <details class="advanced-block"><summary>Technical</summary><pre id="diagTechnical" class="console-values"></pre></details>
+      </div>
+    </div>
+
+    <div class="settings-panel" data-settings-panel="backup" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Backup &amp; restore</h2>
+        <p class="conn-meta">Non-secret setup export. Tokens and service-account keys are excluded.</p>
+        <div class="conn-actions">
+          <a class="accent-button" id="backupDownloadBtn" href="/api/backup">Download backup</a>
+        </div>
+        <div class="field-wrap" style="margin-top:1rem">
+          <label class="field-label" for="backupRestoreFile">Restore preview</label>
+          <input id="backupRestoreFile" type="file" accept=".zip,application/zip">
+        </div>
+        <pre id="backupRestorePreview" class="console-values"></pre>
+        <div class="conn-actions">
+          <button type="button" class="ghost-button" id="backupPreviewBtn">Preview</button>
+          <button type="button" class="accent-button" id="backupRestoreBtn" disabled>Restore</button>
+        </div>
       </div>
     </div>
 
@@ -1802,6 +1837,7 @@
       });
       if (tab === 'connections') refreshGoogleHome();
       if (tab === 'playback') refreshPlaybackSettings();
+      if (tab === 'diagnostics') refreshDiagnostics();
       if (tab === 'playback') refreshPlaybackSettings();
     });
   });
@@ -2865,6 +2901,83 @@
     }
   });
 
+
+
+  async function refreshDiagnostics() {
+    try {
+      const data = await api('/api/diagnostics');
+      const list = $('diagList');
+      if (!list) return;
+      list.replaceChildren();
+      (data.checks || []).forEach((c) => {
+        const row = document.createElement('div');
+        row.className = 'diag-row';
+        const st = c.status === 'connected' ? 'Connected' : (c.status === 'needs_attention' ? 'Needs attention' : 'Not configured');
+        row.innerHTML = `<span>${c.label}<br><small>${c.detail || ''}</small></span><span class="${c.status === 'connected' ? 'diag-ok' : 'diag-bad'}">${st}</span>`;
+        list.appendChild(row);
+      });
+      if ($('diagTechnical')) $('diagTechnical').textContent = JSON.stringify(data.technical || {}, null, 2);
+    } catch (err) {
+      announce(err.message || 'Diagnostics failed');
+    }
+  }
+  $('diagRefreshBtn')?.addEventListener('click', refreshDiagnostics);
+  $('diagTestBtn')?.addEventListener('click', async () => {
+    try {
+      const test = await api('/api/google-home/test', { method: 'POST', body: '{}' });
+      announce(test.summary || 'Test complete');
+      await refreshDiagnostics();
+    } catch (err) {
+      announce(err.message || 'Test failed');
+    }
+  });
+  $('backupDownloadBtn')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/api/backup', { headers: authHeaders() });
+      if (!res.ok) throw new Error('Backup failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'plex-cast-bridge-backup.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      announce(err.message || 'Backup failed');
+    }
+  });
+  let backupFile = null;
+  $('backupPreviewBtn')?.addEventListener('click', async () => {
+    try {
+      const input = $('backupRestoreFile');
+      if (!input?.files?.length) { announce('Choose a backup zip'); return; }
+      backupFile = input.files[0];
+      const fd = new FormData();
+      fd.append('file', backupFile);
+      const res = await fetch('/api/backup/restore/preview', { method: 'POST', headers: authHeaders(), body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Preview failed');
+      $('backupRestorePreview').textContent = JSON.stringify(data, null, 2);
+      $('backupRestoreBtn').disabled = false;
+    } catch (err) {
+      announce(err.message || 'Preview failed');
+    }
+  });
+  $('backupRestoreBtn')?.addEventListener('click', async () => {
+    try {
+      if (!backupFile) return;
+      const fd = new FormData();
+      fd.append('file', backupFile);
+      fd.append('confirm', 'true');
+      const res = await fetch('/api/backup/restore', { method: 'POST', headers: authHeaders(), body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Restore failed');
+      announce('Restored: ' + (data.restored || []).join(', '));
+    } catch (err) {
+      announce(err.message || 'Restore failed');
+    }
+  });
 
   window.addEventListener('hashchange', updateView);
   if (!location.hash) location.hash = '#player';
