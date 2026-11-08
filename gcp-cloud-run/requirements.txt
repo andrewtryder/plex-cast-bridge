@@ -26,16 +26,27 @@ google-api-core==2.43.2
     #   google-cloud-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-storage
 google-auth==2.62.1
     # via
     #   google-api-core
     #   google-cloud-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-storage
 google-cloud-core==2.8.0
-    # via google-cloud-firestore
+    # via
+    #   google-cloud-firestore
+    #   google-cloud-storage
 google-cloud-firestore==2.34.1
 google-cloud-pubsub==2.43.0
+google-cloud-storage==3.17.1
+google-crc32c==1.9.0
+    # via
+    #   google-cloud-storage
+    #   google-resumable-media
+google-resumable-media==2.11.0
+    # via google-cloud-storage
 googleapis-common-protos==1.76.0
     # via
     #   google-api-core
@@ -113,7 +124,9 @@ python-multipart==0.0.33
 pyyaml==6.0.3
     # via uvicorn
 requests==2.34.2
-    # via google-api-core
+    # via
+    #   google-api-core
+    #   google-cloud-storage
 starlette==1.10.0
     # via fastapi
 typing-extensions==4.16.0
