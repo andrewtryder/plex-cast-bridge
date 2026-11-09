@@ -137,9 +137,9 @@ async def lifespan(app: FastAPI):
     if cloud_url and write_key:
         try:
             catalog_sync.configure_gateway(cloud_url, write_key)
-            catalog_sync.resume_pending_push()
         except Exception as exc:
             log.warning("Could not configure catalog sync from env: %s", exc)
+    catalog_sync.resume_pending_push()
     discovery_task: asyncio.Task | None = None
     discovery_lock = asyncio.Lock()
     interval = int(getattr(settings, "speaker_discovery_interval_sec", 0) or 0)
@@ -206,6 +206,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        catalog_sync.stop_pending_push()
         if discovery_task is not None:
             discovery_task.cancel()
             try:

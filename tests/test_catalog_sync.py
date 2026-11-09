@@ -154,3 +154,24 @@ def test_sync_does_not_relink_after_disconnect(client, auth_headers):
     response = client.post("/fulfillment", headers=auth_headers, json={"requestId": "s", "inputs": [{"intent": "action.devices.SYNC"}]})
     assert response.status_code == 200
     assert store.is_linked() is False
+
+
+def test_local_retry_backoff_and_restart(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync as sync
+
+    monkeypatch.setattr(sync.store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(sync, "_retry_stopped", False)
+    monkeypatch.setattr(sync, "_retry_attempt", 0)
+    scheduled = []
+    monkeypatch.setattr(sync, "_schedule_push", scheduled.append)
+    sync.save_sync_state({"version": 1, "last_push_status": "failed"})
+    sync.resume_pending_push()
+    assert scheduled == [2.0]
+    monkeypatch.setattr(sync, "push_catalog_now", lambda: sync.load_sync_state())
+    sync._retry_push()
+    sync._retry_push()
+    assert scheduled[-2:] == [5.0, 10.0]
+    sync.save_sync_state({"last_push_status": "succeeded"})
+    sync._retry_push()
+    assert sync._retry_attempt == 0
+    assert len(scheduled) == 3

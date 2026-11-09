@@ -18,6 +18,10 @@ _STATE_LOCK = threading.RLock()
 _PUSH_LOCK = threading.Lock()
 _STATE_FILE = "google_home_sync.json"
 _pending_timer: threading.Timer | None = None
+_retry_attempt = 0
+_retry_stopped = False
+_RETRY_BASE_SEC = 5.0
+_RETRY_MAX_SEC = 300.0
 
 
 def _state_path() -> Path:
@@ -56,25 +60,55 @@ def save_sync_state(patch: dict[str, Any]) -> dict[str, Any]:
         return data
 
 
-def bump_and_schedule_push(delay_sec: float = 2.0) -> dict[str, Any]:
-    """Increment local catalog version and debounce an outbound push."""
+def _schedule_push(delay_sec: float) -> None:
     global _pending_timer
     with _STATE_LOCK:
-        state = load_sync_state()
-        version = int(state.get("version") or 0) + 1
-        state = save_sync_state(
-            {
-                "version": version,
-                "last_push_status": "pending",
-                "last_error": None,
-            }
-        )
+        if _retry_stopped:
+            return
         if _pending_timer is not None:
             _pending_timer.cancel()
-        _pending_timer = threading.Timer(delay_sec, lambda: push_catalog_now())
+        _pending_timer = threading.Timer(delay_sec, _retry_push)
         _pending_timer.daemon = True
         _pending_timer.start()
+
+
+def _retry_push() -> None:
+    global _retry_attempt
+    try:
+        state = push_catalog_now()
+    except Exception:
+        log.exception("Scheduled catalog push failed")
+        state = save_sync_state({"last_push_status": "failed", "last_error": "Scheduled push failed"})
+    with _STATE_LOCK:
+        current = load_sync_state()
+        if current.get("version") != state.get("version"):
+            return  # A newer update already scheduled its own push.
+        status = current.get("last_push_status")
+        if status in {"failed", "pending"}:
+            _retry_attempt += 1
+            delay = min(_RETRY_MAX_SEC, _RETRY_BASE_SEC * (2 ** min(_retry_attempt - 1, 10)))
+            _schedule_push(delay)
+        else:
+            _retry_attempt = 0
+
+
+def bump_and_schedule_push(delay_sec: float = 2.0) -> dict[str, Any]:
+    """Persist the pending update before scheduling a debounced push."""
+    with _STATE_LOCK:
+        state = load_sync_state()
+        state = save_sync_state({"version": int(state.get("version") or 0) + 1,
+                                 "last_push_status": "pending", "last_error": None})
+        _schedule_push(delay_sec)
         return state
+
+
+def stop_pending_push() -> None:
+    global _pending_timer, _retry_stopped
+    with _STATE_LOCK:
+        _retry_stopped = True
+        if _pending_timer is not None:
+            _pending_timer.cancel()
+            _pending_timer = None
 
 
 def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
@@ -102,10 +136,11 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
                 "last_error": f"catalog missing: {cat_path}",
             }
         )
-    catalog = json.loads(cat_path.read_text(encoding="utf-8"))
-    # Always advance version on an explicit push so retries never 409 against cloud.
-    version = int(state.get("version") or 0) + 1
-    save_sync_state({"version": version})
+    # Reserve the version and read the snapshot without racing the pending marker.
+    with _STATE_LOCK:
+        catalog = json.loads(cat_path.read_text(encoding="utf-8"))
+        version = int(load_sync_state().get("version") or 0) + 1
+        save_sync_state({"version": version, "last_push_status": "pending"})
     body = json.dumps(
         {
             "version": version,
@@ -175,8 +210,11 @@ def configure_gateway(cloud_gateway_url: str, catalog_write_key: str) -> dict[st
 
 def resume_pending_push() -> None:
     """Resume durable pending or failed work after a bridge restart."""
-    if load_sync_state().get("last_push_status") in {"pending", "failed"}:
-        bump_and_schedule_push()
+    global _retry_stopped
+    with _STATE_LOCK:
+        _retry_stopped = False
+        if load_sync_state().get("last_push_status") in {"pending", "failed"}:
+            _schedule_push(2.0)
 
 
 

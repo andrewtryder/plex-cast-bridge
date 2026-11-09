@@ -180,6 +180,8 @@ async def gateway_configure(body: GatewayConfig):
 async def sync_google_home():
     def run():
         result = catalog_sync.push_catalog_now(True)
+        if result.get("last_push_status") in {"failed", "pending"}:
+            catalog_sync.resume_pending_push()
         status = catalog_sync.public_sync_status()
         return {**result, **status}
 
