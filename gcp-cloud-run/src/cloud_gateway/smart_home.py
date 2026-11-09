@@ -90,7 +90,7 @@ def load_catalog(catalog_path: Path) -> dict[str, Any]:
             {
                 "id": f"{DEVICE_ID}:Master Bedroom",
                 "name": "Plex",
-                "nicknames": ["Master Bedroom Plex", "Plex", "Plex Cast Bridge"],
+                "nicknames": ["Plex", "Plex Cast Bridge"],
                 "roomHint": "Master Bedroom",
                 "speaker_name": "Master Bedroom",
                 "enabled": True,
@@ -100,10 +100,10 @@ def load_catalog(catalog_path: Path) -> dict[str, Any]:
 
 
 def _build_shared_attributes(catalog_data: dict[str, Any]) -> dict[str, Any]:
+    """Attributes shared by each virtual Plex speaker device (SPEAKER type)."""
     genres = catalog_data.get("genres", [])
     artists = catalog_data.get("artists", [])
     themes = catalog_data.get("themes", [])
-    inputs = catalog_data.get("inputs", [])
 
     available_channels = []
     ch_num = 1
@@ -131,43 +131,22 @@ def _build_shared_attributes(catalog_data: dict[str, Any]) -> dict[str, Any]:
         syns = generate_voice_synonyms(genre) + [f"{genre} Music"]
         available_applications.append({
             "key": key,
-            "names": [
-                {
-                    "name_synonym": syns,
-                    "lang": "en",
-                }
-            ],
+            "names": [{"name_synonym": syns, "lang": "en"}],
         })
 
     for theme in themes:
         key = f"app_theme_{slugify(theme)}"
         available_applications.append({
             "key": key,
-            "names": [
-                {
-                    "name_synonym": generate_voice_synonyms(theme),
-                    "lang": "en",
-                }
-            ],
-        })
-
-    available_inputs = []
-    for inp in inputs:
-        key = f"input_{slugify(inp)}"
-        available_inputs.append({
-            "key": key,
-            "names": [
-                {
-                    "name_synonym": [inp, f"{inp} Speaker", f"{inp} Display"],
-                    "lang": "en",
-                }
-            ],
+            "names": [{"name_synonym": generate_voice_synonyms(theme), "lang": "en"}],
         })
 
     return {
         "availableApplications": available_applications,
         "availableChannels": available_channels,
-        "availableInputs": available_inputs,
+        # MediaState: do not claim Report State; QUERY returns conservative defaults.
+        "supportActivityState": False,
+        "supportPlaybackState": False,
         "transportControlSupportedCommands": [
             "NEXT",
             "PREVIOUS",
@@ -182,60 +161,119 @@ def _build_shared_attributes(catalog_data: dict[str, Any]) -> dict[str, Any]:
         "queryOnlyOnOff": False,
         "commandOnlyVolume": True,
         "commandOnlyChannel": True,
-        "commandOnlyInputSelector": True,
         "commandOnlyAppSelector": True,
     }
 
 
+def _speaker_is_exposed(spk: dict[str, Any]) -> bool:
+    """Whether this destination should appear in Google Home SYNC.
+
+    Playback enablement is separate: visible-but-disabled devices sync, then
+    EXECUTE rejects with deviceTurnedOff.
+    """
+    if spk.get("removed"):
+        return False
+    # Legacy catalogs without google_home_visible: treat enabled speakers as exposed.
+    if "google_home_visible" not in spk:
+        return bool(spk.get("enabled", True))
+    return bool(spk.get("google_home_visible"))
+
+
+def _playback_target(spk: dict[str, Any]) -> str | None:
+    return (
+        (spk.get("speaker_name") or spk.get("room_hint") or spk.get("roomHint") or "").strip()
+        or None
+    )
+
+
+def _device_id(spk: dict[str, Any]) -> str:
+    return (spk.get("google_home_device_id") or spk.get("id") or "").strip()
+
+
+def find_speaker_record(catalog_data: dict[str, Any], device_id: str | None) -> dict[str, Any] | None:
+    if not device_id:
+        return None
+    for spk in catalog_data.get("speakers") or []:
+        if _device_id(spk) == device_id:
+            return spk
+    return None
+
+
+def resolve_execute_speaker(
+    catalog_data: dict[str, Any],
+    device_id: str | None,
+    default_speaker: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Map a Google Home device id to a Cast playback target.
+
+    Returns (speaker_name, error_code). error_code is set when the device must be rejected.
+    """
+    _ = default_speaker
+    if not device_id:
+        return None, "deviceNotFound"
+    spk = find_speaker_record(catalog_data, device_id)
+    if spk is None:
+        return None, "deviceNotFound"
+    if spk.get("removed") or not _speaker_is_exposed(spk):
+        return None, "deviceNotFound"
+    if not spk.get("enabled", True):
+        return None, "deviceTurnedOff"
+    target = _playback_target(spk)
+    if not target:
+        return None, "deviceNotFound"
+    return target, None
+
+
 def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Master Bedroom") -> list[dict[str, Any]]:
+    """One virtual Plex SPEAKER device per Google-Home-visible Cast destination."""
+    _ = default_speaker
     shared_attributes = _build_shared_attributes(catalog_data)
     raw_speakers = catalog_data.get("speakers") or []
-
-    # Filter to enabled speakers. An empty / all-disabled catalog yields no devices
-    # so dashboard disables are honored (no synthetic fallback speaker).
-    enabled_speakers = [s for s in raw_speakers if s.get("enabled", True)]
-    if not enabled_speakers:
-        return []
-
     devices: list[dict[str, Any]] = []
-    for spk in enabled_speakers:
-        speaker_name = spk.get("speaker_name") or spk.get("roomHint") or default_speaker or "Master Bedroom"
-        room_hint = spk.get("roomHint") or speaker_name
-        dev_id = spk.get("id") or f"{DEVICE_ID}:{speaker_name}"
-        dev_name = spk.get("name") or "Plex"
-        nicknames = spk.get("nicknames") or [
-            f"{room_hint} Plex",
-            "Plex",
-            "Plex Cast Bridge",
-            "Plex Radio",
-        ]
 
-        devices.append({
+    for spk in raw_speakers:
+        if not _speaker_is_exposed(spk):
+            continue
+        dev_id = _device_id(spk)
+        if not dev_id:
+            continue
+        display = (spk.get("google_home_name") or spk.get("name") or "Plex").strip() or "Plex"
+        nicknames = spk.get("nicknames") if isinstance(spk.get("nicknames"), list) else [display]
+        # Avoid identical generic nicknames across devices (ambiguous voice targeting).
+        nicknames = [n for n in nicknames if isinstance(n, str) and n.strip()]
+        if display not in nicknames:
+            nicknames = [display, *nicknames]
+        room_hint = (spk.get("room_hint") or spk.get("roomHint") or "").strip() or None
+
+        device: dict[str, Any] = {
             "id": dev_id,
-            "type": "action.devices.types.SETTOP",
+            "type": "action.devices.types.SPEAKER",
             "traits": [
+                "action.devices.traits.MediaState",
+                "action.devices.traits.OnOff",
+                "action.devices.traits.Volume",
+                "action.devices.traits.TransportControl",
                 "action.devices.traits.AppSelector",
                 "action.devices.traits.Channel",
-                "action.devices.traits.InputSelector",
-                "action.devices.traits.TransportControl",
-                "action.devices.traits.Volume",
-                "action.devices.traits.OnOff",
             ],
             "name": {
-                "name": dev_name,
+                "name": display,
                 "nicknames": nicknames,
-                "defaultNames": ["Plex"],
+                "defaultNames": [display],
             },
-            "roomHint": room_hint,
             "willReportState": False,
             "deviceInfo": {
                 "manufacturer": "Plex Cast Bridge",
-                "model": "Plex Cast Bridge",
+                "model": spk.get("model") or "Plex Cast Bridge",
                 "hwVersion": "1.0",
                 "swVersion": "2.0",
             },
             "attributes": shared_attributes,
-        })
+        }
+        # Optional hint only — Google Home app room assignments remain authoritative.
+        if room_hint:
+            device["roomHint"] = room_hint
+        devices.append(device)
 
     return devices
 
@@ -249,10 +287,11 @@ def build_sync_device(catalog_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_speaker_from_device_id(device_id: str | None, default_speaker: str | None) -> str | None:
-    if device_id and ":" in device_id:
-        _, speaker_name = device_id.split(":", 1)
-        if speaker_name.strip():
-            return speaker_name.strip()
+    """Deprecated: prefer resolve_execute_speaker with catalog lookup."""
+    if device_id and device_id.startswith(f"{DEVICE_ID}:") and ":" in device_id:
+        _, rest = device_id.split(":", 1)
+        if rest and not rest.startswith(("cast-", "id-")):
+            return rest.strip()
     return default_speaker
 
 
@@ -390,18 +429,27 @@ async def handle_smart_home_request(
         }
 
     elif intent == "action.devices.QUERY":
+        catalog_data = _resolve_catalog(settings, catalog_store)
         query_devices = inputs[0].get("payload", {}).get("devices", [])
         requested_ids = [d.get("id") for d in query_devices if d.get("id")]
         if not requested_ids:
-            requested_ids = [DEVICE_ID]
+            requested_ids = [_device_id(s) for s in (catalog_data.get("speakers") or []) if _speaker_is_exposed(s)]
 
-        device_states = {
-            dev_id: {
-                "online": True,
+        device_states: dict[str, Any] = {}
+        for dev_id in requested_ids:
+            spk = find_speaker_record(catalog_data, dev_id)
+            if spk is None or not _speaker_is_exposed(spk):
+                device_states[dev_id] = {
+                    "status": "ERROR",
+                    "errorCode": "deviceNotFound",
+                }
+                continue
+            online = (spk.get("availability") or "online") != "offline"
+            # MediaState supportPlaybackState is false — do not invent playbackState.
+            device_states[dev_id] = {
+                "online": online,
                 "status": "SUCCESS",
             }
-            for dev_id in requested_ids
-        }
         return {
             "requestId": request_id,
             "payload": {
@@ -421,11 +469,29 @@ async def handle_smart_home_request(
             devices = cmd_entry.get("devices", [])
             executions = cmd_entry.get("execution", [])
 
-            target_dev_ids = [d.get("id") for d in devices if d.get("id")] or [DEVICE_ID]
+            target_dev_ids = [d.get("id") for d in devices if d.get("id")]
+            if not target_dev_ids:
+                error_commands.append({
+                    "ids": [],
+                    "status": "ERROR",
+                    "errorCode": "deviceNotFound",
+                })
+                continue
+
             for dev_id in target_dev_ids:
-                target_speaker = extract_speaker_from_device_id(dev_id, settings.default_speaker_name)
-                # Validate the full execution group before publishing anything so a
-                # trailing unsupported command cannot partially apply earlier actions.
+                target_speaker, route_error = resolve_execute_speaker(
+                    catalog_data,
+                    dev_id,
+                    settings.default_speaker_name,
+                )
+                if route_error or not target_speaker:
+                    error_commands.append({
+                        "ids": [dev_id],
+                        "status": "ERROR",
+                        "errorCode": route_error or "deviceNotFound",
+                    })
+                    continue
+
                 parsed_payloads: list[dict[str, Any]] = []
                 unsupported_command: str | None = None
                 for exec_item in executions:
@@ -458,6 +524,11 @@ async def handle_smart_home_request(
                     })
                     continue
 
+                # Force routing to the mapped Cast destination (never a silent default).
+                for pubsub_payload in parsed_payloads:
+                    pubsub_payload["speaker"] = target_speaker
+                    pubsub_payload["device_id"] = dev_id
+
                 dev_success = True
                 error_code = "transientError"
                 for pubsub_payload in parsed_payloads:
@@ -488,7 +559,7 @@ async def handle_smart_home_request(
             })
         response_commands.extend(error_commands)
         if not response_commands:
-            response_commands = [{"ids": [DEVICE_ID], "status": "SUCCESS"}]
+            response_commands = [{"ids": [], "status": "ERROR", "errorCode": "deviceNotFound"}]
 
         return {
             "requestId": request_id,

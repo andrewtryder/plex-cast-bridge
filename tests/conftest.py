@@ -6,6 +6,11 @@ from fastapi.testclient import TestClient
 # Local Settings refuse to start without LOCAL_API_KEY unless this opt-in is set.
 # TestClient triggers the local app lifespan when local tests import plex_cast_bridge.main.
 os.environ.setdefault("ALLOW_UNAUTHENTICATED_LOCAL_API", "true")
+os.environ.setdefault("PCB_DISABLE_BACKGROUND_DISCOVERY", "true")
+os.environ.setdefault("SPEAKER_DISCOVERY_INTERVAL_SEC", "0")
+# Avoid multi-minute Plex retries against unreachable plex.local during TestClient lifespan.
+os.environ["PLEX_TOKEN"] = ""
+os.environ.setdefault("PCB_PLEX_STARTUP_ATTEMPTS", "1")
 
 from cloud_gateway.auth import create_token_pair
 from cloud_gateway.catalog_sync import CatalogCloudStore

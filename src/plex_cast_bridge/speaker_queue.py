@@ -81,6 +81,8 @@ class SpeakerQueue(MediaStatusListener):
         self.ignore_load_failures = False
         self.load_watchdog_seconds = 8.0
         self.lock = threading.RLock()
+        self._closed = False
+        self._watchdogs: set[threading.Timer] = set()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
 
@@ -193,7 +195,8 @@ class SpeakerQueue(MediaStatusListener):
 
         def _watch():
             with self.lock:
-                if self.pending_load_generation != generation or self.armed:
+                self._watchdogs.discard(timer)
+                if self._closed or self.pending_load_generation != generation or self.armed:
                     return
                 if generation != self.generation:
                     return
@@ -203,11 +206,25 @@ class SpeakerQueue(MediaStatusListener):
                     generation,
                 )
                 self.pending_load_generation = None
-            self.executor.submit(self._advance, generation)
+                try:
+                    self.executor.submit(self._advance, generation)
+                except RuntimeError:
+                    log.debug("Cast queue executor already shut down")
 
         timer = threading.Timer(delay, _watch)
         timer.daemon = True
+        self._watchdogs.add(timer)
         timer.start()
+
+    def close(self):
+        with self.lock:
+            self._closed = True
+            self.generation += 1
+            self.pending_load_generation = None
+            for timer in self._watchdogs:
+                timer.cancel()
+            self._watchdogs.clear()
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _next(self):
         if self.current is not None:
@@ -249,7 +266,7 @@ class SpeakerQueue(MediaStatusListener):
 
     def new_media_status(self, status):
         with self.lock:
-            if self.current is None:
+            if self._closed or self.current is None:
                 return
             content_id = getattr(status, "content_id", None)
             session_id = getattr(status, "media_session_id", None)
@@ -307,7 +324,7 @@ class SpeakerQueue(MediaStatusListener):
         # an orphan-failure allowance so a delayed A failure cannot claim B's pending slot;
         # a watchdog advances if the current load never arms after orphans are consumed.
         with self.lock:
-            if self.ignore_load_failures:
+            if self._closed or self.ignore_load_failures:
                 log.info(
                     "Ignoring Cast media load failure on '%s' during queue transition",
                     self.cast.name,

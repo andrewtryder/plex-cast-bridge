@@ -80,7 +80,6 @@ async def oauth_authorize_get(
             detail=f"Invalid client_id. Expected '{settings.google_client_id}'.",
         )
 
-    # Always require an explicit admin approval step (passphrase form). Open linking is not supported.
     return templates.TemplateResponse(
         request=request,
         name="login.html",
@@ -117,24 +116,23 @@ async def oauth_authorize_post(
             detail="Invalid client_id.",
         )
 
-    if settings.require_admin_passphrase:
-        expected_passphrase = settings.admin_passphrase.get_secret_value()
-        if not passphrase or not secrets.compare_digest(passphrase, expected_passphrase):
-            record_failed_attempt(client_ip)
-            return templates.TemplateResponse(
-                request=request,
-                name="login.html",
-                context={
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "state": state,
-                    "response_type": response_type,
-                    "scope": scope,
-                    "error": "Invalid Admin Passphrase. Please try again.",
-                    "require_passphrase": True,
-                },
-                status_code=status.HTTP_401_UNAUTHORIZED,
-            )
+    expected_passphrase = settings.admin_passphrase.get_secret_value()
+    if not passphrase or not secrets.compare_digest(passphrase, expected_passphrase):
+        record_failed_attempt(client_ip)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "state": state,
+                "response_type": response_type,
+                "scope": scope,
+                "error": "Invalid Admin Passphrase. Please try again.",
+                "require_passphrase": True,
+            },
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
 
     clear_attempts(client_ip)
     return _issue_auth_redirect(
@@ -215,6 +213,13 @@ async def oauth_token(
                 status_code=exc.status_code,
                 content={"error": "invalid_grant", "error_description": str(exc.detail)},
             )
+        catalog_store = getattr(request.app.state, "catalog_store", None)
+        if catalog_store is not None:
+            try:
+                catalog_store.set_linked(True)
+            except Exception:
+                log.exception("Could not persist account link")
+                return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
         token_data = create_token_pair(settings)
         return JSONResponse(
             content=token_data,

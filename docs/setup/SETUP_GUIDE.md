@@ -4,7 +4,9 @@ This guide adds **Hey Google** control on top of a working local bridge. Complet
 
 **Preferred path:** use **Settings → Connections → Google Home** in the dashboard wizard, plus [FRESH_RECREATE.md](FRESH_RECREATE.md) for the canonical wipe/rebuild checklist. This document remains the long-form manual reference.
 
-Speaker/library changes now sync to Cloud Run via `PUT /internal/catalog` (no redeploy). Use **Sync Google Home** after linking. Room assignment still happens in the Google Home app.
+Speaker/library changes sync to Cloud Run via `PUT /internal/catalog` (no redeploy). Use **Refresh & Sync Google Home** after linking. Room assignment for virtual devices still happens in the Google Home app.
+
+**Cast speakers** are LAN destinations. **Virtual Plex devices** are what Google Home lists (one per destination you mark **Show in Google Home**). Stable device IDs survive renames and IP changes; newly discovered speakers stay hidden until you opt them in. This does not expose which Nest mic heard a command and is not a native Assistant music provider.
 
 Personal / household use is supported via a **test** Cloud-to-cloud integration. Public Google Home certification is a separate process and is **not** required to use this project at home.
 
@@ -141,8 +143,21 @@ Account linking UX in the Google Home app continues to evolve (including deep-li
 1. Open the **Google Home** app (same Google account as the developer project).
 2. **Devices → + Add → Works with Google**.
 3. Select **`[test] Plex Cast Bridge`**.
-4. Sign in with your `ADMIN_PASSPHRASE` on the Cloud Run login page (branded **Plex Cast Bridge**).
-5. Assign each virtual **Plex** device to the matching room so voice routes to the speaker that heard you.
+4. Sign in on the Cloud Run login page (branded **Plex Cast Bridge**). Enter the configured admin passphrase to approve linking.
+5. In the dashboard, enable **Show in Google Home** for each Cast destination you want exposed, then **Refresh & Sync Google Home**.
+6. In the Google Home app, assign each virtual device (for example **Kitchen Plex**) to the room you prefer. `room_hint` from the bridge is only a suggestion.
+
+### Managing speakers after setup (no wizard restart)
+
+| Action | What to do |
+| --- | --- |
+| New Nest / Cast device | **Refresh speakers** → optionally enable playback → enable **Show in Google Home** → **Refresh & Sync Google Home** → assign room in the Home app |
+| Rename a speaker | Refresh speakers (identity preserved via Cast UUID / stored Google Home id) → sync if the virtual name changed |
+| Hide from Google Home | Turn off **Show in Google Home** → sync |
+| Forget destination | **Forget** confirms removal of the virtual Plex device on next sync — Nest hardware stays in Google Home |
+| Temporary offline | Settings are retained; no automatic delete; HomeGraph sync is not requested for offline-only scans |
+
+Upgrade (Proxmox / Docker): pull the new image, keep `data/` (catalog, JWT, cloud credentials). On first start the bridge migrates speaker records idempotently and preserves existing `plex-jukebox:…` Google Home IDs when they can be matched. Redeploy Cloud Run only when the gateway image changes — ordinary speaker edits do not require a new GCP project or key rotation.
 
 If the web Test Suite shows **Unlinked Action**, link on the phone first:
 
@@ -152,10 +167,10 @@ If the web Test Suite shows **Unlinked Action**, link on the phone first:
 
 ## 8. Verify voice
 
-Try:
+Try naming the virtual device (or the room you assigned it to):
 
-- “Hey Google, play \<artist\> on Plex”
-- “Hey Google, next track on Plex”
-- “Hey Google, pause Plex”
+- “Hey Google, play \<artist\> on Kitchen Plex”
+- “Hey Google, next track on Bedroom Plex”
+- “Hey Google, pause Kitchen Plex”
 
-Unlinking in the Google Home app sends `action.devices.DISCONNECT` to the gateway; the bridge acknowledges unlink so Home Graph clears the association.
+Unlinking in the Google Home app sends `action.devices.DISCONNECT` to the gateway; the bridge acknowledges unlink so Home Graph clears the association. Catalog changes stay local until you relink and sync again.

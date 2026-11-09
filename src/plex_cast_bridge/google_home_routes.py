@@ -52,21 +52,24 @@ class LinkConfirm(BaseModel):
 async def google_home_status(request: Request):
     plex = getattr(request.app.state, "plex", None)
     speakers = []
-    cast = getattr(request.app.state, "cast", None)
-    if cast is not None:
-        try:
-            discovered = getattr(cast, "last_discovered", None) or []
-            speakers = [
-                {
-                    "name": s.get("name"),
-                    "enabled": not cast.is_disabled(s.get("name", "")),
-                    "model": s.get("model"),
-                    "kind": "group" if "group" in str(s.get("model", "")).lower() else "speaker",
-                }
-                for s in discovered
-            ]
-        except Exception:
-            speakers = []
+    try:
+        from .catalog_store import list_speaker_records
+
+        speakers = [
+            {
+                "name": s.get("speaker_name") or s.get("name"),
+                "enabled": bool(s.get("enabled", True)),
+                "google_home_visible": bool(s.get("google_home_visible", False)),
+                "google_home_name": s.get("google_home_name"),
+                "google_home_device_id": s.get("google_home_device_id") or s.get("id"),
+                "model": s.get("model"),
+                "kind": s.get("kind") or ("group" if "group" in str(s.get("model", "")).lower() else "speaker"),
+                "availability": s.get("availability"),
+            }
+            for s in list_speaker_records()
+        ]
+    except Exception:
+        speakers = []
     return {
         "setup": setup.public_status(),
         "catalog_sync": catalog_sync.public_sync_status(),
@@ -175,7 +178,14 @@ async def gateway_configure(body: GatewayConfig):
 
 @router.post("/sync")
 async def sync_google_home():
-    return await run_in_threadpool(catalog_sync.push_catalog_now, True)
+    def run():
+        result = catalog_sync.push_catalog_now(True)
+        if result.get("last_push_status") in {"failed", "pending"}:
+            catalog_sync.resume_pending_push()
+        status = catalog_sync.public_sync_status()
+        return {**result, **status}
+
+    return await run_in_threadpool(run)
 
 
 @router.get("/sync/status")

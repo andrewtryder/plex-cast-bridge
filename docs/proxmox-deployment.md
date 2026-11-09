@@ -261,8 +261,9 @@ http://<PROXMOX_HOST_IP>:8000/?api_key=<LOCAL_API_KEY>
 ```
 Prefer `X-API-Key` for scripts; the query-string bootstrap is stripped after the page loads.
 
-- Confirm your Google Cast speakers (e.g. `Kitchen`, `Master Bedroom`) appear in the active speaker list.
-- Try toggling a speaker on/off and confirm the change persists to `data/catalog.json`.
+- Confirm your Google Cast speakers appear under **Speakers & settings**.
+- Toggle **Playback** and **Show in Google Home** independently; changes persist in `data/catalog.json` with stable Google Home device IDs.
+- After image upgrades, keep the `data/` volume mounted — speaker settings, Plex JWT, and cloud credentials migrate in place without rerunning the Google Home wizard.
 
 ### Step 2: Trigger a Direct Test Command via API
 From your terminal, test direct playback on your Kitchen speaker:

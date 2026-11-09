@@ -108,7 +108,7 @@ async def health(
 
 
 @app.put("/internal/catalog")
-async def put_catalog(
+def put_catalog(
     payload: CatalogPutRequest,
     api_key: str = Depends(verify_webhook_api_key),
     settings: Settings = Depends(get_settings),
@@ -141,11 +141,20 @@ async def put_catalog(
 
 
 @app.post("/internal/request-sync")
-async def manual_request_sync(
+def manual_request_sync(
     api_key: str = Depends(verify_webhook_api_key),
     catalog_store: CatalogCloudStore = Depends(get_catalog_store),
 ):
     return catalog_store.request_sync(force=True)
+
+
+@app.post("/internal/reconcile")
+def reconcile_catalog(
+    api_key: str = Depends(verify_webhook_api_key),
+    catalog_store: CatalogCloudStore = Depends(get_catalog_store),
+):
+    result = catalog_store.reconcile()
+    return {**result, "catalog_version": catalog_store.get_meta().version}
 
 
 @app.post("/fulfillment")
