@@ -80,7 +80,17 @@ async def oauth_authorize_get(
             detail=f"Invalid client_id. Expected '{settings.google_client_id}'.",
         )
 
-    # Always require an explicit admin approval step (passphrase form). Open linking is not supported.
+    # Personal bridges default to one-tap linking: issue the auth code immediately.
+    # Optional passphrase mode is for shared / exposed gateways only.
+    if not settings.require_admin_passphrase:
+        return _issue_auth_redirect(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            scope=scope,
+            settings=settings,
+        )
+
     return templates.TemplateResponse(
         request=request,
         name="login.html",
@@ -131,7 +141,7 @@ async def oauth_authorize_post(
                     "response_type": response_type,
                     "scope": scope,
                     "error": "Invalid Admin Passphrase. Please try again.",
-                    "require_passphrase": True,
+                    "require_passphrase": settings.require_admin_passphrase,
                 },
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )

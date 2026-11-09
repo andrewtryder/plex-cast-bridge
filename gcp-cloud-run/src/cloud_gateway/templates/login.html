@@ -148,6 +148,7 @@
       <input type="hidden" name="response_type" value="{{ response_type }}">
       <input type="hidden" name="scope" value="{{ scope }}">
 
+      {% if require_passphrase %}
       <div class="form-group">
         <label for="passphrase">Admin Passphrase</label>
         <input
@@ -159,8 +160,11 @@
           autofocus
         >
       </div>
+      {% else %}
+      <p class="subtitle" style="margin-bottom: 1.25rem;">Tap continue to link this Google account to your bridge. No password needed.</p>
+      {% endif %}
 
-      <button type="submit">Authorize Google Home</button>
+      <button type="submit">{% if require_passphrase %}Authorize Google Home{% else %}Continue{% endif %}</button>
     </form>
 
     <div class="footer">

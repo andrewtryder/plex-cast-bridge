@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     auth_code_expire_minutes: int = Field(default=10, alias="AUTH_CODE_EXPIRE_MINUTES")
     environment: str = Field(default="production", alias="ENVIRONMENT")
     # Personal bridges default to one-tap linking (no passphrase typing on phone).
-    require_admin_passphrase: bool = Field(default=True, alias="REQUIRE_ADMIN_PASSPHRASE")
+    require_admin_passphrase: bool = Field(default=False, alias="REQUIRE_ADMIN_PASSPHRASE")
 
     @field_validator("google_client_secret", "admin_passphrase", "oauth_signing_secret")
     @classmethod

@@ -53,8 +53,8 @@ Google Home / Cloud Run voice control is **optional** and documented separately:
 ## Features
 
 - **Artist-first & station streaming:** Play an artist strictly from your library, or build Gemini-assisted radio / theme mixes.
-- **Room-aware multi-speaker routing:** Virtual `Plex` devices per room (`plex-jukebox:<Room>`). Assign each device to its room in Google Home so voice follows the speaker that heard you.
-- **Local web dashboard:** Discover Cast speakers, enable/disable rooms, and drive Smart DJ + transport from `http://localhost:8000`.
+- **Per-speaker virtual Google Home devices:** One shared Plex library; each Cast destination can advertise its own virtual Plex device (for example Kitchen Plex) with a stable ID that survives renames and IP changes.
+- **Local web dashboard:** Refresh speakers, allow playback independently of Google Home visibility, edit virtual names, forget destinations, and sync to HomeGraph.
 - **Gemini Smart DJ:** Natural-language intents (`artist`, `artist_radio`, `album`, `track`, `theme_mix`) constrained to your catalog.
 - **Optional Google Home gateway (`gcp-cloud-run/`):** OAuth 2.0 account linking and Smart Home traits over Cloud Run + Pub/Sub (no inbound ports to your LAN).
 - **Cast discovery & volume safety:** `pychromecast` with macOS `dns-sd` fallback; startup volume clamp (default 20%).
@@ -119,6 +119,16 @@ uv run python scripts/emulate_speaker.py
 ```
 
 ---
+
+## Speakers vs virtual Plex devices
+
+- **Cast speakers / Nest devices** are physical (or Cast Group) destinations on your LAN.
+- **Virtual Plex devices** are what Google Home lists after account linking. Each visible destination maps to one virtual device ID.
+- **Show in Google Home** opts a destination into SYNC. New discoveries default to **off**.
+- **Google Home room assignments** are managed in the Google Home app. The bridge `room_hint` is only a suggestion and does not override your existing rooms.
+- This integration does **not** reveal which Nest microphone heard a command, and it is **not** a native Google Assistant music provider. Voice routes to the virtual device you name (or the room you assigned that virtual device to).
+
+After adding or renaming a Nest speaker: **Refresh speakers** → optionally enable **Show in Google Home** → **Refresh & Sync Google Home**. You do not need to rerun the setup wizard or rotate cloud credentials for ordinary speaker changes.
 
 ## Google Home (advanced)
 

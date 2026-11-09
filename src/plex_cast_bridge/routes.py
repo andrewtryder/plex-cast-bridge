@@ -12,12 +12,15 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 
 from .api_auth import verify_local_api
-from .api_models import Command, LibraryPlay, QueueMutate, SpeakerTest, SpeakerToggle, Transport
+from .api_models import Command, LibraryPlay, QueueMutate, SpeakerPatch, SpeakerTest, SpeakerToggle, Transport
 from .app_settings_store import apply_to_settings, load as load_app_settings, public_dict, save as save_app_settings
 from .catalog_store import (
     DATA_DIR,
     PROJECT_ROOT,
+    forget_speaker,
+    list_speaker_records,
     persist_discovered_speakers_to_catalog,
+    update_speaker_record,
 )
 from .playback_service import play, transport
 from .speaker_queue import track_art_proxy_path
@@ -162,13 +165,28 @@ async def transport_endpoint(request: Request, command: Transport):
         raise HTTPException(status_code=500, detail=f"Transport failed: {exc}") from exc
 
 
-def _annotate_speakers(discovered: list[dict]) -> list[dict]:
-    for dev in discovered:
-        model = str(dev.get("model") or "")
-        kind = "group" if "group" in model.lower() else "speaker"
-        dev["kind"] = kind
-        dev["is_group"] = kind == "group"
-    return discovered
+def _public_speaker(rec: dict) -> dict:
+    kind = rec.get("kind") or ("group" if "group" in str(rec.get("model") or "").lower() else "speaker")
+    return {
+        "id": rec.get("google_home_device_id") or rec.get("id"),
+        "google_home_device_id": rec.get("google_home_device_id") or rec.get("id"),
+        "name": rec.get("speaker_name") or rec.get("name"),
+        "speaker_name": rec.get("speaker_name"),
+        "room": rec.get("room_hint") or rec.get("roomHint"),
+        "room_hint": rec.get("room_hint") or rec.get("roomHint"),
+        "model": rec.get("model") or "Google Cast",
+        "kind": kind,
+        "is_group": kind == "group",
+        "host": rec.get("host") or "",
+        "port": rec.get("port") or 8009,
+        "uuid": rec.get("cast_uuid") or rec.get("uuid") or "",
+        "enabled": bool(rec.get("enabled", True)),
+        "google_home_visible": bool(rec.get("google_home_visible", False)),
+        "google_home_name": rec.get("google_home_name") or rec.get("name") or "Plex",
+        "availability": rec.get("availability") or "unknown",
+        "last_seen": rec.get("last_seen"),
+        "needs_review": bool(rec.get("needs_review", False)),
+    }
 
 
 @router.get("/api/speakers", dependencies=[Depends(verify_local_api)])
@@ -176,18 +194,40 @@ async def speakers_endpoint(request: Request, scan: bool = False):
     state = request.app.state
 
     def get_list():
+        summary = None
         if scan or not getattr(state.cast, "last_discovered", None):
             discovered = state.cast.discover()
-            persist_discovered_speakers_to_catalog(discovered, state.cast)
-            return _annotate_speakers(discovered)
-        for dev in state.cast.last_discovered:
-            dev["enabled"] = not state.cast.is_disabled(dev["name"])
-        return _annotate_speakers(list(state.cast.last_discovered))
+            result = persist_discovered_speakers_to_catalog(discovered, state.cast)
+            summary = result.get("summary")
+        records = list_speaker_records()
+        payload = [_public_speaker(r) for r in records]
+        if summary is not None:
+            return {"speakers": payload, "summary": summary}
+        return payload
 
     try:
         return await run_in_threadpool(get_list)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
+
+
+@router.post("/api/speakers/refresh", dependencies=[Depends(verify_local_api)])
+async def refresh_speakers_endpoint(request: Request):
+    state = request.app.state
+
+    def refresh():
+        discovered = state.cast.discover()
+        result = persist_discovered_speakers_to_catalog(discovered, state.cast)
+        return {
+            "speakers": [_public_speaker(r) for r in result["speakers"] if not r.get("removed")],
+            "summary": result.get("summary"),
+            "changed": result.get("changed"),
+        }
+
+    try:
+        return await run_in_threadpool(refresh)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Speaker refresh failed: {exc}") from exc
 
 
 @router.post("/api/speakers/toggle", dependencies=[Depends(verify_local_api)])
@@ -198,23 +238,74 @@ async def toggle_speaker_endpoint(request: Request, toggle: SpeakerToggle):
         previous_disabled = state.cast.is_disabled(toggle.speaker)
         state.cast.set_speaker_enabled(toggle.speaker, toggle.enabled)
         try:
-            discovered = getattr(state.cast, "last_discovered", None) or state.cast.discover()
-            for dev in discovered:
-                dev["enabled"] = not state.cast.is_disabled(dev["name"])
-            persist_discovered_speakers_to_catalog(discovered, state.cast)
+            # Prefer stable id match via speaker_name.
+            for rec in list_speaker_records():
+                if (rec.get("speaker_name") or "").casefold() == toggle.speaker.casefold():
+                    update_speaker_record(rec["google_home_device_id"], {"enabled": toggle.enabled})
+                    break
+            else:
+                discovered = getattr(state.cast, "last_discovered", None) or state.cast.discover()
+                persist_discovered_speakers_to_catalog(discovered, state.cast)
+                for rec in list_speaker_records():
+                    if (rec.get("speaker_name") or "").casefold() == toggle.speaker.casefold():
+                        update_speaker_record(rec["google_home_device_id"], {"enabled": toggle.enabled})
+                        break
         except Exception:
             state.cast.set_speaker_enabled(toggle.speaker, not previous_disabled)
             raise
+        speakers = [_public_speaker(r) for r in list_speaker_records()]
         return {
             "speaker": toggle.speaker,
             "enabled": toggle.enabled,
-            "speakers": discovered,
+            "speakers": speakers,
         }
 
     try:
         return await run_in_threadpool(update)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
+
+
+@router.patch("/api/speakers/{device_id}", dependencies=[Depends(verify_local_api)])
+async def patch_speaker_endpoint(request: Request, device_id: str, body: SpeakerPatch):
+    state = request.app.state
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    def update():
+        rec = update_speaker_record(device_id, patch)
+        # Keep CastManager disabled set in sync with playback enable.
+        target = rec.get("speaker_name")
+        if target and "enabled" in patch:
+            state.cast.set_speaker_enabled(target, bool(patch["enabled"]))
+        return _public_speaker(rec)
+
+    try:
+        return await run_in_threadpool(update)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Speaker not found") from None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Speaker update failed: {exc}") from exc
+
+
+@router.delete("/api/speakers/{device_id}", dependencies=[Depends(verify_local_api)])
+async def forget_speaker_endpoint(device_id: str):
+    def remove():
+        rec = forget_speaker(device_id)
+        return {
+            "removed": True,
+            "speaker": _public_speaker(rec),
+            "note": (
+                "This removes the virtual Plex device from Google Home during the next "
+                "successful sync. It does not remove the Nest speaker from Google Home."
+            ),
+        }
+
+    try:
+        return await run_in_threadpool(remove)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Speaker not found") from None
 
 
 @router.get("/api/status", dependencies=[Depends(verify_local_api)])

@@ -159,12 +159,32 @@ def configure_gateway(cloud_gateway_url: str, catalog_write_key: str) -> dict[st
 
 def public_sync_status() -> dict[str, Any]:
     state = load_sync_state()
+    status = state.get("last_push_status", "idle")
+    req = state.get("last_request_sync") or {}
+    linked = bool((state.get("last_cloud_meta") or {}).get("linked"))
+    if status == "pending":
+        label = "Changes pending"
+    elif status == "not_configured":
+        label = "Waiting for Google Home setup"
+    elif status == "failed":
+        label = "Sync failed — retry"
+    elif req.get("state") == "skipped" and "unlink" in str(req.get("detail") or "").lower():
+        label = "Waiting for account linking"
+    elif status in {"succeeded", "configured"} and req.get("state") in {None, "succeeded", "skipped"}:
+        label = "Up to date"
+    else:
+        label = status or "idle"
     return {
         "version": state.get("version", 0),
-        "status": state.get("last_push_status", "idle"),
+        "status": status,
+        "label": label,
         "last_error": state.get("last_error"),
         "cloud_gateway_configured": bool(state.get("cloud_gateway_url")),
         "updated_at": state.get("updated_at"),
         "last_request_sync": state.get("last_request_sync"),
-        "note": "Google Home room assignments are managed in the Google Home app; catalog roomHint is only a hint.",
+        "linked": linked,
+        "note": (
+            "Cast speakers are physical destinations. Virtual Plex devices are what Google Home lists. "
+            "Room assignment for those virtual devices is managed in the Google Home app; room_hint is only a suggestion."
+        ),
     }

@@ -68,6 +68,8 @@ def test_sync_uses_cloud_catalog_after_put(client, auth_headers, test_settings):
     devices = res.json()["payload"]["devices"]
     ids = [d["id"] for d in devices]
     assert ids == ["plex-jukebox:Kitchen"]
+    assert devices[0]["name"]["name"] in {"Kitchen Plex", "Plex"}
+    assert devices[0]["type"] == "action.devices.types.SPEAKER"
 
 
 def test_disconnect_stops_request_sync(client, auth_headers):

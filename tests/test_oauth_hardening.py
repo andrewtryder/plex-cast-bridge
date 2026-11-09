@@ -35,3 +35,23 @@ def test_authorize_get_requires_passphrase_form_when_enabled(client, test_settin
     )
     assert r.status_code == 200
     assert "passphrase" in r.text.lower() or "password" in r.text.lower() or "Admin" in r.text
+
+
+def test_authorize_get_one_tap_redirects_when_passphrase_disabled(client, test_settings):
+    test_settings.require_admin_passphrase = False
+    client.app.state.settings = test_settings
+    r = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": test_settings.google_client_id,
+            "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
+            "state": "xyz",
+            "response_type": "code",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303)
+    loc = r.headers.get("location", "")
+    assert "oauth-redirect.googleusercontent.com" in loc
+    assert "code=" in loc
+    assert "state=xyz" in loc

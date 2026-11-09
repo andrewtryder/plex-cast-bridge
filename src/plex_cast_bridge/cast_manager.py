@@ -41,6 +41,7 @@ class CastManager:
         self.disabled_speakers: set[str] = {s.casefold() for s in (disabled_speakers or set())}
         self.last_discovered: list[dict] = []
         self.catalog_path = Path(catalog_path) if catalog_path else None
+        self._discovery_lock = threading.Lock()
 
     def _get_catalog_speakers(self) -> list[dict]:
         speakers = []
@@ -49,13 +50,15 @@ class CastManager:
                 with open(self.catalog_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for s in data.get("speakers", []):
+                        if s.get("removed"):
+                            continue
                         name = s.get("speaker_name") or s.get("name")
-                        room = s.get("roomHint") or s.get("room") or extract_room_name(name)
+                        room = s.get("room_hint") or s.get("roomHint") or s.get("room") or extract_room_name(name or "")
                         speakers.append({
                             "name": name,
                             "room": room,
                             "model": s.get("model", "Google Cast"),
-                            "uuid": s.get("uuid"),
+                            "uuid": s.get("cast_uuid") or s.get("uuid"),
                             "host": s.get("host"),
                             "port": s.get("port", 8009),
                             "enabled": s.get("enabled", True),
@@ -129,6 +132,17 @@ class CastManager:
         return sq
 
     def discover(self):
+        # Never overlap mDNS scans; callers still get the last successful result.
+        if not self._discovery_lock.acquire(blocking=False):
+            log.debug("Speaker discovery already in progress; returning last_discovered")
+            with self.lock:
+                return list(self.last_discovered)
+        try:
+            return self._discover_unlocked()
+        finally:
+            self._discovery_lock.release()
+
+    def _discover_unlocked(self):
         discovered = []
         seen_names = set()
 

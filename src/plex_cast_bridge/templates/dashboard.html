@@ -113,12 +113,12 @@
         <h2 id="speakerHeading" class="section-title">Speakers &amp; settings</h2>
         <button type="button" class="plain-button" id="scanButton">
           <svg class="icon sm" aria-hidden="true"><use href="#refresh-icon"/></svg>
-          <span id="scanButtonLabel">Rescan</span>
+          <span id="scanButtonLabel">Refresh speakers</span>
         </button>
       </div>
-      <p class="section-description">Choose which speakers can receive music. Disabled speakers are excluded from Google Home room sync.</p>
+      <p class="section-description">Each Cast destination can allow local playback and optionally advertise its own virtual Plex device in Google Home (for example Kitchen Plex). New speakers stay hidden from Google Home until you opt in. Room assignment for virtual devices still happens in the Google Home app.</p>
       <div id="deviceList" class="device-list" aria-live="polite"></div>
-      <p class="below-note" id="deviceHint">Room names and IP details are managed by the bridge. The player uses one Cast target or an existing Cast Group at a time.</p>
+      <p class="below-note" id="deviceHint">Stable IDs survive renames and IP changes. Forgetting a speaker removes its virtual Plex device on the next Google Home sync — it does not remove the Nest speaker from Google Home.</p>
     </section>
   </section>
 
@@ -222,11 +222,12 @@
             <span class="dot" aria-hidden="true"></span>
             <span id="ghLinkLabel">Checking…</span>
           </div>
+          <p class="conn-meta" id="ghSyncLabel" hidden></p>
           <p class="conn-meta" id="ghSyncNote" hidden></p>
         </div>
         <div class="conn-actions">
           <button type="button" class="accent-button" id="ghSetupBtn">Set up Google Home</button>
-          <button type="button" class="ghost-button" id="ghSyncBtn">Sync Google Home</button>
+          <button type="button" class="ghost-button" id="ghSyncBtn">Refresh &amp; Sync Google Home</button>
         </div>
       </div>
       <div id="ghWizard" hidden>
@@ -241,6 +242,11 @@
           </div>
           <p class="gh-next-hint" id="ghNextHint">Complete the step action below, then Next unlocks.</p>
           <p class="gh-companion" id="ghCompanionStatus">Companion: checking…</p>
+          <div class="field-wrap" id="ghPairingWrap">
+            <label class="field-label" for="ghPairingTokenInput">Companion pairing token</label>
+            <input id="ghPairingTokenInput" class="field-select" type="password" autocomplete="off" spellcheck="false" placeholder="Paste from: uv run python scripts/gh_setup_companion.py serve">
+            <p class="conn-meta">Required for Mac-side cloud actions. Token prints when the companion starts; it never leaves this browser session.</p>
+          </div>
           <div class="gh-nav" id="ghWizardActions">
             <button type="button" class="ghost-button" id="ghBackBtn">Back</button>
             <button type="button" class="ghost-button" id="ghDoStepBtn">Do this step</button>
@@ -897,7 +903,7 @@
       row.className = 'empty-row';
       row.textContent = bridgeOk === false
         ? 'Bridge unreachable. Check that the local service is running.'
-        : 'No speakers discovered yet. Try Rescan.';
+        : 'No speakers discovered yet. Try Refresh speakers.';
       list.appendChild(row);
       return;
     }
@@ -920,7 +926,9 @@
       name.textContent = roomLabel(d);
       const sub = document.createElement('span');
       sub.className = 'device-desc';
-      sub.textContent = `${d.name} · ${d.model || 'Google Cast'}`;
+      const avail = d.availability && d.availability !== 'online' ? ` · ${d.availability}` : '';
+      const ghLabel = d.google_home_name || `${roomLabel(d)} Plex`;
+      sub.textContent = `${d.name} · ${d.model || 'Google Cast'}${avail} · Virtual: ${ghLabel}`;
       text.append(name, sub);
 
       const meta = document.createElement('div');
@@ -929,8 +937,21 @@
       const bits = [];
       if (d.host) bits.push(`${d.host}${d.port ? ':' + d.port : ''}`);
       if (d.model) bits.push(d.model);
-      if (d.uuid) bits.push(`id ${String(d.uuid).slice(0, 8)}…`);
+      if (d.uuid) bits.push(`cast ${String(d.uuid).slice(0, 8)}…`);
+      if (d.google_home_device_id) bits.push(`gh ${String(d.google_home_device_id)}`);
+      if (d.last_seen) bits.push(`seen ${d.last_seen}`);
       meta.textContent = bits.length ? bits.join(' · ') : 'No technical details available.';
+
+      const nameWrap = document.createElement('div');
+      nameWrap.className = 'device-meta';
+      nameWrap.style.marginTop = '0.35rem';
+      const nameInput = document.createElement('input');
+      nameInput.className = 'field-select';
+      nameInput.value = ghLabel;
+      nameInput.setAttribute('aria-label', `Google Home name for ${d.name}`);
+      nameInput.placeholder = 'Kitchen Plex';
+      nameInput.addEventListener('change', () => patchSpeaker(d, { google_home_name: nameInput.value.trim() }));
+      nameWrap.appendChild(nameInput);
 
       const toggleMeta = document.createElement('button');
       toggleMeta.type = 'button';
@@ -943,22 +964,61 @@
         toggleMeta.textContent = open ? 'Hide details' : 'Details';
         toggleMeta.setAttribute('aria-expanded', open ? 'true' : 'false');
       });
-      text.append(toggleMeta, meta);
+      text.append(nameWrap, toggleMeta, meta);
 
       const actions = document.createElement('div');
       actions.className = 'device-actions';
-      const label = document.createElement('label');
-      label.className = 'switch';
-      label.title = `${d.enabled ? 'Disable' : 'Enable'} ${roomLabel(d)}`;
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.setAttribute('role', 'switch');
-      input.checked = Boolean(d.enabled);
-      input.setAttribute('aria-label', `Enable ${d.name}`);
-      input.addEventListener('change', () => toggleSpeaker(d.name, input.checked, input));
-      label.appendChild(input);
-      actions.appendChild(label);
+      actions.style.display = 'flex';
+      actions.style.flexDirection = 'column';
+      actions.style.gap = '0.35rem';
+      actions.style.alignItems = 'flex-end';
 
+      const playLabel = document.createElement('label');
+      playLabel.className = 'switch';
+      playLabel.title = 'Allow playback';
+      const playInput = document.createElement('input');
+      playInput.type = 'checkbox';
+      playInput.setAttribute('role', 'switch');
+      playInput.checked = Boolean(d.enabled);
+      playInput.setAttribute('aria-label', `Allow playback on ${d.name}`);
+      playInput.addEventListener('change', () => toggleSpeaker(d.name, playInput.checked, playInput));
+      playLabel.appendChild(playInput);
+      const playHint = document.createElement('span');
+      playHint.className = 'device-desc';
+      playHint.textContent = 'Playback';
+      const playRow = document.createElement('div');
+      playRow.style.display = 'flex';
+      playRow.style.alignItems = 'center';
+      playRow.style.gap = '0.4rem';
+      playRow.append(playHint, playLabel);
+
+      const ghLabelEl = document.createElement('label');
+      ghLabelEl.className = 'switch';
+      ghLabelEl.title = 'Show in Google Home';
+      const ghInput = document.createElement('input');
+      ghInput.type = 'checkbox';
+      ghInput.setAttribute('role', 'switch');
+      ghInput.checked = Boolean(d.google_home_visible);
+      ghInput.setAttribute('aria-label', `Show ${ghLabel} in Google Home`);
+      ghInput.addEventListener('change', () => patchSpeaker(d, { google_home_visible: ghInput.checked }, ghInput));
+      ghLabelEl.appendChild(ghInput);
+      const ghHint = document.createElement('span');
+      ghHint.className = 'device-desc';
+      ghHint.textContent = 'Google Home';
+      const ghRow = document.createElement('div');
+      ghRow.style.display = 'flex';
+      ghRow.style.alignItems = 'center';
+      ghRow.style.gap = '0.4rem';
+      ghRow.append(ghHint, ghLabelEl);
+
+      const forgetBtn = document.createElement('button');
+      forgetBtn.type = 'button';
+      forgetBtn.className = 'ghost-button';
+      forgetBtn.textContent = 'Forget';
+      forgetBtn.title = 'Remove virtual Plex device from Google Home on next sync';
+      forgetBtn.addEventListener('click', () => forgetSpeaker(d));
+
+      actions.append(playRow, ghRow, forgetBtn);
       row.append(icon, text, actions);
       list.appendChild(row);
     });
@@ -981,6 +1041,12 @@
     return data;
   }
 
+  function normalizeSpeakersPayload(data) {
+    if (Array.isArray(data)) return { speakers: data, summary: null };
+    if (data && Array.isArray(data.speakers)) return { speakers: data.speakers, summary: data.summary || null };
+    return { speakers: [], summary: null };
+  }
+
   async function loadSpeakers(forceScan = false) {
     const label = $('scanButtonLabel');
     const btn = $('scanButton');
@@ -989,11 +1055,17 @@
       label.textContent = 'Scanning…';
     }
     try {
-      speakers = await api(`/api/speakers?scan=${forceScan ? 'true' : 'false'}`);
-      if (!Array.isArray(speakers)) speakers = [];
+      const data = forceScan
+        ? await api('/api/speakers/refresh', { method: 'POST' })
+        : await api('/api/speakers?scan=false');
+      const norm = normalizeSpeakersPayload(data);
+      speakers = norm.speakers;
       renderDevices();
       updateOutputSelect();
-      if (forceScan) announce(`Scan complete. Found ${speakers.length} device${speakers.length === 1 ? '' : 's'}.`);
+      if (forceScan) {
+        const msg = norm.summary?.message || `Scan complete. Found ${speakers.length} device${speakers.length === 1 ? '' : 's'}.`;
+        announce(msg);
+      }
     } catch (err) {
       if (bridgeOk !== false && !authFailed) setConnection(false, 'Bridge unreachable');
       renderDevices();
@@ -1001,7 +1073,29 @@
       if (forceScan || !speakers.length) announce(err.message || 'Could not load speakers');
     } finally {
       btn.disabled = false;
-      label.textContent = 'Rescan';
+      label.textContent = 'Refresh speakers';
+    }
+  }
+
+  async function forgetSpeaker(device) {
+    const id = device.google_home_device_id || device.id;
+    if (!id) {
+      announce('Speaker is missing a stable id');
+      return;
+    }
+    const ok = window.confirm(
+      'This removes the virtual Plex device from Google Home during the next successful sync. It does not remove the actual Nest speaker from Google Home.\n\nContinue?'
+    );
+    if (!ok) return;
+    try {
+      const res = await api(`/api/speakers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      speakers = speakers.filter((s) => (s.google_home_device_id || s.id) !== id);
+      renderDevices();
+      updateOutputSelect();
+      announce(res.note || 'Speaker forgotten. Sync Google Home to update the Home app.');
+      await refreshGoogleHome();
+    } catch (err) {
+      announce(err.message || 'Could not forget speaker');
     }
   }
 
@@ -1015,7 +1109,8 @@
         method: 'POST',
         body: JSON.stringify({ speaker: name, enabled }),
       });
-      if (Array.isArray(data.speakers)) speakers = data.speakers;
+      const norm = normalizeSpeakersPayload(data);
+      if (norm.speakers.length) speakers = norm.speakers;
       renderDevices();
       updateOutputSelect();
       announce(`${name} ${enabled ? 'enabled' : 'disabled'}.`);
@@ -1024,6 +1119,37 @@
       renderDevices();
       updateOutputSelect();
       if (inputEl) inputEl.checked = !enabled;
+      announce(err.message || 'Could not update speaker');
+    }
+  }
+
+  async function patchSpeaker(device, patch, inputEl) {
+    const id = device.google_home_device_id || device.id;
+    if (!id) {
+      announce('Speaker is missing a stable Google Home id');
+      return;
+    }
+    const previous = speakers.map((s) => ({ ...s }));
+    speakers = speakers.map((s) => ((s.google_home_device_id || s.id) === id ? { ...s, ...patch } : s));
+    renderDevices();
+    try {
+      const updated = await api(`/api/speakers/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      speakers = speakers.map((s) => ((s.google_home_device_id || s.id) === id ? { ...s, ...updated } : s));
+      renderDevices();
+      updateOutputSelect();
+      if (patch.google_home_visible === true) {
+        announce(`Showing ${updated.google_home_name || 'Plex'} in Google Home. Assign its room in the Google Home app after sync.`);
+      } else {
+        announce('Speaker settings saved.');
+      }
+    } catch (err) {
+      speakers = previous;
+      renderDevices();
+      updateOutputSelect();
+      if (inputEl && typeof patch.google_home_visible === 'boolean') inputEl.checked = !patch.google_home_visible;
       announce(err.message || 'Could not update speaker');
     }
   }
@@ -1278,16 +1404,38 @@
   let ghBusy = false;
   let ghDoMode = 'action';
 
-  async function companionFetch(path, options) {
-    const res = await fetch(`${GH_COMPANION}${path}`, { headers: { ...(ghPairingToken ? {'X-Companion-Token': ghPairingToken} : {}),
+  async function companionFetch(path, options = {}) {
+    const res = await fetch(`${GH_COMPANION}${path}`, {
       ...options,
-      headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(ghPairingToken ? { 'X-Companion-Token': ghPairingToken } : {}),
+        ...(options.headers || {}),
+      },
     });
     const text = await res.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (!res.ok) throw new Error(data.error || data.detail || `Companion HTTP ${res.status}`);
     return data;
+  }
+
+  function bindGhPairingInput() {
+    const input = $('ghPairingTokenInput');
+    if (!input || input.dataset.bound === '1') return;
+    input.dataset.bound = '1';
+    if (ghPairingToken) input.value = ghPairingToken;
+    input.addEventListener('change', async () => {
+      ghPairingToken = input.value.trim();
+      if (ghPairingToken) sessionStorage.setItem('ghPairingToken', ghPairingToken);
+      else sessionStorage.removeItem('ghPairingToken');
+      await refreshCompanionStatus();
+    });
+    input.addEventListener('keydown', async (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      input.dispatchEvent(new Event('change'));
+    });
   }
 
   async function refreshCompanionStatus() {
@@ -1674,6 +1822,11 @@
       const ready = Boolean(setup.cloud_run_url && setup.link_confirmed);
       $('ghLinkLabel').textContent = ready ? 'Linked' : (setup.cloud_run_url ? 'Configured — link pending' : 'Not configured');
       $('ghLinkState').classList.toggle('is-linked', ready);
+      const syncLabel = $('ghSyncLabel');
+      if (syncLabel) {
+        syncLabel.hidden = false;
+        syncLabel.textContent = sync.label || sync.status || '';
+      }
       $('ghSyncNote').hidden = false;
       $('ghSyncNote').textContent = sync.note || '';
       $('ghSetupBtn').textContent = ghWizardOpen ? 'Setup in progress' : (setup.completed_steps?.length ? 'Resume Google Home setup' : 'Set up Google Home');
@@ -2186,6 +2339,7 @@
     $('ghWizard').hidden = false;
     ghStepIndex = 0;
     ghStepVerified = false;
+    bindGhPairingInput();
     renderGhWizardStep();
     await refreshCompanionStatus();
     await refreshGoogleHome({ followServerStep: true });
@@ -2236,8 +2390,10 @@
   });
   $('ghSyncBtn').addEventListener('click', async () => {
     try {
+      await loadSpeakers(true);
       const res = await api('/api/google-home/sync', { method: 'POST', body: '{}' });
-      announce(res.last_push_status || res.status || 'Sync requested');
+      const label = res.label || res.last_push_status || res.status || 'Sync requested';
+      announce(label);
       await refreshGoogleHome();
     } catch (err) {
       announce(err.message || 'Sync failed');

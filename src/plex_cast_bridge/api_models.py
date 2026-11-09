@@ -20,6 +20,13 @@ class SpeakerToggle(BaseModel):
     enabled: bool
 
 
+class SpeakerPatch(BaseModel):
+    enabled: bool | None = None
+    google_home_visible: bool | None = None
+    google_home_name: str | None = Field(default=None, min_length=1, max_length=80)
+    room_hint: str | None = Field(default=None, max_length=80)
+
+
 class Transport(BaseModel):
     action: Literal["pause", "resume", "next", "previous", "stop", "volume"]
     speaker: str | None = None
