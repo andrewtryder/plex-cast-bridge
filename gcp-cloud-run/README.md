@@ -86,3 +86,31 @@ The script automatically:
 4. Provisions the least-privilege service account (`plex-fulfillment-sa`) with `roles/pubsub.publisher`.
 5. Builds and deploys the container to Cloud Run (`min-instances=0`, `256Mi`).
 6. Prunes older container images in Artifact Registry (keeping only the 2 most recent images to stay within the 500 MB free tier).
+
+### Durable Google Home reconciliation
+
+The bridge polls the authenticated `POST /internal/reconcile` endpoint using the
+existing catalog write key (the webhook key is also accepted). Set
+`CATALOG_RECONCILE_INTERVAL_SEC` on the bridge to control the polling interval;
+the default is 60 seconds and the minimum is 10 seconds. Failed bridge polls
+back off exponentially up to 300 seconds. Polling wakes the existing Cloud Run
+service after scale-to-zero; if the bridge is stopped, recovery waits for its
+restart. No scheduler or additional cloud service is required.
+
+Each catalog upload creates a unique immutable Cloud Storage object. A Firestore
+transaction selects the authoritative monotonic catalog version and advances its
+sync generation. Duplicate uploads of the same version and content are
+idempotent; different content for an existing version is rejected. Losing uploads
+may leave unreferenced objects in the bucket. Firestore also stores linkage,
+pending generations, retry deadlines, and a time-limited reconciliation lease.
+The Cloud Run request claims a lease transactionally, calls HomeGraph outside the
+transaction, and transactionally records acceptance only if the lease, link epoch,
+and generation still match. Failures remain pending with capped exponential
+backoff. A dead instance's lease expires after 90 seconds.
+
+`accepted` means HomeGraph accepted Request Sync, not that Google completed a
+subsequent SYNC. DISCONNECT invalidates the lease and prevents new claims. A
+HomeGraph request already in flight cannot be recalled; its result cannot mark a
+newer generation or a disconnected account accepted. The gateway service
+account must already have the Firestore, bucket, and HomeGraph permissions used
+by the existing integration. This change does not provision resources or IAM.

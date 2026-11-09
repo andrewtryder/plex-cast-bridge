@@ -173,7 +173,7 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
             overall = "failed"
         elif sync == "pending":
             overall = "pending"
-        elif force_sync and sync not in {"succeeded", "skipped"}:
+        elif force_sync and sync not in {"succeeded", "accepted", "skipped"}:
             overall = "pending"
         else:
             overall = "succeeded"
@@ -181,7 +181,7 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
             {
                 "last_push_status": overall,
                 "last_catalog_upload": "succeeded" if upload_ok else "failed",
-                "last_error": None if sync in {None, "succeeded", "pending", "skipped"} else sync_detail,
+                "last_error": None if sync in {None, "succeeded", "accepted", "pending", "skipped"} else sync_detail,
                 "last_cloud_meta": payload.get("meta"),
                 "last_request_sync": payload.get("request_sync"),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -199,6 +199,38 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
     except Exception as exc:
         log.warning("Catalog push failed: %s", exc)
         return save_result({"last_push_status": "failed", "last_error": str(exc)})
+
+
+def reconcile_cloud() -> dict[str, Any]:
+    """Wake the existing gateway and reconcile its persisted pending generation."""
+    state = load_sync_state()
+    url = (state.get("cloud_gateway_url") or "").rstrip("/")
+    key = state.get("catalog_write_key") or ""
+    if not url or not key:
+        return {"state": "not_configured"}
+    req = request.Request(f"{url}/internal/reconcile", data=b"", method="POST", headers={"X-API-Key": key})
+    try:
+        with request.urlopen(req, timeout=40) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        with _STATE_LOCK:
+            current = load_sync_state()
+            if current.get("version") == state.get("version"):
+                patch = {} if result.get("state") == "idle" else {"last_request_sync": result}
+                cloud_version = int(result.get("catalog_version") or 0)
+                if cloud_version > int(current.get("version") or 0):
+                    patch["version"] = cloud_version
+                if (result.get("state") == "accepted" and current.get("last_catalog_upload") == "succeeded"
+                        and cloud_version == current.get("version")
+                        and (current.get("last_cloud_meta") or {}).get("version") == cloud_version):
+                    patch.update({"last_push_status": "succeeded", "last_error": None})
+                elif result.get("state") == "failed":
+                    patch.update({"last_push_status": "failed", "last_error": result.get("detail")})
+                if patch:
+                    save_sync_state(patch)
+        return result
+    except Exception as exc:
+        log.warning("Cloud reconciliation failed: %s", exc)
+        return {"state": "failed", "detail": "Cloud reconciliation unavailable"}
 
 
 def configure_gateway(cloud_gateway_url: str, catalog_write_key: str) -> dict[str, Any]:
@@ -231,8 +263,10 @@ def public_sync_status() -> dict[str, Any]:
         label = "Sync failed — retry"
     elif req.get("state") == "skipped" and "unlink" in str(req.get("detail") or "").lower():
         label = "Waiting for account linking"
-    elif status in {"succeeded", "configured"} and req.get("state") in {None, "succeeded", "skipped"}:
-        label = "Up to date"
+    elif req.get("state") == "accepted":
+        label = "Google Home sync requested"
+    elif status in {"succeeded", "configured"} and req.get("state") in {None, "succeeded", "skipped", "idle"}:
+        label = "Catalog uploaded"
     else:
         label = status or "idle"
     return {

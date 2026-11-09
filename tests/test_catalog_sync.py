@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 
 from cloud_gateway.catalog_sync import CatalogCloudStore
 
@@ -27,7 +26,8 @@ def test_catalog_put_rejects_stale_version(client, auth_headers, test_settings):
         headers=headers,
         json={"version": 1, "catalog": catalog, "request_sync": False},
     )
-    assert r2.status_code == 409
+    assert r2.status_code == 200
+    assert r2.json()["meta"]["version"] == 1
 
 
 def test_catalog_upload_does_not_relink(client, test_settings):
@@ -88,18 +88,14 @@ def test_disconnect_stops_request_sync(client, auth_headers):
     assert result["state"] == "skipped"
 
 
-def test_request_sync_debounce_flushes_pending(client):
+def test_request_sync_accepts_only_current_generation(client):
     store: CatalogCloudStore = client.app.state.catalog_store
     store.set_linked(True)
-    store._sync_debounce_sec = 0.2
-    first = store.request_sync(force=True)
-    second = store.request_sync(force=False)
-    assert first["state"] == "succeeded"
-    assert second["state"] == "pending"
-    assert store._pending_sync is True
-    time.sleep(0.35)
-    assert store._pending_sync is False
-    assert store._meta.last_sync_state == "succeeded"
+    first = store.request_sync(force=False)
+    assert first["state"] == "accepted"
+    assert store.get_meta().pending_sync is False
+    assert store.get_meta().accepted_generation == store.get_meta().sync_generation
+    assert store.request_sync()["state"] == "idle"
 
 
 def test_production_init_does_not_silently_mock(monkeypatch):
@@ -175,3 +171,38 @@ def test_local_retry_backoff_and_restart(monkeypatch, tmp_path):
     sync._retry_push()
     assert sync._retry_attempt == 0
     assert len(scheduled) == 3
+
+
+def test_reconcile_endpoint_requires_key_and_does_not_relink(client):
+    response = client.post('/internal/reconcile')
+    assert response.status_code == 401
+    response = client.post('/internal/reconcile', headers={'X-API-Key': 'test-webhook-key'})
+    assert response.status_code == 200
+    assert response.json()['state'] == 'skipped'
+    assert response.json()['catalog_version'] == 0
+    assert not client.app.state.catalog_store.is_linked()
+
+
+def test_bridge_reconciliation_wakes_gateway_and_advances_cloud_version(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync as sync
+
+    monkeypatch.setattr(sync.store, 'DATA_DIR', tmp_path)
+    sync.save_sync_state({'cloud_gateway_url': 'https://gateway.test', 'catalog_write_key': 'secret',
+                          'version': 3, 'last_push_status': 'failed', 'last_catalog_upload': 'succeeded',
+                          'last_cloud_meta': {'version': 3}})
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self):
+            return json.dumps({'state': 'accepted', 'catalog_version': 3}).encode()
+    def send(req, timeout):
+        assert req.full_url == 'https://gateway.test/internal/reconcile'
+        assert req.get_method() == 'POST'
+        assert req.get_header('X-api-key') == 'secret'
+        return Response()
+    monkeypatch.setattr(sync.request, 'urlopen', send)
+    assert sync.reconcile_cloud()['state'] == 'accepted'
+    assert sync.load_sync_state()['version'] == 3
+    assert sync.public_sync_status()['label'] == 'Google Home sync requested'

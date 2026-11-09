@@ -178,6 +178,21 @@ async def lifespan(app: FastAPI):
         discovery_task = asyncio.create_task(_background_speaker_discovery())
         log.info("Background speaker discovery every %ss", interval)
 
+    async def _reconcile_google_home():
+        interval_sec = max(10, int(settings.catalog_reconcile_interval_sec))
+        backoff = interval_sec
+        while True:
+            try:
+                result = await run_in_threadpool(catalog_sync.reconcile_cloud)
+                backoff = min(300, backoff * 2) if result.get("state") == "failed" else interval_sec
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Google Home reconciliation failed")
+                backoff = min(300, backoff * 2)
+            await asyncio.sleep(backoff)
+
+    reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
     if settings.enable_pubsub_listener:
 
@@ -207,6 +222,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         catalog_sync.stop_pending_push()
+        reconcile_task.cancel()
+        try:
+            await reconcile_task
+        except asyncio.CancelledError:
+            pass
         if discovery_task is not None:
             discovery_task.cancel()
             try:
