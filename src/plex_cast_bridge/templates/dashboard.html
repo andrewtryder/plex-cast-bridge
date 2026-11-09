@@ -930,6 +930,12 @@
       const ghLabel = d.google_home_name || `${roomLabel(d)} Plex`;
       sub.textContent = `${d.name} · ${d.model || 'Google Cast'}${avail} · Virtual: ${ghLabel}`;
       text.append(name, sub);
+      if (d.needs_review) {
+        const warning = document.createElement('span');
+        warning.className = 'device-desc';
+        warning.textContent = 'Identity conflict: check Details, then choose which virtual devices to show in Google Home.';
+        text.appendChild(warning);
+      }
 
       const meta = document.createElement('div');
       meta.className = 'device-meta';
@@ -981,11 +987,11 @@
       playInput.setAttribute('role', 'switch');
       playInput.checked = Boolean(d.enabled);
       playInput.setAttribute('aria-label', `Allow playback on ${d.name}`);
-      playInput.addEventListener('change', () => toggleSpeaker(d.name, playInput.checked, playInput));
+      playInput.addEventListener('change', () => patchSpeaker(d, { enabled: playInput.checked }, playInput));
       playLabel.appendChild(playInput);
       const playHint = document.createElement('span');
       playHint.className = 'device-desc';
-      playHint.textContent = 'Playback';
+      playHint.textContent = 'Allow playback';
       const playRow = document.createElement('div');
       playRow.style.display = 'flex';
       playRow.style.alignItems = 'center';

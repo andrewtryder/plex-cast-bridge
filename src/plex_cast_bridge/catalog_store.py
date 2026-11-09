@@ -181,7 +181,7 @@ def persist_discovered_speakers_to_catalog(
         for rec in speakers:
             target = speaker_playback_target(rec) or ""
             room = rec.get("room_hint") or ""
-            if cast_mgr.is_disabled(target) or cast_mgr.is_disabled(room):
+            if not rec.get("cast_uuid") and (cast_mgr.is_disabled(target) or cast_mgr.is_disabled(room)):
                 rec["enabled"] = False
 
         data["speakers"] = speakers

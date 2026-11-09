@@ -132,6 +132,8 @@ def migrate_speaker_record(raw: dict[str, Any], *, previously_exposed: bool = Tr
         "last_seen": raw.get("last_seen"),
         "availability": raw.get("availability") or "unknown",
         "needs_review": bool(raw.get("needs_review", False)),
+        "identity_conflict_original_id": raw.get("identity_conflict_original_id"),
+        "identity_conflict_previous_visibility": raw.get("identity_conflict_previous_visibility"),
         "removed": bool(raw.get("removed", False)),
         "name": google_home_name,  # legacy field used by older readers
     }
@@ -142,18 +144,28 @@ def migrate_catalog_speakers(catalog: dict[str, Any]) -> tuple[dict[str, Any], b
     data = copy.deepcopy(catalog) if catalog else {}
     raw_list = list(data.get("speakers") or [])
     migrated = [migrate_speaker_record(s, previously_exposed=True) for s in raw_list]
-    # Deduplicate by google_home_device_id while migrating.
-    by_id: dict[str, dict[str, Any]] = {}
+    # Preserve every conflicting record. Only the first retains the legacy ID;
+    # others receive a new ID and are hidden pending explicit user review.
+    seen: set[str] = set()
+    duplicates = {rec["google_home_device_id"] for rec in migrated
+                  if sum(other["google_home_device_id"] == rec["google_home_device_id"] for other in migrated) > 1}
+    new_list = []
     for rec in migrated:
         gid = rec["google_home_device_id"]
-        if gid in by_id:
-            # Prefer the record with a cast_uuid / more recent last_seen.
-            existing = by_id[gid]
-            if not existing.get("cast_uuid") and rec.get("cast_uuid"):
-                by_id[gid] = rec
-            continue
-        by_id[gid] = rec
-    new_list = list(by_id.values())
+        if gid in duplicates:
+            rec["identity_conflict_original_id"] = gid
+            rec["identity_conflict_previous_visibility"] = rec["google_home_visible"]
+            rec["google_home_visible"] = False
+            rec["needs_review"] = True
+        if gid in seen:
+            new_id = new_google_home_device_id()
+            while new_id in seen:
+                new_id = new_google_home_device_id()
+            rec["id"] = rec["google_home_device_id"] = new_id
+            rec["google_home_visible"] = False
+            rec["needs_review"] = True
+        seen.add(rec["google_home_device_id"])
+        new_list.append(rec)
     changed = new_list != raw_list
     data["speakers"] = new_list
     data["inputs"] = [

@@ -145,3 +145,12 @@ def test_failed_request_sync_is_not_reported_as_success(monkeypatch, tmp_path):
     assert result["last_catalog_upload"] == "succeeded"
     assert result["last_push_status"] == "failed"
     assert result["last_error"] == "offline"
+
+
+def test_sync_does_not_relink_after_disconnect(client, auth_headers):
+    store = client.app.state.catalog_store
+    store.set_linked(True)
+    client.post("/fulfillment", headers=auth_headers, json={"requestId": "d", "inputs": [{"intent": "action.devices.DISCONNECT"}]})
+    response = client.post("/fulfillment", headers=auth_headers, json={"requestId": "s", "inputs": [{"intent": "action.devices.SYNC"}]})
+    assert response.status_code == 200
+    assert store.is_linked() is False

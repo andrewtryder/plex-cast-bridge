@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     if cloud_url and write_key:
         try:
             catalog_sync.configure_gateway(cloud_url, write_key)
+            catalog_sync.resume_pending_push()
         except Exception as exc:
             log.warning("Could not configure catalog sync from env: %s", exc)
     discovery_task: asyncio.Task | None = None
@@ -187,13 +188,14 @@ async def lifespan(app: FastAPI):
                     plex=app.state.plex,
                     cast=app.state.cast,
                     settings=app.state.settings,
-                    command=Command(query=data["query"], speaker=data.get("speaker")),
+                    command=Command(query=data["query"], speaker=data.get("speaker"), device_id=data.get("device_id")),
                 )
             return await transport(
                 cast=app.state.cast,
                 settings=app.state.settings,
                 command=Transport(
                     action=data["action"],
+                    device_id=data.get("device_id"),
                     speaker=data.get("speaker"),
                     volume=data.get("volume"),
                     relative_volume=data.get("relative_volume"),

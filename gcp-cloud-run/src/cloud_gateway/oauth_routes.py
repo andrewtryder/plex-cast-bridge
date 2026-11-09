@@ -213,6 +213,13 @@ async def oauth_token(
                 status_code=exc.status_code,
                 content={"error": "invalid_grant", "error_description": str(exc.detail)},
             )
+        catalog_store = getattr(request.app.state, "catalog_store", None)
+        if catalog_store is not None:
+            try:
+                catalog_store.set_linked(True)
+            except Exception:
+                log.exception("Could not persist account link")
+                return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
         token_data = create_token_pair(settings)
         return JSONResponse(
             content=token_data,

@@ -221,10 +221,6 @@ def resolve_execute_speaker(
     target = _playback_target(spk)
     if not target:
         return None, "deviceNotFound"
-    # The bridge currently routes by name; ambiguous names cannot be routed safely.
-    if sum(1 for other in catalog_data.get("speakers") or []
-           if not other.get("removed") and (_playback_target(other) or "").casefold() == target.casefold()) != 1:
-        return None, "deviceNotFound"
     return target, None
 
 
@@ -271,10 +267,6 @@ def build_sync_devices(catalog_data: dict[str, Any], default_speaker: str = "Mas
                 "model": spk.get("model") or "Plex Cast Bridge",
                 "hwVersion": "1.0",
                 "swVersion": "2.0",
-            },
-            "customData": {
-                "playback_target": _playback_target(spk),
-                "cast_uuid": spk.get("cast_uuid") or spk.get("uuid") or "",
             },
             "attributes": shared_attributes,
         }
@@ -426,12 +418,6 @@ async def handle_smart_home_request(
     log.info(f"Handling Google Smart Home intent: {intent} (requestId={request_id})")
 
     if intent == "action.devices.SYNC":
-        # A SYNC from Google means the account is linked — enable Request Sync again.
-        if catalog_store is not None:
-            try:
-                catalog_store.set_linked(True)
-            except Exception as exc:
-                log.warning("Could not persist link flag on SYNC: %s", exc)
         catalog_data = _resolve_catalog(settings, catalog_store)
         devices = build_sync_devices(catalog_data, default_speaker=settings.default_speaker_name)
         return {
@@ -463,7 +449,6 @@ async def handle_smart_home_request(
             device_states[dev_id] = {
                 "online": online,
                 "status": "SUCCESS",
-                "on": online and bool(spk.get("enabled", True)),
             }
         return {
             "requestId": request_id,
@@ -542,6 +527,7 @@ async def handle_smart_home_request(
                 # Force routing to the mapped Cast destination (never a silent default).
                 for pubsub_payload in parsed_payloads:
                     pubsub_payload["speaker"] = target_speaker
+                    pubsub_payload["device_id"] = dev_id
 
                 dev_success = True
                 error_code = "transientError"

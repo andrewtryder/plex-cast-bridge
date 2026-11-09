@@ -22,7 +22,7 @@ async def play(
         if not tracks:
             raise ValueError("No matching tracks found in the Plex library")
         name = command.speaker or intent.target_speaker or settings.default_speaker_name
-        speaker = cast.get(name)
+        speaker = cast.get_device(command.device_id) if command.device_id else cast.get(name)
         speaker.replace(tracks, intent.mode in ("artist", "artist_radio", "theme_mix"))
         return {"intent": intent.model_dump(), "playback": speaker.status()}
 
@@ -36,7 +36,8 @@ async def transport(
     command: Transport,
 ):
     def execute():
-        speaker = cast.get(command.speaker or settings.default_speaker_name)
+        speaker = (cast.get_device(command.device_id) if command.device_id
+                   else cast.get(command.speaker or settings.default_speaker_name))
         if command.action == "next":
             speaker.skip()
         elif command.action == "previous":

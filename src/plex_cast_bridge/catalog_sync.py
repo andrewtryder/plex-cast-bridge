@@ -15,6 +15,7 @@ from . import catalog_store as store
 log = logging.getLogger(__name__)
 
 _STATE_LOCK = threading.RLock()
+_PUSH_LOCK = threading.Lock()
 _STATE_FILE = "google_home_sync.json"
 _pending_timer: threading.Timer | None = None
 
@@ -77,6 +78,11 @@ def bump_and_schedule_push(delay_sec: float = 2.0) -> dict[str, Any]:
 
 
 def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
+    with _PUSH_LOCK:
+        return _push_catalog_now(force_sync)
+
+
+def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
     state = load_sync_state()
     url = (state.get("cloud_gateway_url") or "").rstrip("/")
     write_key = state.get("catalog_write_key") or ""
@@ -116,6 +122,12 @@ def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
             "X-API-Key": write_key,
         },
     )
+    def save_result(patch: dict[str, Any]) -> dict[str, Any]:
+        with _STATE_LOCK:
+            if int(load_sync_state().get("version") or 0) != version:
+                return load_sync_state()
+            return save_sync_state(patch)
+
     try:
         with request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
@@ -130,7 +142,7 @@ def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
             overall = "pending"
         else:
             overall = "succeeded"
-        return save_sync_state(
+        return save_result(
             {
                 "last_push_status": overall,
                 "last_catalog_upload": "succeeded" if upload_ok else "failed",
@@ -143,7 +155,7 @@ def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
         log.warning("Catalog push HTTP %s: %s", exc.code, detail)
-        return save_sync_state(
+        return save_result(
             {
                 "last_push_status": "failed",
                 "last_error": f"HTTP {exc.code}: {detail}",
@@ -151,17 +163,21 @@ def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
         )
     except Exception as exc:
         log.warning("Catalog push failed: %s", exc)
-        return save_sync_state({"last_push_status": "failed", "last_error": str(exc)})
+        return save_result({"last_push_status": "failed", "last_error": str(exc)})
 
 
 def configure_gateway(cloud_gateway_url: str, catalog_write_key: str) -> dict[str, Any]:
-    return save_sync_state(
-        {
-            "cloud_gateway_url": cloud_gateway_url.rstrip("/"),
-            "catalog_write_key": catalog_write_key,
-            "last_push_status": "configured",
-        }
-    )
+    return save_sync_state({
+        "cloud_gateway_url": cloud_gateway_url.rstrip("/"),
+        "catalog_write_key": catalog_write_key,
+    })
+
+
+def resume_pending_push() -> None:
+    """Resume durable pending or failed work after a bridge restart."""
+    if load_sync_state().get("last_push_status") in {"pending", "failed"}:
+        bump_and_schedule_push()
+
 
 
 def public_sync_status() -> dict[str, Any]:

@@ -235,6 +235,9 @@ async def toggle_speaker_endpoint(request: Request, toggle: SpeakerToggle):
     state = request.app.state
 
     def update():
+        matches = [rec for rec in list_speaker_records() if (rec.get("speaker_name") or "").casefold() == toggle.speaker.casefold()]
+        if len(matches) > 1:
+            raise ValueError("Ambiguous speaker name; use the device ID")
         previous_disabled = state.cast.is_disabled(toggle.speaker)
         state.cast.set_speaker_enabled(toggle.speaker, toggle.enabled)
         try:
@@ -277,7 +280,7 @@ async def patch_speaker_endpoint(request: Request, device_id: str, body: Speaker
         rec = update_speaker_record(device_id, patch)
         # Keep CastManager disabled set in sync with playback enable.
         target = rec.get("speaker_name")
-        if target and "enabled" in patch:
+        if target and not rec.get("cast_uuid") and "enabled" in patch:
             state.cast.set_speaker_enabled(target, bool(patch["enabled"]))
         return _public_speaker(rec)
 

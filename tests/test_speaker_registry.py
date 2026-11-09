@@ -226,3 +226,21 @@ def test_removed_speaker_stays_removed_on_rediscovery():
     result, _ = reconcile_speakers(initial, [{"name": "Speaker", "uuid": "abcdef0123456789"}])
     assert len(result) == 1
     assert result[0]["removed"] is True
+
+
+def test_migration_preserves_conflicting_records_and_flags_them():
+    from plex_cast_bridge.speaker_registry import migrate_catalog_speakers
+
+    original = {"speakers": [
+        {"id": "plex-jukebox:Kitchen", "speaker_name": "Kitchen", "uuid": "1111111111111111", "google_home_visible": True},
+        {"id": "plex-jukebox:Kitchen", "speaker_name": "Kitchen", "uuid": "2222222222222222", "google_home_visible": True},
+    ]}
+    migrated, changed = migrate_catalog_speakers(original)
+    assert changed
+    assert len(migrated["speakers"]) == 2
+    assert len({s["id"] for s in migrated["speakers"]}) == 2
+    assert all(s["needs_review"] and not s["google_home_visible"] for s in migrated["speakers"])
+    assert all(s["identity_conflict_previous_visibility"] for s in migrated["speakers"])
+    again, changed = migrate_catalog_speakers(migrated)
+    assert not changed
+    assert again == migrated

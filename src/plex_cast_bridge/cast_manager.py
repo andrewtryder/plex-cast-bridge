@@ -56,6 +56,8 @@ class CastManager:
                         room = s.get("room_hint") or s.get("roomHint") or s.get("room") or extract_room_name(name or "")
                         speakers.append({
                             "name": name,
+                            "device_id": s.get("google_home_device_id") or s.get("id"),
+                            "visible": s.get("google_home_visible", s.get("enabled", True)),
                             "room": room,
                             "model": s.get("model", "Google Cast"),
                             "uuid": s.get("cast_uuid") or s.get("uuid"),
@@ -111,7 +113,7 @@ class CastManager:
                 log.debug("LocalSpeaker stop during discard failed: %s", exc)
             return
         try:
-            speaker.executor.shutdown(wait=False, cancel_futures=True)
+            speaker.close()
         except Exception as exc:
             log.debug("Speaker executor shutdown during discard failed: %s", exc)
         try:
@@ -145,6 +147,7 @@ class CastManager:
     def _discover_unlocked(self):
         discovered = []
         seen_names = set()
+        seen_uuids = set()
 
         enable_test_speaker = os.getenv("ENABLE_TEST_SPEAKER", "").strip().lower() in ("true", "1", "yes")
         # On macOS, include test speaker by default unless explicitly disabled by config.
@@ -167,8 +170,11 @@ class CastManager:
         if sys.platform == "darwin":
             for dev in _discover_via_dnssd():
                 dev_fold = dev["name"].casefold()
-                if dev_fold not in seen_names:
+                dev_uuid = str(dev.get("uuid") or "").casefold()
+                if (dev_uuid and dev_uuid not in seen_uuids) or (not dev_uuid and dev_fold not in seen_names):
                     seen_names.add(dev_fold)
+                    if dev_uuid:
+                        seen_uuids.add(dev_uuid)
                     discovered.append({
                         "name": dev["name"],
                         "room": dev.get("room") or extract_room_name(dev["name"]),
@@ -186,8 +192,11 @@ class CastManager:
                 for c in casts:
                     name = c.cast_info.friendly_name
                     name_fold = name.casefold()
-                    if name_fold not in seen_names:
+                    dev_uuid = str(c.uuid or "").casefold()
+                    if (dev_uuid and dev_uuid not in seen_uuids) or (not dev_uuid and name_fold not in seen_names):
                         seen_names.add(name_fold)
+                        if dev_uuid:
+                            seen_uuids.add(dev_uuid)
                         discovered.append({
                             "name": name,
                             "room": extract_room_name(name),
@@ -210,7 +219,8 @@ class CastManager:
             if not name:
                 continue
             name_fold = name.casefold()
-            if name_fold in seen_names:
+            spk_uuid = str(spk.get("uuid") or "").casefold()
+            if (spk_uuid and spk_uuid in seen_uuids) or (not spk_uuid and name_fold in seen_names):
                 continue
             host = spk.get("host")
             port = spk.get("port", 8009)
@@ -225,6 +235,8 @@ class CastManager:
                     reachable = False
                 if reachable:
                     seen_names.add(name_fold)
+                    if spk_uuid:
+                        seen_uuids.add(spk_uuid)
                     discovered.append({
                         "name": name,
                         "room": spk.get("room") or extract_room_name(name),
@@ -238,6 +250,43 @@ class CastManager:
         with self.lock:
             self.last_discovered = discovered
         return discovered
+
+    def get_device(self, device_id: str):
+        """Resolve an authorized virtual device by UUID using fresh discovery.
+
+        Never trust a persisted IP as proof of identity; DHCP can reassign it.
+        """
+        records = [s for s in self._get_catalog_speakers() if s.get("device_id") == device_id]
+        if len(records) != 1:
+            raise ValueError("Unknown or conflicting virtual device")
+        record = records[0]
+        if not record.get("enabled") or not record.get("visible"):
+            raise ValueError("Virtual device is disabled or hidden")
+        uuid = str(record.get("uuid") or "").casefold()
+        if not uuid:
+            name = (record.get("name") or "").casefold()
+            if sum(1 for s in self._get_catalog_speakers() if (s.get("name") or "").casefold() == name) != 1:
+                raise ValueError("Ambiguous legacy speaker")
+            return self.get(record.get("name"))
+        key = f"uuid:{uuid}"
+        with self.lock:
+            cached = self.speakers.get(key)
+            if cached is not None:
+                if self._is_cast_connected(cached):
+                    return cached
+                self._discard_speaker(key)
+            casts, browser = pychromecast.get_chromecasts(timeout=3)
+            try:
+                matches = [c.cast_info for c in casts if str(c.uuid).casefold() == uuid]
+                if len(matches) != 1:
+                    raise ValueError("Cast UUID unavailable or ambiguous")
+                info = matches[0]
+                host_tuple = (info.host, info.port, info.uuid, info.model_name, info.friendly_name)
+            finally:
+                browser.stop_discovery()
+                for cast in casts:
+                    cast.disconnect()
+            return self._connect_from_host(key, host_tuple)
 
     def get(self, name):
         if not name:
@@ -258,13 +307,7 @@ class CastManager:
                 log.warning("Cached Cast connection for '%s' is dead; reconnecting", name)
                 self._discard_speaker(name)
 
-            # Generate candidate friendly names (e.g. "Master Bedroom" -> ["Master Bedroom", "Master Bedroom display"])
-            candidate_names = [name]
-            cleaned = name.strip()
-            if not cleaned.lower().endswith("display"):
-                candidate_names.append(f"{cleaned} display")
-            if not cleaned.lower().endswith("speaker"):
-                candidate_names.append(f"{cleaned} speaker")
+            candidate_names = [name.strip()]
 
             # 1. Prefer known hosts (catalog / last scan). Host-based connections survive
             # discovery teardown; discovery-tied sockets do not (Zeroconf AssertionError).
@@ -275,13 +318,15 @@ class CastManager:
                 spk_room = (spk.get("room") or "").casefold()
                 for cand in candidate_names:
                     cand_fold = cand.casefold()
-                    if cand_fold in (spk_name, spk_room) or spk_name in cand_fold or cand_fold in spk_name:
+                    if cand_fold in (spk_name, spk_room):
                         host = spk.get("host")
                         port = spk.get("port", 8009)
                         if host and host != "local" and (host, port) not in seen_cand_hosts:
                             seen_cand_hosts.add((host, port))
                             fallback_candidates.append(spk)
 
+            if len(fallback_candidates) > 1:
+                raise ValueError(f"Ambiguous speaker: {name}")
             for spk in fallback_candidates:
                 host = spk["host"]
                 port = spk.get("port", 8009)
@@ -300,34 +345,6 @@ class CastManager:
                 except Exception as exc:
                     log.warning("Direct connection to known speaker %s:%s failed: %s", host, port, exc)
 
-            # 2. Native macOS dns-sd discovery & direct host connection
-            if sys.platform == "darwin":
-                dnssd_devices = _discover_via_dnssd()
-                for dev in dnssd_devices:
-                    dev_name = dev["name"].casefold()
-                    for cand in candidate_names:
-                        cand_fold = cand.casefold()
-                        if cand_fold == dev_name or cand_fold in dev_name or dev_name in cand_fold:
-                            log.info(
-                                "Found speaker '%s' via dns-sd matching '%s' at %s:%s",
-                                dev["name"],
-                                name,
-                                dev["host"],
-                                dev["port"],
-                            )
-                            try:
-                                return self._connect_from_host(
-                                    name,
-                                    (dev["host"], dev["port"], dev["uuid"], dev["model"], dev["name"]),
-                                )
-                            except Exception as exc:
-                                log.warning(
-                                    "dns-sd host connect to %s:%s failed: %s",
-                                    dev["host"],
-                                    dev["port"],
-                                    exc,
-                                )
-
             # 3. mDNS discovery — only to learn host/port, then reconnect via from_host
             # so stop_discovery() cannot kill the live socket's Zeroconf loop.
             try:
@@ -336,6 +353,8 @@ class CastManager:
                 )
                 host_tuple = None
                 try:
+                    if len(casts) > 1:
+                        raise ValueError(f"Ambiguous speaker: {name}")
                     if casts:
                         info = casts[0].cast_info
                         host_tuple = (
@@ -366,22 +385,6 @@ class CastManager:
             except Exception as exc:
                 log.debug("pychromecast get_listed_chromecasts error: %s", exc)
 
-            # 4. Configurable static host fallback via DEFAULT_SPEAKER_HOST
-            if self.default_speaker_host:
-                host_str = self.default_speaker_host
-                port_int = 8009
-                if ":" in host_str:
-                    host_str, port_part = host_str.rsplit(":", 1)
-                    port_int = int(port_part)
-                log.info("Attempting direct connection to configured DEFAULT_SPEAKER_HOST %s:%d", host_str, port_int)
-                try:
-                    return self._connect_from_host(
-                        name,
-                        (host_str, port_int, None, "Google Cast", name),
-                    )
-                except Exception as exc:
-                    log.warning("Direct connection to %s:%d failed: %s", host_str, port_int, exc)
-
             raise ValueError(f"Speaker not found: {name}")
 
     def close(self):
@@ -389,5 +392,5 @@ class CastManager:
             if isinstance(speaker, LocalSpeaker):
                 speaker.stop()
                 continue
-            speaker.executor.shutdown(wait=True, cancel_futures=True)
+            speaker.close()
             speaker.cast.disconnect()
