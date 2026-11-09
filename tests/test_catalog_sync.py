@@ -206,3 +206,32 @@ def test_bridge_reconciliation_wakes_gateway_and_advances_cloud_version(monkeypa
     assert sync.reconcile_cloud()['state'] == 'accepted'
     assert sync.load_sync_state()['version'] == 3
     assert sync.public_sync_status()['label'] == 'Google Home sync requested'
+
+
+def test_successful_upload_with_failed_homegraph_does_not_reupload(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync as sync
+
+    monkeypatch.setattr(sync.store, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(sync, '_retry_attempt', 0)
+    monkeypatch.setattr(sync, '_retry_stopped', False)
+    scheduled = []
+    monkeypatch.setattr(sync, '_schedule_push', scheduled.append)
+    sync.save_sync_state({'version': 5, 'last_push_status': 'failed', 'last_catalog_upload': 'succeeded'})
+    monkeypatch.setattr(sync, 'push_catalog_now', lambda: sync.load_sync_state())
+    sync._retry_push()
+    sync.resume_pending_push()
+    assert scheduled == []
+    assert sync.load_sync_state()['last_push_status'] == 'failed'
+
+
+def test_new_catalog_change_rearms_upload_after_previous_success(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync as sync
+
+    monkeypatch.setattr(sync.store, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(sync, '_retry_stopped', False)
+    scheduled = []
+    monkeypatch.setattr(sync, '_schedule_push', scheduled.append)
+    sync.save_sync_state({'version': 5, 'last_push_status': 'succeeded', 'last_catalog_upload': 'succeeded'})
+    state = sync.bump_and_schedule_push()
+    assert state['last_catalog_upload'] == 'pending'
+    assert scheduled == [2.0]

@@ -84,7 +84,7 @@ def _retry_push() -> None:
         if current.get("version") != state.get("version"):
             return  # A newer update already scheduled its own push.
         status = current.get("last_push_status")
-        if status in {"failed", "pending"}:
+        if status in {"failed", "pending"} and current.get("last_catalog_upload") != "succeeded":
             _retry_attempt += 1
             delay = min(_RETRY_MAX_SEC, _RETRY_BASE_SEC * (2 ** min(_retry_attempt - 1, 10)))
             _schedule_push(delay)
@@ -97,7 +97,7 @@ def bump_and_schedule_push(delay_sec: float = 2.0) -> dict[str, Any]:
     with _STATE_LOCK:
         state = load_sync_state()
         state = save_sync_state({"version": int(state.get("version") or 0) + 1,
-                                 "last_push_status": "pending", "last_error": None})
+                                 "last_push_status": "pending", "last_catalog_upload": "pending", "last_error": None})
         _schedule_push(delay_sec)
         return state
 
@@ -140,7 +140,7 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
     with _STATE_LOCK:
         catalog = json.loads(cat_path.read_text(encoding="utf-8"))
         version = int(load_sync_state().get("version") or 0) + 1
-        save_sync_state({"version": version, "last_push_status": "pending"})
+        save_sync_state({"version": version, "last_push_status": "pending", "last_catalog_upload": "pending"})
     body = json.dumps(
         {
             "version": version,
@@ -193,12 +193,13 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
         return save_result(
             {
                 "last_push_status": "failed",
+                "last_catalog_upload": "failed",
                 "last_error": f"HTTP {exc.code}: {detail}",
             }
         )
     except Exception as exc:
         log.warning("Catalog push failed: %s", exc)
-        return save_result({"last_push_status": "failed", "last_error": str(exc)})
+        return save_result({"last_push_status": "failed", "last_catalog_upload": "failed", "last_error": str(exc)})
 
 
 def reconcile_cloud() -> dict[str, Any]:
@@ -245,7 +246,8 @@ def resume_pending_push() -> None:
     global _retry_stopped
     with _STATE_LOCK:
         _retry_stopped = False
-        if load_sync_state().get("last_push_status") in {"pending", "failed"}:
+        state = load_sync_state()
+        if state.get("last_push_status") in {"pending", "failed"} and state.get("last_catalog_upload") != "succeeded":
             _schedule_push(2.0)
 
 
