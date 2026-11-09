@@ -267,7 +267,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": "plex-jukebox:Kitchen"}],
                             "execution": [{"command": "action.devices.commands.mediaNext", "params": {}}],
                         }
                     ]
@@ -288,7 +288,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": "plex-jukebox:Kitchen"}],
                             "execution": [
                                 {"command": "action.devices.commands.setVolume", "params": {"volumeLevel": 65}}
                             ],

@@ -208,3 +208,21 @@ def test_visible_disabled_still_exposed_for_sync_fingerprint():
     )
     assert is_google_home_exposed(rec) is True
     assert "plex-jukebox:Kitchen" in google_home_sync_fingerprint([rec])
+
+
+def test_distinct_uuids_with_identical_names_do_not_merge():
+    initial, _ = reconcile_speakers([], [{"name": "Speaker", "uuid": "0123456789abcdef1111"}])
+    result, _ = reconcile_speakers(initial, [
+        {"name": "Speaker", "uuid": "0123456789abcdef1111"},
+        {"name": "Speaker", "uuid": "0123456789abcdef2222"},
+    ])
+    assert len(result) == 2
+    assert len({record["id"] for record in result}) == 2
+
+
+def test_removed_speaker_stays_removed_on_rediscovery():
+    initial, _ = reconcile_speakers([], [{"name": "Speaker", "uuid": "abcdef0123456789"}])
+    initial[0]["removed"] = True
+    result, _ = reconcile_speakers(initial, [{"name": "Speaker", "uuid": "abcdef0123456789"}])
+    assert len(result) == 1
+    assert result[0]["removed"] is True

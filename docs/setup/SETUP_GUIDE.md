@@ -143,7 +143,7 @@ Account linking UX in the Google Home app continues to evolve (including deep-li
 1. Open the **Google Home** app (same Google account as the developer project).
 2. **Devices → + Add → Works with Google**.
 3. Select **`[test] Plex Cast Bridge`**.
-4. Sign in on the Cloud Run login page (branded **Plex Cast Bridge**). Admin passphrase is optional when `REQUIRE_ADMIN_PASSPHRASE=false`.
+4. Sign in on the Cloud Run login page (branded **Plex Cast Bridge**). Enter the configured admin passphrase to approve linking.
 5. In the dashboard, enable **Show in Google Home** for each Cast destination you want exposed, then **Refresh & Sync Google Home**.
 6. In the Google Home app, assign each virtual device (for example **Kitchen Plex**) to the room you prefer. `room_hint` from the bridge is only a suggestion.
 

@@ -196,11 +196,6 @@ def find_speaker_record(catalog_data: dict[str, Any], device_id: str | None) -> 
     for spk in catalog_data.get("speakers") or []:
         if _device_id(spk) == device_id:
             return spk
-    # Legacy single-device id used before per-speaker SYNC.
-    if device_id == DEVICE_ID:
-        for spk in catalog_data.get("speakers") or []:
-            if _speaker_is_exposed(spk):
-                return spk
     return None
 
 
@@ -225,6 +220,10 @@ def resolve_execute_speaker(
         return None, "deviceTurnedOff"
     target = _playback_target(spk)
     if not target:
+        return None, "deviceNotFound"
+    # The bridge currently routes by name; ambiguous names cannot be routed safely.
+    if sum(1 for other in catalog_data.get("speakers") or []
+           if not other.get("removed") and (_playback_target(other) or "").casefold() == target.casefold()) != 1:
         return None, "deviceNotFound"
     return target, None
 

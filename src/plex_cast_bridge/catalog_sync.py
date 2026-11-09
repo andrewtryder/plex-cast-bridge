@@ -120,13 +120,20 @@ def push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
         with request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         sync = (payload.get("request_sync") or {}).get("state")
-        # Catalog upload success is enough for bridge health; HomeGraph Request Sync can
-        # fail when the account is not linked yet (or Home Console project differs).
-        sync_ok = sync in {None, "succeeded", "pending", "skipped", "failed"}
+        upload_ok = bool(payload.get("meta"))
         sync_detail = (payload.get("request_sync") or {}).get("detail")
+        if not upload_ok or sync == "failed":
+            overall = "failed"
+        elif sync == "pending":
+            overall = "pending"
+        elif force_sync and sync not in {"succeeded", "skipped"}:
+            overall = "pending"
+        else:
+            overall = "succeeded"
         return save_sync_state(
             {
-                "last_push_status": "succeeded" if sync_ok and payload.get("meta") else (sync or "failed"),
+                "last_push_status": overall,
+                "last_catalog_upload": "succeeded" if upload_ok else "failed",
                 "last_error": None if sync in {None, "succeeded", "pending", "skipped"} else sync_detail,
                 "last_cloud_meta": payload.get("meta"),
                 "last_request_sync": payload.get("request_sync"),
@@ -182,6 +189,7 @@ def public_sync_status() -> dict[str, Any]:
         "cloud_gateway_configured": bool(state.get("cloud_gateway_url")),
         "updated_at": state.get("updated_at"),
         "last_request_sync": state.get("last_request_sync"),
+        "last_catalog_upload": state.get("last_catalog_upload"),
         "linked": linked,
         "note": (
             "Cast speakers are physical destinations. Virtual Plex devices are what Google Home lists. "

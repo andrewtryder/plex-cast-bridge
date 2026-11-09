@@ -1651,7 +1651,7 @@
       });
     } else if (step.id === 'link_home') {
       box.innerHTML = `
-        <p class="conn-meta">No typing needed — linking is one-tap. Use <strong>Back</strong> anytime to revisit earlier steps.</p>
+        <p class="conn-meta">Approve linking with your Cloud Run admin passphrase. Use <strong>Back</strong> anytime to revisit earlier steps.</p>
         <ol class="gh-howto" id="ghLinkHowto">
           <li>On your phone, open the <strong>Google Home</strong> app (same Google account as Developer Console)</li>
           <li><strong>Devices</strong> → <strong>Add / +</strong> → <strong>Works with Google</strong></li>
@@ -1662,7 +1662,7 @@
         </ol>
         <details class="advanced-block" style="margin-top:12px">
           <summary>Optional: passphrase mode / copy admin passphrase</summary>
-          <p class="conn-meta">Only needed if you set <code>REQUIRE_ADMIN_PASSPHRASE=true</code> on Cloud Run.</p>
+          <p class="conn-meta">Required to approve Google Home account linking.</p>
           <ul class="gh-paste-list" id="ghLinkPasteList"></ul>
           <div class="conn-actions" style="margin-top:8px">
             <button type="button" class="ghost-button" id="ghLoadLinkSecrets">Load passphrase from this Mac</button>

@@ -38,7 +38,7 @@ def new_google_home_device_id(cast_uuid: str | None = None) -> str:
     """Opaque stable Google Home device id for newly discovered destinations."""
     token = (cast_uuid or "").replace("-", "").strip().lower()
     if len(token) >= 8:
-        return f"{DEVICE_ID_PREFIX}:cast-{token[:16]}"
+        return f"{DEVICE_ID_PREFIX}:cast-{token}"
     return f"{DEVICE_ID_PREFIX}:id-{secrets.token_hex(8)}"
 
 
@@ -171,7 +171,6 @@ def _match_existing(
 ) -> dict[str, Any] | None:
     uuid = _norm(discovered.get("uuid") or discovered.get("cast_uuid"))
     name = _norm(discovered.get("name"))
-    host = (discovered.get("host") or "").strip()
 
     if uuid:
         for rec in existing:
@@ -180,22 +179,14 @@ def _match_existing(
             if _norm(rec.get("cast_uuid")) == uuid:
                 return rec
 
+    # Only attach a UUID to an unambiguous legacy record without an identity.
+    # A different known UUID must never be merged, even if its name or IP matches.
     if name:
-        for rec in existing:
-            if rec["google_home_device_id"] in used_ids:
-                continue
-            if _norm(rec.get("speaker_name")) == name:
-                return rec
-
-    if host and host != "local":
-        candidates = [
-            rec
-            for rec in existing
-            if rec["google_home_device_id"] not in used_ids
-            and (rec.get("host") or "").strip() == host
-        ]
+        candidates = [rec for rec in existing if _norm(rec.get("speaker_name")) == name]
         if len(candidates) == 1:
-            return candidates[0]
+            rec = candidates[0]
+            if not rec.get("cast_uuid") and rec["google_home_device_id"] not in used_ids:
+                return rec
     return None
 
 
@@ -225,11 +216,28 @@ def reconcile_speakers(
     used_ids: set[str] = set()
     result: list[dict[str, Any]] = []
 
+    seen_uuids: set[str] = set()
+    name_counts: dict[str, int] = {}
+    for dev in discovered:
+        key = _norm(dev.get("name"))
+        name_counts[key] = name_counts.get(key, 0) + 1
+
     for dev in discovered:
         name = (dev.get("name") or "").strip()
         if not name or name.casefold() == "test speaker":
             continue
-        matched = _match_existing(dev, existing, used_ids)
+        uuid_key = _norm(dev.get("uuid") or dev.get("cast_uuid"))
+        if uuid_key and uuid_key in seen_uuids:
+            continue
+        if uuid_key:
+            seen_uuids.add(uuid_key)
+        # Ambiguous discovery names cannot safely identify legacy records.
+        match_dev = dev if name_counts[_norm(name)] == 1 else {**dev, "name": ""}
+        matched = _match_existing(match_dev, existing, used_ids)
+        if matched and matched.get("removed"):
+            used_ids.add(matched["google_home_device_id"])
+            result.append(matched)
+            continue
         room = (dev.get("room") or extract_room_name(name)).strip()
         model = dev.get("model") or "Google Cast"
         cast_uuid = (dev.get("uuid") or "").strip()

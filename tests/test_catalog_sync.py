@@ -118,3 +118,30 @@ def test_production_init_does_not_silently_mock(monkeypatch):
     assert store.storage_ok is False
     health = store.health()
     assert health["storage_ok"] is False
+
+
+def test_failed_request_sync_is_not_reported_as_success(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync
+
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text('{}')
+    state = {"cloud_gateway_url": "https://example.test", "catalog_write_key": "key"}
+    monkeypatch.setattr(catalog_sync, "load_sync_state", lambda: state.copy())
+    monkeypatch.setattr(catalog_sync, "save_sync_state", lambda patch: state.update(patch) or state.copy())
+    monkeypatch.setattr(catalog_sync.store, "get_catalog_path", lambda **kwargs: catalog_path)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return json.dumps({"meta": {"version": 1}, "request_sync": {"state": "failed", "detail": "offline"}}).encode()
+
+    monkeypatch.setattr(catalog_sync.request, "urlopen", lambda *args, **kwargs: Response())
+    result = catalog_sync.push_catalog_now()
+    assert result["last_catalog_upload"] == "succeeded"
+    assert result["last_push_status"] == "failed"
+    assert result["last_error"] == "offline"
