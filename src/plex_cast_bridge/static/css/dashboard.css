@@ -58,11 +58,9 @@
     color: var(--ink); text-decoration: none;
   }
   .brand-icon {
-    width: 31px; height: 31px; border-radius: 50%;
-    background: #e8e1d3; color: #1a1b16;
-    display: grid; place-items: center; flex: none;
+    width: 31px; height: 31px; border-radius: 7px;
+    object-fit: contain; flex: none;
   }
-  .brand-icon svg { width: 18px; height: 18px; stroke-width: 2.1; }
   .brand-name { font-size: 15px; font-weight: 690; letter-spacing: -.025em; white-space: nowrap; }
   .primary-nav { height: 100%; display: flex; align-items: stretch; gap: 34px; }
   .primary-nav a {

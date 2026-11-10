@@ -43,7 +43,7 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     if max_v is None:
         max_v = 0.85
     if default_v is None:
-        default_v = 0.20
+        default_v = 0.40
     if default_v > max_v:
         default_v = max_v
     if night_v is not None and night_v > max_v:

@@ -6,6 +6,8 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#121310">
 <title>Player — Plex Cast Bridge</title>
+<link rel="icon" type="image/png" href="/assets/icon.png">
+<link rel="apple-touch-icon" href="/assets/icon.png">
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
@@ -28,7 +30,7 @@
 <header class="masthead">
   <div class="shell masthead-inner">
     <a href="#player" class="brand" aria-label="Plex Cast Bridge home">
-      <span class="brand-icon" aria-hidden="true"><svg class="icon"><use href="#wave-icon"/></svg></span>
+      <img class="brand-icon" src="/assets/icon.png" alt="" width="31" height="31">
       <span class="brand-name">Plex Cast Bridge</span>
     </a>
     <nav class="primary-nav" aria-label="Main navigation">
@@ -280,10 +282,10 @@
 
     <div class="settings-panel" data-settings-panel="playback" hidden>
       <div class="conn-card">
-        <h2 class="conn-title">Volume safety</h2>
-        <p class="conn-meta">Startup / clamp limits for Cast from this bridge. Saved to <code>data/app_settings.json</code> (overrides env). Live transport volume stays on the Player page.</p>
+        <h2 class="conn-title">Playback volume</h2>
+        <p class="conn-meta">Each Cast session starts at the default level. When playback ends, the bridge restores that speaker's previous volume.</p>
         <div class="field-wrap">
-          <label class="field-label" for="defaultVolumeInput">Default volume (%)</label>
+          <label class="field-label" for="defaultVolumeInput">Default playback volume (%)</label>
           <input id="defaultVolumeInput" class="field-select" type="number" min="0" max="100" step="1" inputmode="numeric" aria-label="Default cast volume percent">
         </div>
         <div class="field-wrap" style="margin-top:0.75rem">
@@ -313,6 +315,12 @@
           <button type="button" class="ghost-button" id="diagTestBtn">Run Google Home test</button>
         </div>
         <details class="advanced-block"><summary>Technical</summary><pre id="diagTechnical" class="console-values"></pre></details>
+      </div>
+      <div class="conn-card">
+        <h2 class="conn-title">Recent bridge activity</h2>
+        <p class="conn-meta">Shows Google Home commands received by this bridge and Cast playback state changes. Voice requests handled directly by a display may not appear.</p>
+        <button type="button" class="ghost-button" id="activityRefreshBtn">Refresh activity</button>
+        <pre id="activityList" class="console-values" aria-live="polite">Loading…</pre>
       </div>
     </div>
 
@@ -1355,8 +1363,8 @@
       $('maxVolumeInput').value = pctFromUnit(vols.max_cast_volume);
       const stored = data.stored?.configured;
       $('volumeSettingsHint').textContent = stored
-        ? 'Using values from data/app_settings.json (overrides .env).'
-        : 'Using defaults from .env / server config. Save to create data/app_settings.json.';
+        ? 'Your volume settings are saved.'
+        : 'Using the default volume settings.';
       renderLibrarySummary(data.library);
     } catch (err) {
       $('volumeSettingsHint').textContent = err.message || 'Could not load settings';
@@ -2463,10 +2471,22 @@
         list.appendChild(row);
       });
       if ($('diagTechnical')) $('diagTechnical').textContent = JSON.stringify(data.technical || {}, null, 2);
+      await refreshActivity();
     } catch (err) {
       announce(err.message || 'Diagnostics failed');
     }
   }
+  async function refreshActivity() {
+    try {
+      const data = await api('/api/activity');
+      $('activityList').textContent = (data.events || []).map((event) =>
+        `${new Date(event.time).toLocaleTimeString()} · ${event.source} · ${event.event}${event.speaker ? ` · ${event.speaker}` : ''}`
+      ).join('\n') || 'No activity observed since the bridge started.';
+    } catch (_) {
+      $('activityList').textContent = 'Could not load activity.';
+    }
+  }
+  $('activityRefreshBtn')?.addEventListener('click', refreshActivity);
   $('diagRefreshBtn')?.addEventListener('click', refreshDiagnostics);
   $('diagTestBtn')?.addEventListener('click', async () => {
     try {
