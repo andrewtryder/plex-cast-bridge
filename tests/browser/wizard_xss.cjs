@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, '../..');
     await page.route('**/*', async route => {
       const p = new URL(route.request().url()).pathname;
       if (p === '/') return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(root, 'src/plex_cast_bridge/templates/dashboard.html')) });
+      if (p.startsWith('/static/dashboard/')) return route.fulfill({contentType:'text/javascript', body:fs.readFileSync(path.join(root,'src/plex_cast_bridge/static/dashboard',p.split('/').pop()))});
       if (p === '/static/css/dashboard.css') return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(path.join(root, 'src/plex_cast_bridge/static/css/dashboard.css')) });
       const body = p === '/api/google-home/status' ? { setup: { current_step: step, project_id: payload, billing_url: 'javascript:alert(1)', provision_progress: { test: payload } } } : p === '/api/speakers' ? [] : {};
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });

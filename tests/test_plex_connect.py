@@ -216,7 +216,11 @@ def test_dashboard_has_settings_and_connect():
     assert 'id="settingsPage"' in html
     assert 'href="#settings"' in html
     assert "Connect with Plex" in html
-    assert "/api/plex/connect/start" in html
+    assert 'src="/static/dashboard/app.js"' in html
+    script = Path(__file__).resolve().parents[1].joinpath(
+        "src/plex_cast_bridge/static/dashboard/app.js"
+    ).read_text(encoding="utf-8")
+    assert "/api/plex/connect/start" in script
     assert 'id="playerPage"' in html
     assert 'id="djPage"' in html
     assert "Demo data only" not in html
