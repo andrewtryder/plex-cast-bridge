@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, '../..');
     await page.route('**/*', async route => {
       const req = route.request(), p = new URL(req.url()).pathname;
       if (p === '/') return route.fulfill({contentType:'text/html', body:fs.readFileSync(path.join(root,'src/plex_cast_bridge/templates/dashboard.html'))});
+      if (p.startsWith('/static/dashboard/')) return route.fulfill({contentType:'text/javascript', body:fs.readFileSync(path.join(root,'src/plex_cast_bridge/static/dashboard',p.split('/').pop()))});
       if (p === '/static/css/dashboard.css') return route.fulfill({contentType:'text/css', body:fs.readFileSync(path.join(root,'src/plex_cast_bridge/static/css/dashboard.css'))});
       let body = {};
       if (p === '/api/speakers') body = [];

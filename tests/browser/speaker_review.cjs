@@ -7,7 +7,8 @@ for (const width of [1440,390]) {
  let dev={id:'plex-jukebox:a',google_home_device_id:'plex-jukebox:a',name:'Kitchen',google_home_name:'Kitchen Plex',model:'Nest',enabled:true,google_home_visible:false,availability:'online'};let sync='pending', actions=[]; let fail=false;
  await page.route('**/*',async route=>{let req=route.request(),url=new URL(req.url()),p=url.pathname,method=req.method();let out={};
  if(p==='/')return route.fulfill({contentType:'text/html',body:fs.readFileSync(root+'/templates/dashboard.html')});
- if(p==='/static/css/dashboard.css')return route.fulfill({contentType:'text/css',body:fs.readFileSync(root+'/static/css/dashboard.css')});
+ if (p.startsWith('/static/dashboard/')) return route.fulfill({contentType:'text/javascript', body:fs.readFileSync(root+'/static/dashboard/'+p.split('/').pop())});
+      if(p==='/static/css/dashboard.css')return route.fulfill({contentType:'text/css',body:fs.readFileSync(root+'/static/css/dashboard.css')});
  if(p==='/api/speakers/refresh'){actions.push('refresh');if(fail)return route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({detail:'Scan failed'})});out={speakers:[dev],summary:{message:'Scan complete'}}}
  else if(p==='/api/speakers')out=[dev];
  else if(p.startsWith('/api/speakers/')&&method==='PATCH'){actions.push('patch');Object.assign(dev,req.postDataJSON());out=dev}
