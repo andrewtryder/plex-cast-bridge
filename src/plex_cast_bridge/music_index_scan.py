@@ -85,9 +85,12 @@ def _total_tracks(plex: Any, library_id: str) -> int:
 
 
 def _library_revision(plex: Any, library_id: str) -> str | None:
-    """Fetch a fresh section revision; fall back to PlexAPI's cached object if needed."""
+    """Fetch a fresh section revision, returning unknown on errors to force a full scan."""
+    query = getattr(getattr(plex, 'server', None), 'query', None)
+    if not callable(query):
+        return None
     try:
-        sections = plex.server.query('/library/sections')
+        sections = query('/library/sections')
         for section in sections.iter('Directory'):
             if str(section.get('key') or section.get('id')) == str(library_id):
                 updated = section.get('updatedAt')
@@ -95,9 +98,7 @@ def _library_revision(plex: Any, library_id: str) -> str | None:
                     return str(updated)
     except Exception:
         log.debug('Could not read Plex library revision; will perform a full scan', exc_info=True)
-    library = plex.library
-    value = getattr(library, 'updatedAt', None)
-    return value.isoformat() if hasattr(value, 'isoformat') else (str(value) if value else None)
+    return None
 
 
 def _can_skip_full_scan(revision: str | None, state: dict, total: int, indexed_count: int,
