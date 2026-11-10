@@ -193,7 +193,7 @@ echo "Saved LOCAL_API_KEY=${LOCAL_API_KEY}"
 ```
 
 > [!IMPORTANT]
-> **Local API auth is required.** The bridge refuses to start without `LOCAL_API_KEY` unless you explicitly set `ALLOW_UNAUTHENTICATED_LOCAL_API=true`. Prefer `X-API-Key` for API clients; the dashboard accepts a one-time `?api_key=` bootstrap that is stripped from the browser URL after load.
+> **Local API auth is required.** The bridge refuses to start without `LOCAL_API_KEY` unless you explicitly set `ALLOW_UNAUTHENTICATED_LOCAL_API=true`. API clients can send `X-API-Key`. A dashboard browser requests access and is approved by an existing browser or the local SSH/CLI recovery command. Plain HTTP exposes sessions to network observers; use a trusted LAN or HTTPS.
 
 ### 3. Copy GCP Service Account Credentials
 
@@ -257,7 +257,7 @@ plex-cast-bridge    ghcr.io/andrewtryder/plex-cast-bridge:latest   "uvicorn plex
 ### Step 1: Open the Web Dashboard
 From any browser on your home LAN, open:
 ```
-http://<PROXMOX_HOST_IP>:8000/?api_key=<LOCAL_API_KEY>
+http://<BRIDGE_IP>:8000/
 ```
 Prefer `X-API-Key` for scripts; the query-string bootstrap is stripped after the page loads.
 

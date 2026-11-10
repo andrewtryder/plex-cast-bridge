@@ -40,7 +40,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Open `http://<host>:8000/?api_key=<LOCAL_API_KEY>`, discover speakers, and play.
+Open `http://<host>:8000/` and request dashboard access. Approve the displayed code in an already authorized browser, or on the bridge run `docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE`. Discover speakers and play. HTTP sessions can be captured by network observers; use a trusted LAN or configure HTTPS.
 
 Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
 

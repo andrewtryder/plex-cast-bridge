@@ -68,7 +68,7 @@ set **Visibility → Public**, then retry the pull. A public GitHub repo does **
 
 ## 4. Open the dashboard
 
-Visit `http://<host>:8000/?api_key=<LOCAL_API_KEY>` once (the key is stripped from the URL after load). Prefer sending `X-API-Key` from scripts.
+Visit `http://<host>:8000/` and request access. Approve the matching code in an authorized dashboard, or run `docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE` on the host. Scripts can send `X-API-Key`. HTTP exposes the session to network observers, so use a trusted LAN or HTTPS.
 
 From the dashboard:
 

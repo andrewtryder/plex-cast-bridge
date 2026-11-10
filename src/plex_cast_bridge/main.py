@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .ai_router import SmartDJ
@@ -29,6 +30,7 @@ from .plex_routes import router as plex_router
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 from .routes import router
+from .session_routes import router as session_router
 from . import catalog_sync
 
 log = logging.getLogger(__name__)
@@ -239,10 +241,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Plex Cast Bridge", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def reject_url_api_keys(request, call_next):
+    if "api_key" in request.query_params:
+        return JSONResponse({"detail": "API keys in URLs are not accepted"}, status_code=400)
+    response = await call_next(request)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 _STATIC = Path(__file__).resolve().parent / "static"
 if _STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 app.include_router(router)
+app.include_router(session_router)
 app.include_router(plex_router)
 app.include_router(google_home_router)
 

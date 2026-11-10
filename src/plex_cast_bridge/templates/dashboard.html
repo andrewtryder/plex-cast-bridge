@@ -11,6 +11,16 @@
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
+<section id="dashboardAccess" class="shell" aria-label="Dashboard access" hidden>
+  <div class="conn-card">
+    <h2 class="conn-title">Dashboard access</h2>
+    <p class="conn-meta">Request access, then approve the matching code in an already authorized dashboard. An administrator can also approve it from the bridge over SSH.</p>
+    <p id="dashboardHttpWarning" class="conn-meta" hidden>This dashboard uses HTTP. Anyone who can observe your network traffic may capture your session. Use only on a trusted network.</p>
+    <button type="button" class="accent-button" id="dashboardRequestAccess">Request access</button>
+    <p id="dashboardAccessStatus" role="status" aria-live="polite"></p>
+    <p class="conn-meta">Local recovery: <code>docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE</code></p>
+  </div>
+</section>
 <svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
   <symbol id="play-icon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" stroke="none" fill="currentColor"/></symbol>
   <symbol id="pause-icon" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/></symbol>
@@ -177,6 +187,17 @@
     </nav>
 
     <div class="settings-panel" data-settings-panel="connections">
+      <div class="conn-card">
+        <h2 class="conn-title">Dashboard access</h2>
+        <p class="conn-meta">Approve another browser only after checking that its code matches.</p>
+        <p id="dashboardSessionWarning" class="conn-meta" hidden>This dashboard uses HTTP; network observers may capture your session. Use only on a trusted network.</p>
+        <div id="dashboardPendingRequests" aria-live="polite"></div>
+        <div class="conn-actions">
+          <button type="button" class="ghost-button" id="dashboardRefreshRequests">Refresh requests</button>
+          <button type="button" class="ghost-button" id="dashboardRevokeOthers">Sign out other browsers</button>
+          <button type="button" class="ghost-button" id="dashboardLogout">Sign out</button>
+        </div>
+      </div>
     <div class="conn-card">
       <div class="conn-row">
         <div>
@@ -364,16 +385,15 @@
   const MAX_RECENTS = 8;
   const POLL_MS = 5000;
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const bootstrappedKey = urlParams.get('api_key');
-  const localApiKey = bootstrappedKey || localStorage.getItem('plex_cast_api_key') || '';
-  if (bootstrappedKey) {
-    localStorage.setItem('plex_cast_api_key', bootstrappedKey);
-    urlParams.delete('api_key');
-    const cleaned = urlParams.toString();
-    const nextUrl = window.location.pathname + (cleaned ? `?${cleaned}` : '') + window.location.hash;
-    window.history.replaceState({}, document.title, nextUrl);
-  }
+  // One-time upgrade of previously enrolled browsers. Never persist a new API key.
+  const migrationReady = (async () => {
+    const oldKey = localStorage.getItem('plex_cast_api_key');
+    if (!oldKey) return;
+    try {
+      const response = await fetch('/api/session/migrate', {method: 'POST', headers: {'X-API-Key': oldKey}});
+      if (response.ok) localStorage.removeItem('plex_cast_api_key');
+    } catch (_) { /* Retry on a later page load. */ }
+  })();
 
   let speakers = [];
   let selected = localStorage.getItem(SPEAKER_KEY) || '';
@@ -390,10 +410,72 @@
   let plexConnecting = false;
 
   function authHeaders(extra = {}) {
-    const h = { 'Content-Type': 'application/json', ...extra };
-    if (localApiKey) h['X-API-Key'] = localApiKey;
-    return h;
+    return { 'Content-Type': 'application/json', ...extra };
   }
+
+  $('dashboardHttpWarning').hidden = window.location.protocol === 'https:';
+  $('dashboardSessionWarning').hidden = window.location.protocol === 'https:';
+  let dashboardClaimTimer = null;
+  let dashboardExpiryTimer = null;
+  async function refreshDashboardRequests() {
+    try {
+      const response = await fetch('/api/session/pending');
+      if (!response.ok) return;
+      const data = await response.json();
+      const target = $('dashboardPendingRequests');
+      target.replaceChildren();
+      for (const item of data.requests || []) {
+        const row = document.createElement('div');
+        const label = document.createElement('span');
+        label.textContent = `Code ${item.code} `;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'ghost-button'; button.textContent = 'Approve';
+        button.addEventListener('click', async () => {
+          if (!window.confirm(`Does ${item.code} match the code on the new browser?`)) return;
+          try {
+            await api('/api/session/approve', {method:'POST', body:JSON.stringify({code:item.code})});
+            announce('Browser approved');
+            await refreshDashboardRequests();
+          } catch (err) { announce(err.message || 'Approval failed'); }
+        });
+        row.append(label, button); target.appendChild(row);
+      }
+      if (!target.childNodes.length) target.textContent = 'No access requests waiting.';
+    } catch (_) { /* The dashboard may not be authenticated yet. */ }
+  }
+  $('dashboardRequestAccess').addEventListener('click', async () => {
+    try {
+      const response = await fetch('/api/session/request', {method:'POST'});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not request access');
+      $('dashboardAccessStatus').textContent = `Approval code: ${data.code}. This request expires in five minutes.`;
+      clearInterval(dashboardClaimTimer);
+      clearTimeout(dashboardExpiryTimer);
+      dashboardClaimTimer = setInterval(async () => {
+        try {
+          const result = await fetch('/api/session/claim', {method:'POST'});
+          if (result.ok && (await result.json()).status === 'authenticated') {
+            clearInterval(dashboardClaimTimer); window.location.reload();
+          }
+        } catch (_) { /* Keep polling until approval or expiry. */ }
+      }, 2000);
+      dashboardExpiryTimer = setTimeout(() => {
+        clearInterval(dashboardClaimTimer);
+        $('dashboardAccessStatus').textContent = 'Request expired. Request access again if needed.';
+      }, data.expires_in * 1000);
+    } catch (err) { $('dashboardAccessStatus').textContent = err.message; }
+  });
+  $('dashboardRefreshRequests').addEventListener('click', refreshDashboardRequests);
+  $('dashboardRevokeOthers').addEventListener('click', async () => {
+    if (!window.confirm('Sign out all other dashboard browsers?')) return;
+    try { await api('/api/session/revoke-others', {method:'POST'}); announce('Other browsers signed out'); }
+    catch (err) { announce(err.message); }
+  });
+  $('dashboardLogout').addEventListener('click', async () => {
+    try { await api('/api/session/logout', {method:'POST'}); window.location.reload(); }
+    catch (err) { announce(err.message); }
+  });
+  setInterval(refreshDashboardRequests, 10000);
 
   async function readJson(res) {
     const text = await res.text();
@@ -909,7 +991,7 @@
     if (authFailed) {
       const row = document.createElement('div');
       row.className = 'error-row';
-      row.textContent = 'Unauthorized. Set LOCAL_API_KEY and open this page with ?api_key=… once to store it.';
+      row.textContent = 'Dashboard access is required. Request approval above.';
       list.appendChild(row);
       return;
     }
@@ -1047,6 +1129,7 @@
   }
 
   async function api(path, options = {}) {
+    await migrationReady;
     const res = await fetch(path, {
       ...options,
       headers: { ...authHeaders(), ...(options.headers || {}) },
@@ -1054,7 +1137,8 @@
     if (res.status === 401) {
       authFailed = true;
       setConnection(false, 'Auth required');
-      throw new Error('Unauthorized: pass LOCAL_API_KEY via ?api_key= once, or set the X-API-Key header.');
+      $('dashboardAccess').hidden = false;
+      throw new Error('Dashboard access requires approval.');
     }
     const data = await readJson(res);
     if (!res.ok) throw new Error(errorDetail(data, `HTTP ${res.status}`));
