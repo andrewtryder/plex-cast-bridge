@@ -13,44 +13,6 @@
     "Relaxing acoustic",
     "Late night jazz"
   ],
-  "inputs": [
-    "Living Room",
-    "Kitchen"
-  ],
-  "speakers": [
-    {
-      "id": "plex-jukebox:Living Room",
-      "name": "Plex",
-      "nicknames": [
-        "Living Room Plex",
-        "Plex",
-        "Plex Cast Bridge",
-        "Plex Radio"
-      ],
-      "roomHint": "Living Room",
-      "speaker_name": "Living Room",
-      "model": "Google Nest Mini",
-      "host": "",
-      "port": 8009,
-      "uuid": "",
-      "enabled": true
-    },
-    {
-      "id": "plex-jukebox:Kitchen",
-      "name": "Plex",
-      "nicknames": [
-        "Kitchen Plex",
-        "Plex",
-        "Plex Cast Bridge",
-        "Plex Radio"
-      ],
-      "roomHint": "Kitchen",
-      "speaker_name": "Kitchen",
-      "model": "Google Nest Hub",
-      "host": "",
-      "port": 8009,
-      "uuid": "",
-      "enabled": true
-    }
-  ]
+  "inputs": [],
+  "speakers": []
 }

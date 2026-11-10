@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .ai_router import SmartDJ
-from .api_auth import verify_local_api
 from .api_models import Command, SpeakerTest, SpeakerToggle, Transport
 from .cast_manager import CastManager
 from .catalog_store import (
@@ -30,7 +29,6 @@ from .plex_routes import router as plex_router
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 from .routes import router
-from .session_routes import router as session_router
 from . import catalog_sync
 
 log = logging.getLogger(__name__)
@@ -101,13 +99,7 @@ async def lifespan(app: FastAPI):
         )
     app.state.settings = settings
     app.state.plex_auth = PlexAuthService()
-    if not settings.local_api_key or not settings.local_api_key.get_secret_value():
-        log.warning(
-            "Local control API running without LOCAL_API_KEY "
-            "(ALLOW_UNAUTHENTICATED_LOCAL_API=true). Restrict to a trusted LAN."
-        )
-    else:
-        log.info("LOCAL_API_KEY authentication enabled for local API control endpoints.")
+    log.warning("Local dashboard and control API are unauthenticated; restrict access to a trusted network.")
 
     try:
         plex_attempts = 1 if skip_auto_discovery else int(os.environ.get("PCB_PLEX_STARTUP_ATTEMPTS", "5") or "5")
@@ -256,7 +248,6 @@ _STATIC = Path(__file__).resolve().parent / "static"
 if _STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 app.include_router(router)
-app.include_router(session_router)
 app.include_router(plex_router)
 app.include_router(google_home_router)
 
@@ -273,5 +264,4 @@ __all__ = [
     "lifespan",
     "play",
     "transport",
-    "verify_local_api",
 ]

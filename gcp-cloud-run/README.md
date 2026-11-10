@@ -82,7 +82,7 @@ gcloud run services update <service> --project <project> --region <region> \
   --image <tested-image-by-digest>
 ```
 
-See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. Dashboard sessions and the local catalog also require the existing `data/` mount. Normal code updates should not require relinking; Google may still require a new link after expiry, revocation, or an unrelated integration problem. Verify linking and Request Sync separately after an upgrade.
+See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. The local catalog and Plex connection require the existing `data/` mount. Normal code updates should not require relinking; Google may still require a new link after expiry, revocation, or an unrelated integration problem. Verify linking and Request Sync separately after an upgrade.
 
 For first-time provisioning only, `./gcp-cloud-run/deploy.sh` requires an explicitly prepared `.env` and performs infrastructure changes. It automatically:
 1. Copies the canonical root `catalog.json` into `gcp-cloud-run/catalog.json` for the Docker build context.

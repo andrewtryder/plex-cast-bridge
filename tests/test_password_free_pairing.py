@@ -1,9 +1,8 @@
-"""Linking requires an authenticated dashboard approval matching the phone code."""
+"""Linking requires dashboard approval matching the phone code."""
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 
 from plex_cast_bridge import catalog_store
 from plex_cast_bridge.main import app as local_app
@@ -25,13 +24,10 @@ def test_dashboard_to_gateway_pairing_flow(client, test_settings, tmp_path, monk
         return result.json()
     with patch('plex_cast_bridge.catalog_sync.pairing_gateway_request', side_effect=gateway):
         with TestClient(local_app) as dashboard:
-            local_app.state.settings.local_api_key = SecretStr('dashboard-key')
-            assert dashboard.get('/api/google-home/pairing').status_code == 401
-            headers = {'X-API-Key': 'dashboard-key'}
-            pending = dashboard.get('/api/google-home/pairing', headers=headers).json()['pending']
+            pending = dashboard.get('/api/google-home/pairing').json()['pending']
             assert pending['code'] in page.text
-            assert 'test-catalog-key' not in dashboard.get('/api/google-home/pairing', headers=headers).text
-            assert dashboard.post('/api/google-home/pairing/approve', headers=headers, json=pending).status_code == 200
+            assert 'test-catalog-key' not in dashboard.get('/api/google-home/pairing').text
+            assert dashboard.post('/api/google-home/pairing/approve', json=pending).status_code == 200
     assert calls == ['/internal/oauth/pending', '/internal/oauth/pending', '/internal/oauth/approve']
     status = client.post('/oauth/pairing/status', json={'ticket': pending['ticket']})
     assert status.json()['status'] == 'approved'

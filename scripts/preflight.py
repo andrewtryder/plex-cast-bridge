@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """First-run setup validation for Plex Cast Bridge.
 
-Checks environment, Plex reachability, local API auth, and optional Pub/Sub
+Checks environment, Plex reachability, network access, and optional Pub/Sub
 credentials. Exit code 0 when all required checks pass.
 """
 
@@ -64,23 +64,7 @@ def check_env(file_vals: dict[str, str]) -> bool:
         _fail("PLEX_TOKEN is missing")
         ok = False
 
-    local_key = _env("LOCAL_API_KEY", file_vals)
-    allow_unauth = _env("ALLOW_UNAUTHENTICATED_LOCAL_API", file_vals).lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if local_key:
-        _ok("LOCAL_API_KEY is set")
-    elif allow_unauth:
-        _warn("LOCAL_API_KEY unset; ALLOW_UNAUTHENTICATED_LOCAL_API=true (trusted LAN only)")
-    else:
-        _fail(
-            "LOCAL_API_KEY is required unless ALLOW_UNAUTHENTICATED_LOCAL_API=true "
-            "(generate with: openssl rand -hex 32)"
-        )
-        ok = False
+    _warn("Dashboard and local APIs are unauthenticated; restrict access to a trusted network")
 
     if _env("GEMINI_API_KEY", file_vals):
         _ok("GEMINI_API_KEY is set (Smart DJ)")

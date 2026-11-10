@@ -11,7 +11,6 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 DIAG_URL="${DIAG_URL:-http://127.0.0.1:8000/api/diagnostics}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP"
-API_KEY="${LOCAL_API_KEY:-}"
 VERIFY_ROLLBACK="${VERIFY_ROLLBACK:-1}"
 
 ACTION="${1:-upgrade}"
@@ -271,15 +270,7 @@ fi
 
 echo "Layered check: diagnostics (non-secret)…"
 diag_ok=1
-if [[ -z "$API_KEY" && -f "$APP_DIR/.env" ]]; then
-  API_KEY="$(grep -E '^LOCAL_API_KEY=' "$APP_DIR/.env" | cut -d= -f2- | tr -d '\"'\'' ' || true)"
-fi
-
-hdr=()
-if [[ -n "$API_KEY" ]]; then
-  hdr=(-H "X-API-Key: $API_KEY")
-fi
-if ! curl -sf "${hdr[@]}" "$DIAG_URL" >/dev/null; then
+if ! curl -sf "$DIAG_URL" >/dev/null; then
   echo "WARN: diagnostics endpoint not reachable with current auth; health passed but layered check skipped." >&2
   diag_ok=0
 fi

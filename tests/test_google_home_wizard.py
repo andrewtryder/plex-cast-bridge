@@ -344,8 +344,7 @@ def test_enable_apis_refuses_without_billing(monkeypatch):
     assert "billing" in result["detail"].lower()
 
 
-def test_pairing_dashboard_requires_local_auth_and_forwards_approval(wizard_env, monkeypatch):
-    from pydantic import SecretStr
+def test_pairing_dashboard_forwards_approval_on_trusted_network(wizard_env, monkeypatch):
 
     calls = []
     ticket = 't' * 43
@@ -354,17 +353,12 @@ def test_pairing_dashboard_requires_local_auth_and_forwards_approval(wizard_env,
         return {'pending': {'ticket': ticket, 'code': '123456'}} if body is None else {'status': 'approved'}
     monkeypatch.setattr(catalog_sync, 'pairing_gateway_request', gateway)
     with TestClient(app) as browser:
-        app.state.settings.local_api_key = SecretStr('test-local-key')
-        assert browser.get('/api/google-home/pairing').status_code == 401
-        headers = {'X-API-Key': 'test-local-key'}
-        pending = browser.get('/api/google-home/pairing', headers=headers)
+        pending = browser.get('/api/google-home/pairing')
         assert pending.json()['pending']['code'] == '123456'
-        result = browser.post('/api/google-home/pairing/approve', headers=headers,
+        result = browser.post('/api/google-home/pairing/approve',
                               json={'ticket': ticket, 'code': '123456'})
         assert result.json()['status'] == 'approved'
         assert calls[-1] == ('/internal/oauth/approve', {'ticket': ticket, 'code': '123456'})
-        app.state.settings.local_api_key = None
-        assert browser.get('/api/google-home/pairing').status_code == 403
 
 
 def test_sync_response_never_exposes_gateway_key(wizard_env, monkeypatch):
@@ -382,3 +376,13 @@ def test_sync_response_never_exposes_gateway_key(wizard_env, monkeypatch):
     assert response.json()["last_catalog_upload"] == "succeeded"
     assert "private-gateway-key" not in response.text
     assert "catalog_write_key" not in response.json()
+
+
+def test_gateway_configuration_does_not_return_secret(wizard_env):
+    app.state.settings = Settings()
+    response = TestClient(app).post('/api/google-home/gateway/configure', json={
+        'cloud_gateway_url': 'https://gateway.example', 'catalog_write_key': 'private-key-value'
+    })
+    assert response.status_code == 200
+    assert 'private-key-value' not in response.text
+    assert catalog_sync.load_sync_state()['catalog_write_key'] == 'private-key-value'

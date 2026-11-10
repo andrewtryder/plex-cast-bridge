@@ -462,7 +462,7 @@ export function initGoogleHome({ $, api, announce, copyText, loadSpeakers }) {
     } catch {
       pendingGoogleHomePairing = null;
       $('ghPairingCard').hidden = true;
-      $('ghPairingStatus').textContent = 'Link approval is unavailable. Check the gateway connection and dashboard authentication.';
+      $('ghPairingStatus').textContent = 'Link approval is unavailable. Check the gateway connection.';
     } finally { pairingInFlight = false; }
   }
 
@@ -1060,7 +1060,7 @@ export function initGoogleHome({ $, api, announce, copyText, loadSpeakers }) {
     }
     advanceGhStep();
   });
-  $('ghSyncBtn').addEventListener('click', async () => {
+  async function syncGoogleHome() {
     try {
       await loadSpeakers(true);
       const res = await api('/api/google-home/sync', { method: 'POST', body: '{}' });
@@ -1070,7 +1070,9 @@ export function initGoogleHome({ $, api, announce, copyText, loadSpeakers }) {
     } catch (err) {
       announce(err.message || 'Sync failed');
     }
-  });
+  }
+  $('ghSyncBtn').addEventListener('click', syncGoogleHome);
+  $('speakersSyncBtn').addEventListener('click', syncGoogleHome);
 
 
 
