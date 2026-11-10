@@ -25,7 +25,7 @@ gcp-cloud-run/
 
 ## Configuration (`gcp-cloud-run/.env`)
 
-Copy `.env.example` to `.env` before running `deploy.sh`:
+For a new installation, create `.env` from `.env.example` and set the credentials explicitly. For an existing installation, restore its original configuration rather than generating replacements:
 
 | Variable | Description |
 |---|---|
@@ -73,13 +73,18 @@ uv run uvicorn cloud_gateway.main:app --host 127.0.0.1 --port 8080 --reload
 
 ## Deploying to GCP Cloud Run
 
-From either the repository root or `gcp-cloud-run/`:
+For an existing service, deploy a tested image to the **same** Cloud Run service without replacing environment variables or changing IAM. Record the current revision first and keep it available for rollback:
 
 ```bash
-./gcp-cloud-run/deploy.sh
+gcloud run services describe <service> --project <project> --region <region> \
+  --format='value(status.latestReadyRevisionName)'
+gcloud run services update <service> --project <project> --region <region> \
+  --image <tested-image-by-digest>
 ```
 
-The script automatically:
+See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. Dashboard sessions and the local catalog also require the existing `data/` mount. Normal code updates should not require relinking; Google may still require a new link after expiry, revocation, or an unrelated integration problem. Verify linking and Request Sync separately after an upgrade.
+
+For first-time provisioning only, `./gcp-cloud-run/deploy.sh` requires an explicitly prepared `.env` and performs infrastructure changes. It automatically:
 1. Copies the canonical root `catalog.json` into `gcp-cloud-run/catalog.json` for the Docker build context.
 2. Enables required GCP APIs (`run.googleapis.com`, `pubsub.googleapis.com`, `cloudbuild.googleapis.com`).
 3. Ensures the Pub/Sub topic (`plex-commands`) and subscription (`plex-commands-local-worker`) exist.

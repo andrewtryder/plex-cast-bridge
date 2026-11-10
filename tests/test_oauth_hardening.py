@@ -101,3 +101,30 @@ def test_pairing_expires_and_new_request_supersedes_old(client, test_settings, m
     now[0] += approval_store.LIFETIME_SECONDS + 1
     assert client.post('/oauth/pairing/status', json={'ticket': new['ticket']}).json()['status'] == 'expired'
     assert client.post('/internal/oauth/approve', headers={'X-API-Key': 'test-catalog-key'}, json=new).status_code == 409
+
+
+def test_refresh_token_survives_gateway_settings_reload(client, test_settings):
+    """A code-only revision retains Google authorization when secrets are preserved."""
+    from cloud_gateway.auth import create_token_pair
+
+    original_tokens = create_token_pair(test_settings)
+    reloaded_settings = test_settings.model_copy(deep=True)
+    client.app.state.settings = reloaded_settings
+    response = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": original_tokens["refresh_token"],
+            "client_id": reloaded_settings.google_client_id,
+            "client_secret": reloaded_settings.google_client_secret.get_secret_value(),
+        },
+    )
+    assert response.status_code == 200
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    sync = client.post(
+        "/fulfillment",
+        headers=headers,
+        json={"requestId": "upgrade-test", "inputs": [{"intent": "action.devices.SYNC"}]},
+    )
+    assert sync.status_code == 200
+    assert sync.json()["payload"]["agentUserId"] == "plex-personal-user"
