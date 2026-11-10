@@ -12,6 +12,7 @@ const root = path.resolve(__dirname, '../../src/plex_cast_bridge');
       const p = new URL(route.request().url()).pathname;
       if (p === '/') return route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(root, 'templates/dashboard.html'))});
       if (p.startsWith('/static/')) return route.fulfill({contentType: p.endsWith('.css') ? 'text/css' : 'text/javascript', body: fs.readFileSync(path.join(root, p.replace('/static/', 'static/')))});
+      if (p === '/api/backup/restore/preview' && !route.request().headers()['content-type']?.startsWith('multipart/form-data;')) throw Error('Backup preview must send multipart form data');
       const body = p === '/api/speakers' ? [] : {};
       return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(body)});
     });
@@ -33,6 +34,9 @@ const root = path.resolve(__dirname, '../../src/plex_cast_bridge');
       if (!await page.locator(controls[name]).isVisible()) throw Error(`${name}: control not visible`);
       if (!await page.locator(`[data-settings-panel="${name}"] h2`).first().isVisible()) throw Error(`${name}: heading not visible`);
     }
+    await page.locator('#backupRestoreFile').setInputFiles({name: 'backup.zip', mimeType: 'application/zip', buffer: Buffer.from('fixture')});
+    await page.locator('#backupPreviewBtn').click();
+    await page.waitForFunction(() => !document.getElementById('backupRestoreBtn').disabled);
     if (errors.length) throw Error(`JavaScript errors: ${errors.join('; ')}`);
     console.log(`Settings navigation passed at ${width}px`);
     await page.close();
