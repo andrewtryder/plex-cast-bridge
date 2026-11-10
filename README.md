@@ -67,8 +67,8 @@ Google Home / Cloud Run voice control is **optional** and documented separately:
 
 ```text
  ┌──────────────────────┐
- │  "Hey Google, play   │
- │   <artist> on Plex"  │   (optional Google Home path)
+ │  Google Home /       │
+ │  Assistant controls  │   (optional Google Home path)
  └──────────┬───────────┘
             ▼
  ┌─────────────────────────────────────────────────────────┐
@@ -126,6 +126,7 @@ uv run python scripts/emulate_speaker.py
 - **Virtual Plex devices** are what Google Home lists after account linking. Each visible destination maps to one virtual device ID.
 - **Show in Google Home** opts a destination into SYNC. New discoveries default to **off**.
 - **Google Home room assignments** are managed in the Google Home app. The bridge `room_hint` is only a suggestion and does not override your existing rooms.
+- Pause and next have been observed on the existing deployment; artist-search phrases have not been verified. Use the dashboard to select music.
 - This integration does **not** reveal which Nest microphone heard a command, and it is **not** a native Google Assistant music provider. Voice routes to the virtual device you name (or the room you assigned that virtual device to).
 
 After adding or renaming a Nest speaker: **Refresh speakers** → optionally enable **Show in Google Home** → **Refresh & Sync Google Home**. You do not need to rerun the setup wizard or rotate cloud credentials for ordinary speaker changes.

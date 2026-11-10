@@ -10,18 +10,9 @@ Branch work: Phase 2–10 delivered as cohesive modules on top of the existing F
 - Settings → Google Home wizard stores **non-secret** resumable state in `DATA_DIR/google_home_setup.json`.
 - Admin provisioning uses `scripts/gh_setup_companion.py` + `gcp_provision` (ADC on the admin machine). Subscriber SA keys stay on the bridge; admin Google credentials do not.
 
-## Fresh recreate status
+## Historical rebuild notes
 
-Documented in [FRESH_RECREATE.md](FRESH_RECREATE.md).
-
-Performed wipe (kept project ID `plex-cast-bridge-home` because GCP IDs are not reusable):
-
-- Deleted Cloud Run `plex-google-home-fulfillment`
-- Deleted Pub/Sub topic/sub/DLQ
-- Deleted SA `plex-fulfillment-sa`
-- Disabled `ENABLE_PUBSUB_LISTENER` on LXC 112; preserved Plex JWT + catalog
-
-Recreate continues via wizard + companion + Developer Console (manual) + Home app link (manual).
+The former environment-specific rebuild instructions are archived in Git history. Use the [current setup guide](SETUP_GUIDE.md) and dashboard wizard for new installations, and preserve existing resources during upgrades.
 
 ## Features by phase
 
@@ -57,7 +48,7 @@ Live Cloud Run redeploy + Google Home app linking remain **unverified** until wi
 
 ## Outstanding manual Google steps
 
-1. Billing confirmation on `plex-cast-bridge-home`
+1. Billing confirmation for your Google Cloud project
 2. Run companion `--execute --confirm-billable` for APIs/Pub/Sub/SA/bucket
 3. Generate secrets + `gcp-cloud-run/deploy.sh`
 4. Create/edit Cloud-to-cloud integration **Plex Cast Bridge** in Developer Console
@@ -68,7 +59,7 @@ Live Cloud Run redeploy + Google Home app linking remain **unverified** until wi
 ## Proxmox upgrade / rollback
 
 ```bash
-# On LXC 112
+# On the bridge host
 APP_DIR=/opt/plex-cast-bridge bash scripts/proxmox_upgrade.sh
 # Rollback uses the stamped backup under /opt/plex-cast-bridge/backups/<stamp>/
 ```
