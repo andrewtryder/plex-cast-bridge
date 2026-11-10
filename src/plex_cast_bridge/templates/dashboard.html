@@ -230,6 +230,12 @@
           <button type="button" class="ghost-button" id="ghSyncBtn">Refresh &amp; Sync Google Home</button>
         </div>
       </div>
+      <p class="conn-meta" id="ghPairingStatus" role="status" aria-live="polite">Checking for Google Home link requests…</p>
+      <div class="conn-card" id="ghPairingCard" hidden>
+        <p class="conn-meta">A Google Home link is waiting for approval. Compare this code with the one on your phone:</p>
+        <p class="conn-title" id="ghPairingCode" aria-live="polite"></p>
+        <button type="button" class="accent-button" id="ghPairingApprove">Approve matching request</button>
+      </div>
       <div id="ghWizard" hidden>
         <nav class="gh-stepper" id="ghStepper" aria-label="Google Home setup steps"></nav>
         <p class="conn-meta" id="ghWizardStepLabel">Step</p>
@@ -1657,7 +1663,7 @@
       });
     } else if (step.id === 'link_home') {
       box.innerHTML = `
-        <p class="conn-meta">Approve linking with your Cloud Run admin passphrase. Use <strong>Back</strong> anytime to revisit earlier steps.</p>
+        <p class="conn-meta">Approve linking in the local dashboard. Use <strong>Back</strong> anytime to revisit earlier steps.</p>
         <ol class="gh-howto" id="ghLinkHowto">
           <li>On your phone, open the <strong>Google Home</strong> app (same Google account as Developer Console)</li>
           <li><strong>Devices</strong> → <strong>Add / +</strong> → <strong>Works with Google</strong></li>
@@ -1668,7 +1674,7 @@
         </ol>
         <details class="advanced-block" style="margin-top:12px">
           <summary>Optional: passphrase mode / copy admin passphrase</summary>
-          <p class="conn-meta">Required to approve Google Home account linking.</p>
+          <p class="conn-meta">Use the matching code shown during Google Home linking.</p>
           <ul class="gh-paste-list" id="ghLinkPasteList"></ul>
           <div class="conn-actions" style="margin-top:8px">
             <button type="button" class="ghost-button" id="ghLoadLinkSecrets">Load passphrase from this Mac</button>
@@ -1819,7 +1825,42 @@
     }
   }
 
+  let pendingGoogleHomePairing = null;
+  let pairingInFlight = false;
+  async function refreshGoogleHomePairing() {
+    if (pairingInFlight) return;
+    pairingInFlight = true;
+    try {
+      const result = await api('/api/google-home/pairing');
+      pendingGoogleHomePairing = result?.pending || null;
+      $('ghPairingCard').hidden = !pendingGoogleHomePairing;
+      $('ghPairingCode').textContent = pendingGoogleHomePairing?.code || '';
+      $('ghPairingStatus').textContent = pendingGoogleHomePairing ? 'A Google Home link is waiting for approval.' : 'No link request waiting.';
+    } catch {
+      pendingGoogleHomePairing = null;
+      $('ghPairingCard').hidden = true;
+      $('ghPairingStatus').textContent = 'Link approval is unavailable. Check the gateway connection and dashboard authentication.';
+    } finally { pairingInFlight = false; }
+  }
+
+  $('ghPairingApprove').addEventListener('click', async () => {
+    const pending = pendingGoogleHomePairing;
+    if (!pending || !window.confirm(`Does ${pending.code} match the code shown during Google Home linking?`)) return;
+    const button = $('ghPairingApprove');
+    button.disabled = true;
+    try {
+      await api('/api/google-home/pairing/approve', {method:'POST', body:JSON.stringify(pending)});
+      pendingGoogleHomePairing = null;
+      $('ghPairingCard').hidden = true;
+      announce('Approved. Return to Google Home to finish linking.');
+    } catch (err) {
+      announce(err.message || 'Approval failed. Start linking again.');
+      await refreshGoogleHomePairing();
+    } finally { button.disabled = false; }
+  });
+
   async function refreshGoogleHome(opts = {}) {
+    refreshGoogleHomePairing();
     try {
       const data = await api('/api/google-home/status');
       const sync = data.catalog_sync || {};
@@ -2499,7 +2540,10 @@
     await refreshPlexStatus();
     await refreshGoogleHome();
     setInterval(() => {
-      if (document.visibilityState === 'visible') refreshStatus();
+      if (document.visibilityState === 'visible') {
+        refreshStatus();
+        if (!$('settingsPage').hidden) refreshGoogleHomePairing();
+      }
     }, POLL_MS);
   })();
 })();

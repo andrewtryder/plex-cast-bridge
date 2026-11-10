@@ -176,6 +176,37 @@ async def gateway_configure(body: GatewayConfig):
     return {"setup": setup.public_status(), "catalog_sync": catalog_sync.public_sync_status(), "sync_state": sync_state}
 
 
+
+class PairingApproval(BaseModel):
+    ticket: str = Field(min_length=32, max_length=128)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+def _require_authenticated_dashboard(request: Request) -> None:
+    local_key = getattr(request.app.state.settings, "local_api_key", None)
+    if not local_key or not local_key.get_secret_value():
+        raise HTTPException(status_code=403, detail="Configure LOCAL_API_KEY before approving links")
+
+
+@router.get("/pairing")
+async def pending_pairing(request: Request):
+    _require_authenticated_dashboard(request)
+    try:
+        return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/pending")
+    except Exception:
+        log.exception("Could not fetch Google Home pairing request")
+        raise HTTPException(status_code=503, detail="Google Home approval is unavailable") from None
+
+
+@router.post("/pairing/approve")
+async def approve_pairing(body: PairingApproval, request: Request):
+    _require_authenticated_dashboard(request)
+    try:
+        return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/approve", body.model_dump())
+    except Exception:
+        log.exception("Could not approve Google Home pairing request")
+        raise HTTPException(status_code=409, detail="Approval failed or expired. Start linking again.") from None
+
 @router.post("/sync")
 async def sync_google_home():
     def run():

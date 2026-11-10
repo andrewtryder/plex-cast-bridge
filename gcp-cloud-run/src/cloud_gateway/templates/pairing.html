@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Approve Google Home — Plex Cast Bridge</title>
+  <style>
+    body { margin:0; background:#151713; color:#eeeae1; font:16px system-ui,sans-serif; }
+    main { max-width:28rem; margin:12vh auto; padding:1.5rem; }
+    .card { border:1px solid #46463c; border-radius:16px; background:#242620; padding:1.5rem; }
+    .code { color:#e6b577; font-size:2rem; letter-spacing:.3em; font-weight:700; }
+    p { line-height:1.5; } button { background:#e6b577; color:#20180f; border:0; border-radius:8px; padding:.8rem 1.2rem; font-weight:700; }
+  </style>
+</head>
+<body>
+<main><div class="card">
+  <h1>Approve Google Home</h1>
+  <p>Open the Plex Cast Bridge dashboard, choose <strong>Settings → Connections</strong>, and approve the request with this matching code:</p>
+  <p class="code">{{ code }}</p>
+  <p id="status" role="status" aria-live="polite">Waiting for dashboard approval. This request expires in five minutes.</p>
+  <form id="complete" method="post" action="/oauth/pairing/complete">
+    <input type="hidden" name="ticket" value="{{ ticket }}">
+    <button id="continue" type="submit" hidden>Continue to Google Home</button>
+  </form>
+</div></main>
+<script>
+(() => {
+  const ticket = document.querySelector('input[name="ticket"]').value;
+  let busy = false;
+  async function check() {
+    if (busy) return;
+    busy = true;
+    try {
+      const response = await fetch('/oauth/pairing/status', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ticket}), cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('unavailable');
+      const data = await response.json();
+      if (data.status === 'approved') {
+        document.getElementById('status').textContent = 'Approved. Continuing to Google Home…';
+        document.getElementById('continue').hidden = false;
+        document.getElementById('complete').submit();
+      } else if (data.status === 'expired' || data.status === 'consumed') {
+        document.getElementById('status').textContent = 'This request expired or has already been used. Start linking again in Google Home.';
+      } else {
+        setTimeout(check, 2000);
+      }
+    } catch {
+      document.getElementById('status').textContent = 'Connection interrupted. Retrying…';
+      setTimeout(check, 5000);
+    } finally { busy = false; }
+  }
+  check();
+})();
+</script>
+</body>
+</html>

@@ -33,7 +33,7 @@ Copy `.env.example` to `.env` before running `deploy.sh`:
 | `GCP_PUBSUB_TOPIC_ID` | GCP Pub/Sub Topic ID (default: `plex-commands`) |
 | `GOOGLE_CLIENT_ID` | Client ID configured in Google Home Developer Console |
 | `GOOGLE_CLIENT_SECRET` | Client Secret configured in Google Home Developer Console |
-| `ADMIN_PASSPHRASE` | Passphrase required on the `/oauth/authorize` login page |
+| `ADMIN_PASSPHRASE` | Server secret retained for existing installations; normal linking uses authenticated dashboard approval |
 | `OAUTH_SIGNING_SECRET` | 64-char random hex key used for signing JWT tokens (`openssl rand -hex 32`) |
 | `WEBHOOK_API_KEY` | Optional key for `/webhook/query` (defaults to `ADMIN_PASSPHRASE`) |
 | `DEFAULT_SPEAKER_NAME` | Default target Cast speaker if not specified in command |
