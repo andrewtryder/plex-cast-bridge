@@ -365,3 +365,20 @@ def test_pairing_dashboard_requires_local_auth_and_forwards_approval(wizard_env,
         assert calls[-1] == ('/internal/oauth/approve', {'ticket': ticket, 'code': '123456'})
         app.state.settings.local_api_key = None
         assert browser.get('/api/google-home/pairing').status_code == 403
+
+
+def test_sync_response_never_exposes_gateway_key(wizard_env, monkeypatch):
+    app.state.settings = Settings(plex_token=None, local_api_key=None, allow_unauthenticated_local_api=True)
+    catalog_sync.save_sync_state({
+        "cloud_gateway_url": "https://gateway.example",
+        "catalog_write_key": "private-gateway-key",
+        "last_push_status": "succeeded",
+        "last_catalog_upload": "succeeded",
+    })
+    monkeypatch.setattr(catalog_sync, "push_catalog_now", lambda _force: catalog_sync.load_sync_state())
+    response = TestClient(app).post("/api/google-home/sync")
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["last_catalog_upload"] == "succeeded"
+    assert "private-gateway-key" not in response.text
+    assert "catalog_write_key" not in response.json()
