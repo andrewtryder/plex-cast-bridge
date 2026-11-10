@@ -5,6 +5,7 @@ export function initMusicIndex({ $, api, announce }) {
       const data = await api('/api/music-index');
       $('indexEnabled').checked = data.settings.indexing_enabled;
       $('indexSchedule').value = data.settings.schedule;
+      $('aiMixEnabled').checked = data.settings.ai_enabled;
       const scan = data.scan;
       $('indexStatus').textContent = `Status: ${scan.status} · scanned ${scan.scanned} · last successful scan: ${scan.completed_at || 'never'}${scan.error ? ' · ' + scan.error : ''}`;
       const counts = data.counts, quality = data.quality;
@@ -15,7 +16,7 @@ export function initMusicIndex({ $, api, announce }) {
   }
   $('indexSave').addEventListener('click', async () => {
     try {
-      await api('/api/music-index/settings', {method: 'PATCH', body: JSON.stringify({indexing_enabled: $('indexEnabled').checked, schedule: $('indexSchedule').value})});
+      await api('/api/music-index/settings', {method: 'PATCH', body: JSON.stringify({indexing_enabled: $('indexEnabled').checked, schedule: $('indexSchedule').value, ai_enabled: $('aiMixEnabled').checked})});
       announce('Index settings saved');
       await refreshMusicIndex();
     } catch (err) { announce(err.message || 'Could not save settings'); }

@@ -6,4 +6,8 @@ An initial scan reads the library's track inventory. Scheduled scans fetch Plex'
 
 The status page reports indexed track, artist, and album counts and the availability of artist/album names, years, genre tags, and mood tags. Missing tags remain missing. Different Plex server and library identifiers are kept separate. No Plex tokens, audio files, or server addresses are stored in the index.
 
-AI-assisted generation and mix management are not yet available in this foundation. No track metadata is sent to Gemini by indexing. The database has reserved tables for bridge-managed mixes, but this version does not create or alter Plex playlists.
+## Discover and save mixes
+
+The DJ page can preview artist, decade, genre, and mood mixes from indexed metadata. Previewing does not start playback. You can reorder or remove tracks, play the preview on a selected speaker, and save, rename, edit, or delete a bridge-managed mix. Saved mixes are stored in SQLite and do not create or modify Plex playlists. If an indexed track disappears, it is marked unavailable and skipped during playback. Deep cuts are unavailable until play-count metadata is indexed; missing genre or mood tags can yield no results.
+
+**AI-assisted mix generation is off by default.** When enabled in Settings → Library, selecting it for a preview sends a maximum of 50 locally selected tracks' limited metadata to Gemini. Indexing alone never calls Gemini. The free-form request, Plex credentials, server address, and audio are not sent. Returned IDs must all match the candidates. Metadata-only generation remains available without AI.

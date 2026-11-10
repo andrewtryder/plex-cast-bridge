@@ -1,3 +1,4 @@
+import { initMixes } from './mixes.js';
 import { initMusicIndex } from './music-index.js';
 import { createDjHelpers } from './dj.js';
 import { initMaintenance } from './maintenance.js';
@@ -115,6 +116,8 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     } else if (dj) {
       $('navDj').setAttribute('aria-current', 'page');
       document.title = 'Smart DJ — Plex Cast Bridge';
+      refreshSavedMixes();
+      refreshMixSpeakers();
     } else {
       $('navPlayer').setAttribute('aria-current', 'page');
       document.title = 'Player — Plex Cast Bridge';
@@ -938,6 +941,8 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
 
 
   const { refreshGoogleHome, refreshGoogleHomePairing } = initGoogleHome({ $, api, announce, copyText, loadSpeakers });
+
+  const { refreshSavedMixes, speakerOptions: refreshMixSpeakers } = initMixes({ $, api, announce, getSpeakers: () => speakers, getSelected: () => selected });
 
   const { refreshMusicIndex } = initMusicIndex({ $, api, announce });
 

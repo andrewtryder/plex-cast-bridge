@@ -55,6 +55,7 @@ Google Home / Cloud Run voice control is **optional** and documented separately:
 - **Artist-first & station streaming:** Play an artist strictly from your library, or build Gemini-assisted radio / theme mixes.
 - **Per-speaker virtual Google Home devices:** One shared Plex library; each Cast destination can advertise its own virtual Plex device (for example Kitchen Plex) with a stable ID that survives renames and IP changes.
 - **Local web dashboard:** Refresh speakers, allow playback independently of Google Home visibility, edit virtual names, forget destinations, and sync to HomeGraph.
+- **Optional library index and mixes:** Enable the persistent SQLite index in Settings → Library to preview and save bridge-managed mixes. AI-assisted selection is off by default. [Music index guide](docs/music-index.md).
 - **Gemini Smart DJ:** Natural-language intents (`artist`, `artist_radio`, `album`, `track`, `theme_mix`) constrained to your catalog.
 - **Optional Google Home gateway (`gcp-cloud-run/`):** OAuth 2.0 account linking and Smart Home traits over Cloud Run + Pub/Sub (no inbound ports to your LAN).
 - **Cast discovery & volume safety:** `pychromecast` with macOS `dns-sd` fallback; startup volume clamp (default 20%).

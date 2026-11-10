@@ -116,7 +116,7 @@
 
   <section class="page page-dj" id="djPage" hidden aria-label="Smart DJ">
     <div class="dj-head">
-      <span class="label">Smart DJ</span>
+      <span class="label">Ask the DJ</span>
       <h1>What do you feel like listening to?</h1>
       <p>Just describe a sound, artist, album or mood. Your Plex library does the rest.</p>
     </div>
@@ -150,6 +150,31 @@
       </div>
       <div id="recentList"></div>
     </div>
+    <section class="rule" aria-labelledby="discoverMixesHeading">
+      <h2 id="discoverMixesHeading" class="section-title">Discover mixes</h2>
+      <p class="section-description">Preview a mix from your local index. Missing tags may limit results.</p>
+      <form id="mixGenerateForm">
+        <label class="field-label" for="mixMode">Mix type</label>
+        <select id="mixMode" class="field-select"><option value="artist">Artist radio</option><option value="decade">Decade mix</option><option value="genre">Genre mix</option><option value="mood">Mood mix</option><option value="deep_cuts">Deep cuts</option></select>
+        <label class="field-label" for="mixPrompt">Artist, decade, genre, or mood</label>
+        <input id="mixPrompt" class="field-select" maxlength="300" required placeholder="e.g. jazz or 1990s">
+        <label><input id="mixUseAi" type="checkbox"> Use AI-assisted selection</label>
+        <div class="conn-actions"><button type="submit" class="accent-button">Generate preview</button></div>
+      </form>
+      <p id="mixFeedback" class="conn-meta" role="status" aria-live="polite"></p>
+      <div id="mixPreview" hidden>
+        <h3>Mix preview</h3><p id="mixPreviewSummary" class="conn-meta"></p>
+        <ol id="mixPreviewTracks"></ol>
+        <label class="field-label" for="mixName">Mix name</label><input id="mixName" class="field-select" maxlength="100" placeholder="Name this mix">
+        <label class="field-label" for="mixSpeaker">Play on</label><select id="mixSpeaker" class="field-select"></select>
+        <div class="conn-actions"><button type="button" id="mixPlay" class="ghost-button">Play preview</button><button type="button" id="mixSave" class="accent-button">Save mix</button></div>
+      </div>
+    </section>
+    <section class="rule" aria-labelledby="savedMixesHeading">
+      <h2 id="savedMixesHeading" class="section-title">Saved mixes</h2>
+      <p class="section-description">Saved by the bridge; these do not change your Plex playlists.</p>
+      <div id="savedMixes" aria-live="polite"></div>
+    </section>
   </section>
 
     <section class="page page-speakers" id="speakersPage" aria-label="Speakers" hidden>
@@ -328,7 +353,8 @@
         <div class="conn-actions"><button type="button" class="accent-button" id="indexSave">Save index settings</button><button type="button" class="ghost-button" id="indexStart">Index now</button><button type="button" class="ghost-button" id="indexCancel">Cancel scan</button></div>
         <p id="indexStatus" class="conn-meta" role="status" aria-live="polite">Loading…</p>
         <p id="indexQuality" class="conn-meta"></p>
-        <p class="conn-meta">AI-assisted mix generation is not available yet; no metadata is sent for indexing.</p>
+        <label><input type="checkbox" id="aiMixEnabled"> AI-assisted mix generation</label>
+        <p class="conn-meta">Optional: send a small selection of music metadata to Gemini when you request an AI mix. Indexing alone sends nothing to Gemini.</p>
       </div>
     </div>
 
