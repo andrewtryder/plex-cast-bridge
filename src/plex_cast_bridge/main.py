@@ -191,19 +191,14 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(backoff)
 
     async def _schedule_music_index():
-        from datetime import UTC, datetime, timedelta
-
         while True:
             try:
                 if music_index.database_path().exists():
                     settings_data = await run_in_threadpool(music_index.get_settings)
-                    schedule = settings_data['schedule']
                     plex = getattr(app.state, 'plex', None)
-                    if settings_data['indexing_enabled'] and schedule in {'daily', 'weekly'} and plex:
+                    if plex and settings_data['indexing_enabled'] and settings_data['schedule'] != 'manual':
                         state = await run_in_threadpool(music_index.status)
-                        last = state['scan'].get('started_at')
-                        interval = timedelta(days=1 if schedule == 'daily' else 7)
-                        if not last or datetime.now(UTC) - datetime.fromisoformat(last) >= interval:
+                        if music_index_scan.schedule_due(settings_data, state['scan']):
                             await run_in_threadpool(music_index_scan.start, plex)
             except asyncio.CancelledError:
                 raise

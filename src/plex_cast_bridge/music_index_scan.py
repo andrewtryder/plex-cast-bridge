@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,24 @@ _BATCH_SIZE = 100
 _lock = threading.Lock()
 _cancel = threading.Event()
 _thread: threading.Thread | None = None
+
+
+def schedule_due(settings: dict, scan: dict, now: datetime | None = None) -> bool:
+    if not settings.get('indexing_enabled') or settings.get('schedule') not in {'daily', 'weekly'}:
+        return False
+    if scan.get('status') == 'running':
+        return False
+    last = scan.get('started_at')
+    if not last:
+        return True
+    try:
+        started = datetime.fromisoformat(last)
+        if started.tzinfo is None:
+            return False
+        interval = timedelta(days=1 if settings['schedule'] == 'daily' else 7)
+        return (now or datetime.now(UTC)) - started >= interval
+    except (TypeError, ValueError):
+        return False
 
 
 def _text(value: Any) -> str | None:
@@ -49,12 +68,27 @@ def _is_cancelled() -> bool:
         return bool(db.execute('SELECT cancel_requested FROM scan_state WHERE id=1').fetchone()[0])
 
 
+def _total_tracks(plex: Any, library_id: str) -> int:
+    result = plex.server.query(
+        f'/library/sections/{library_id}/all',
+        params={'type': 10, 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 0},
+    )
+    raw = result.attrib.get('totalSize') if hasattr(result, 'attrib') else result.get('totalSize')
+    if raw is None:
+        raise ValueError('Plex did not report library size; preserving the previous index')
+    total = int(raw)
+    if total < 0:
+        raise ValueError('Plex reported an invalid library size')
+    return total
+
+
 def _run(plex: Any, lock_file) -> None:
     try:
         server_id = _text(getattr(plex.server, 'machineIdentifier', None))
         library_id = _text(getattr(plex.library, 'key', None))
         if not server_id or not library_id:
             raise ValueError('Plex server or library identity is unavailable')
+        initial_total = _total_tracks(plex, library_id)
         with music_index.connect() as db:
             db.execute('DELETE FROM scan_tracks')
             db.commit()
@@ -76,6 +110,8 @@ def _run(plex: Any, lock_file) -> None:
                 break
         if _is_cancelled():
             raise InterruptedError('Scan cancelled')
+        if offset != initial_total or _total_tracks(plex, library_id) != initial_total:
+            raise ValueError('Plex library changed during scan; preserving the previous index')
         with music_index.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT cancel_requested FROM scan_state WHERE id=1').fetchone()[0]:

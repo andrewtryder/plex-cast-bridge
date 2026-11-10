@@ -22,7 +22,7 @@ def _plex(tracks):
     def search(**kwargs):
         start = kwargs['container_start']
         return tracks[start:start + kwargs['container_size']]
-    return SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1'),
+    return SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1', query=lambda *args, **kwargs: {'totalSize': str(len(tracks))}),
                            library=SimpleNamespace(key='library-1', search=search))
 
 
@@ -80,7 +80,7 @@ def test_cancel_and_overlap_keep_old_snapshot(index_dir):
         entered.set()
         assert proceed.wait(5)
         return [_track('2', 'Second')]
-    plex = SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1'),
+    plex = SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1', query=lambda *args, **kwargs: {'totalSize': '1'}),
                            library=SimpleNamespace(key='library-1', search=slow))
     music_index_scan.start(plex)
     assert entered.wait(5)
@@ -129,3 +129,41 @@ def test_refuses_unknown_future_schema(index_dir):
         db.execute('PRAGMA user_version=999')
     with pytest.raises(RuntimeError, match='newer'):
         music_index.initialize()
+
+
+def test_changed_library_during_scan_preserves_snapshot(index_dir):
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First')]))
+    _join()
+    plex = _plex([_track('2', 'Second')])
+    sizes = iter([{'totalSize': '1'}, {'totalSize': '2'}])
+    plex.server.query = lambda *args, **kwargs: next(sizes)
+    music_index_scan.start(plex)
+    _join()
+    assert music_index.status()['scan']['status'] == 'failed'
+    with music_index.connect() as db:
+        assert [r['title'] for r in db.execute('SELECT * FROM tracks')] == ['First']
+
+
+def test_scheduler_only_runs_enabled_due_scans():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 1, 8, tzinfo=UTC)
+    daily = {'indexing_enabled': True, 'schedule': 'daily'}
+    assert not music_index_scan.schedule_due({'indexing_enabled': False, 'schedule': 'daily'}, {}, now)
+    assert not music_index_scan.schedule_due({'indexing_enabled': True, 'schedule': 'manual'}, {}, now)
+    assert not music_index_scan.schedule_due(daily, {'status': 'running'}, now)
+    assert music_index_scan.schedule_due(daily, {}, now)
+    assert not music_index_scan.schedule_due(daily, {'started_at': (now - timedelta(hours=23)).isoformat()}, now)
+    assert music_index_scan.schedule_due(daily, {'started_at': (now - timedelta(days=1)).isoformat()}, now)
+    assert not music_index_scan.schedule_due({'indexing_enabled': True, 'schedule': 'weekly'},
+                                              {'started_at': (now - timedelta(days=6)).isoformat()}, now)
+    assert not music_index_scan.schedule_due(daily, {'started_at': 'bad'}, now)
+
+
+def test_concurrent_database_initialization(index_dir):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        statuses = list(pool.map(lambda _: music_index.status(), range(12)))
+    assert all(item['counts']['tracks'] == 0 for item in statuses)
