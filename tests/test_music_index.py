@@ -269,13 +269,15 @@ def test_mix_preview_and_saved_edit_are_scoped_and_non_destructive(index_dir):
     from plex_cast_bridge import mixes
 
     music_index.update_settings({'indexing_enabled': True})
-    music_index_scan.start(_plex([_track('1', 'First'), _track('2', 'Second')]))
+    music_index_scan.start(_plex([_track('1', 'First', 8), _track('2', 'Second', 0)]))
     _join()
     preview = mixes.preview('jazz', 'genre')
     assert {item['rating_key'] for item in preview['tracks']} == {'1', '2'}
     assert preview['duration_ms'] == 2000
     assert mixes.preview('joyful', 'mood')['tracks'] == []
-    assert 'play-count' in mixes.preview('deep cuts', 'deep_cuts')['warning']
+    deep_cuts = mixes.preview('deep cuts', 'deep_cuts')
+    assert [item['rating_key'] for item in deep_cuts['tracks']] == ['2', '1']
+    assert 'Ranked by Plex play counts' in deep_cuts['warning']
     with pytest.raises(ValueError, match='no longer'):
         mixes.save('bad', ['missing'])
     mix_id = mixes.save('Favorite', ['1', '2'], {'mode': 'genre'})
@@ -291,6 +293,17 @@ def test_mix_preview_and_saved_edit_are_scoped_and_non_destructive(index_dir):
     assert len(mixes.get(mix_id)['tracks']) == 1
     mixes.delete(mix_id)
     assert mixes.list_mixes() == []
+
+
+def test_deep_cuts_explains_missing_play_count_metadata(index_dir):
+    from plex_cast_bridge import mixes
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'No view count')]))
+    _join()
+    result = mixes.preview('deep cuts', 'deep_cuts')
+    assert result['tracks'] == []
+    assert 'not provided' in result['warning']
 
 
 def test_mix_playback_rejects_wrong_plex_library_before_cast(index_dir):

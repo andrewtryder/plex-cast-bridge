@@ -35,7 +35,7 @@ def choose(candidates: list[dict], mode: Literal['artist', 'genre', 'mood', 'dec
     allowed = {str(track['rating_key']): track for track in candidates}
     metadata = [{'id': str(t['rating_key']), 'title': _safe_text(t.get('title')),
                  'artist': _safe_text(t.get('artist')), 'album': _safe_text(t.get('album')),
-                 'year': t.get('year')} for t in candidates]
+                 'year': t.get('year'), 'play_count': t.get('play_count')} for t in candidates]
     # The user's free-form request, Plex address, credentials and audio are never sent.
     contents = ('Choose and order music tracks for the supplied mix type. '
                 'Return only IDs from the candidate list, without duplicates. '

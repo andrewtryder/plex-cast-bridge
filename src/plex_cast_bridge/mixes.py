@@ -18,7 +18,7 @@ def _scope(db) -> tuple[str, str]:
 
 
 def _track(row) -> dict:
-    return {key: row[key] for key in ('rating_key', 'title', 'artist', 'album', 'year', 'duration_ms')}
+    return {key: row[key] for key in ('rating_key', 'title', 'artist', 'album', 'year', 'duration_ms', 'play_count')}
 
 
 def preview(prompt: str, mode: str, limit: int = 25) -> dict:
@@ -48,8 +48,18 @@ def preview(prompt: str, mode: str, limit: int = 25) -> dict:
             year = int(match.group(1) + match.group(2)) if match.group(1) else (2000 if int(match.group(3)) < 30 else 1900) + int(match.group(3))
             base += ' AND t.year>=? AND t.year<?'
             args.extend([year, year + 10])
+        elif mode == 'deep_cuts':
+            base += ' AND t.play_count IS NOT NULL'
+            rows = db.execute(base + ' ORDER BY t.play_count ASC, t.artist COLLATE NOCASE, t.rating_key LIMIT ?',
+                              (*args, limit)).fetchall()
+            if rows:
+                warning = 'Ranked by Plex play counts. Tracks without play-count metadata are excluded.'
+            else:
+                warning = 'Plex has not provided play-count metadata for this library yet.'
+            tracks = [_track(row) for row in rows]
+            return {'tracks': tracks, 'duration_ms': sum(t['duration_ms'] or 0 for t in tracks), 'warning': warning}
         else:
-            return {'tracks': [], 'duration_ms': 0, 'warning': 'Deep cuts need play-count metadata, which has not been indexed.'}
+            raise ValueError('Unknown mix type')
         rows = db.execute(base + ' ORDER BY t.artist COLLATE NOCASE, t.album COLLATE NOCASE, t.rating_key LIMIT ?', (*args, limit)).fetchall()
     tracks = [_track(row) for row in rows]
     if not tracks:
@@ -102,7 +112,7 @@ def get(mix_id: int) -> dict:
         mix = db.execute('SELECT * FROM mixes WHERE id=? AND server_id=? AND library_id=?', (mix_id, server, library)).fetchone()
         if not mix:
             raise ValueError('Mix not found for this library')
-        rows = db.execute('''SELECT mt.rating_key,t.title,t.artist,t.album,t.year,t.duration_ms
+        rows = db.execute('''SELECT mt.rating_key,t.title,t.artist,t.album,t.year,t.duration_ms,t.play_count
             FROM mix_tracks mt LEFT JOIN tracks t ON t.server_id=? AND t.library_id=? AND t.rating_key=mt.rating_key
             WHERE mt.mix_id=? ORDER BY mt.position''', (server, library, mix_id)).fetchall()
         return {'id': mix['id'], 'name': mix['name'], 'server_id': server, 'library_id': library,

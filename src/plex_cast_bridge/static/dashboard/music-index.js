@@ -9,7 +9,7 @@ export function initMusicIndex({ $, api, announce }) {
       const scan = data.scan;
       $('indexStatus').textContent = `Status: ${scan.status} · scanned ${scan.scanned} · last successful scan: ${scan.completed_at || 'never'}${scan.error ? ' · ' + scan.error : ''}`;
       const counts = data.counts, quality = data.quality;
-      $('indexQuality').textContent = `${counts.tracks} tracks · ${counts.artists} artists · ${counts.albums} albums. Artist and album: ${quality.tracks_with_artist_and_album}/${counts.tracks} tracks; genres: ${quality.tracks_with_genres}/${counts.tracks}; moods: ${quality.tracks_with_moods}/${counts.tracks}; albums with year: ${quality.albums_with_year}/${counts.albums}.`;
+      $('indexQuality').textContent = `${counts.tracks} tracks · ${counts.artists} artists · ${counts.albums} albums. Artist and album: ${quality.tracks_with_artist_and_album}/${counts.tracks} tracks; genres: ${quality.tracks_with_genres}/${counts.tracks}; moods: ${quality.tracks_with_moods}/${counts.tracks}; play counts: ${quality.tracks_with_play_count}/${counts.tracks}; albums with year: ${quality.albums_with_year}/${counts.albums}.`;
       clearTimeout(timer);
       if (scan.status === 'running') timer = setTimeout(refreshMusicIndex, 2000);
     } catch (err) { $('indexStatus').textContent = err.message || 'Index status unavailable'; }
