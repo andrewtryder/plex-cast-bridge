@@ -40,7 +40,6 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 def initialize() -> None:
     with connect() as db:
-        db.execute("PRAGMA journal_mode=WAL")
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:

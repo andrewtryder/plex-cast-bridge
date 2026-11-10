@@ -167,3 +167,26 @@ def test_concurrent_database_initialization(index_dir):
     with ThreadPoolExecutor(max_workers=6) as pool:
         statuses = list(pool.map(lambda _: music_index.status(), range(12)))
     assert all(item['counts']['tracks'] == 0 for item in statuses)
+
+
+def test_index_survives_a_new_process(index_dir):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('persisted', 'Survives restart')]))
+    _join()
+    env = {**os.environ, 'DATA_DIR': str(index_dir)}
+    result = subprocess.run(
+        [sys.executable, '-c',
+         'import json; from plex_cast_bridge import music_index; '
+         'print(json.dumps(music_index.status()))'],
+        check=True, capture_output=True, text=True, env=env,
+    )
+    persisted = json.loads(result.stdout)
+    assert persisted['counts']['tracks'] == 1
+    assert persisted['scan']['status'] == 'idle'
+    with music_index.connect() as db:
+        assert db.execute('SELECT title FROM tracks WHERE rating_key=?', ('persisted',)).fetchone()[0] == 'Survives restart'
