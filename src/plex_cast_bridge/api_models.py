@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class Command(BaseModel):
+    device_id: str | None = None
     query: str = Field(min_length=1)
     speaker: str | None = None
 
@@ -20,7 +21,15 @@ class SpeakerToggle(BaseModel):
     enabled: bool
 
 
+class SpeakerPatch(BaseModel):
+    enabled: bool | None = None
+    google_home_visible: bool | None = None
+    google_home_name: str | None = Field(default=None, min_length=1, max_length=80)
+    room_hint: str | None = Field(default=None, max_length=80)
+
+
 class Transport(BaseModel):
+    device_id: str | None = None
     action: Literal["pause", "resume", "next", "previous", "stop", "volume"]
     speaker: str | None = None
     volume: float | None = Field(default=None, ge=0, le=1)

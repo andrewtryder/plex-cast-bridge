@@ -8,6 +8,8 @@ from pathlib import Path
 
 from google.cloud import pubsub_v1
 
+from . import activity
+
 
 def get_dead_letter_log_path() -> Path:
     env_dlq = os.getenv("DEAD_LETTER_LOG")
@@ -65,11 +67,13 @@ class PubSubWorker:
                 message.ack()
                 return
             future = asyncio.run_coroutine_threadsafe(dispatch(data), loop)
+            activity.record("Google Home", f"{data['action']} received", data.get("speaker"))
 
             def complete(result):
                 try:
                     result.result()
                 except Exception as exc:
+                    activity.record("Google Home", f"{data['action']} failed", data.get("speaker"))
                     native_attempt = getattr(message, "delivery_attempt", None)
                     if native_attempt is not None:
                         # GCP Pub/Sub subscription dead-letter policy handles durable retry & routing to DLQ
@@ -106,6 +110,7 @@ class PubSubWorker:
                             )
                             message.nack()
                 else:
+                    activity.record("Google Home", f"{data['action']} completed", data.get("speaker"))
                     self.attempts.pop(msg_id, None)
                     message.ack()
 

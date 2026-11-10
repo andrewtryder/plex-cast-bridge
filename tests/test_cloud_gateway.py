@@ -47,7 +47,7 @@ def test_oauth_authorize_get_validation(client):
     )
     assert res.status_code == 200
     assert "Plex Cast Bridge" in res.text
-    assert "ADMIN_PASSPHRASE" in res.text
+    assert "dashboard" in res.text.lower()
 
 
 def test_oauth_authorize_post_failure(client):
@@ -176,7 +176,8 @@ def test_fulfillment_sync(client, auth_headers):
     assert devices[1]["id"] == "plex-jukebox:Kitchen"
     assert devices[1]["roomHint"] == "Kitchen"
     dev = devices[0]
-    assert dev["type"] == "action.devices.types.SETTOP"
+    assert dev["type"] == "action.devices.types.SPEAKER"
+    assert "action.devices.traits.MediaState" in dev["traits"]
 
     attrs = dev["attributes"]
     channels = attrs["availableChannels"]
@@ -266,7 +267,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": "plex-jukebox:Kitchen"}],
                             "execution": [{"command": "action.devices.commands.mediaNext", "params": {}}],
                         }
                     ]
@@ -287,7 +288,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": "plex-jukebox"}],
+                            "devices": [{"id": "plex-jukebox:Kitchen"}],
                             "execution": [
                                 {"command": "action.devices.commands.setVolume", "params": {"volumeLevel": 65}}
                             ],
@@ -423,7 +424,8 @@ def test_smart_home_command_key_translation_and_fail_closed(client, auth_headers
     res = client.post("/fulfillment", headers=auth_headers, json=cmd_set_input)
     assert res.status_code == 200
     assert published[0]["action"] == "resume"
-    assert published[0]["speaker"] == "Kitchen"
+    # Virtual device ID owns routing; SetInput must not retarget another speaker.
+    assert published[0]["speaker"] == "Master Bedroom"
 
     # 2. Test appSelect translates app_genre_rock -> Rock
     cmd_app_select = {
@@ -713,15 +715,141 @@ def test_build_sync_devices_empty_when_all_disabled():
             "speakers": [
                 {
                     "id": "plex-jukebox:Kitchen",
-                    "name": "Plex",
+                    "google_home_device_id": "plex-jukebox:Kitchen",
+                    "google_home_name": "Kitchen Plex",
                     "nicknames": ["Kitchen Plex"],
                     "roomHint": "Kitchen",
-                    "speaker_name": "Kitchen",
+                    "speaker_name": "Kitchen display",
                     "enabled": True,
-                }
+                    "google_home_visible": True,
+                },
+                {
+                    "id": "plex-jukebox:Living Room",
+                    "google_home_device_id": "plex-jukebox:Living Room",
+                    "google_home_name": "Living Room Plex",
+                    "nicknames": ["Living Room Plex"],
+                    "roomHint": "Living Room",
+                    "speaker_name": "Living Room speaker",
+                    "enabled": True,
+                    "google_home_visible": True,
+                },
+                {
+                    "id": "plex-jukebox:Bedroom",
+                    "google_home_device_id": "plex-jukebox:Bedroom",
+                    "google_home_name": "Bedroom Plex",
+                    "roomHint": "Bedroom",
+                    "speaker_name": "Bedroom Mini",
+                    "enabled": True,
+                    "google_home_visible": False,
+                },
             ]
         },
         default_speaker="Master Bedroom",
     )
-    assert len(enabled) == 1
-    assert enabled[0]["id"] == "plex-jukebox:Kitchen"
+    assert len(enabled) == 2
+    ids = {d["id"] for d in enabled}
+    assert ids == {"plex-jukebox:Kitchen", "plex-jukebox:Living Room"}
+    assert all(d["type"] == "action.devices.types.SPEAKER" for d in enabled)
+    assert "action.devices.traits.MediaState" in enabled[0]["traits"]
+    kitchen = next(d for d in enabled if d["id"] == "plex-jukebox:Kitchen")
+    assert kitchen["name"]["name"] == "Kitchen Plex"
+    assert "Plex" not in kitchen["name"]["nicknames"] or kitchen["name"]["nicknames"] == ["Kitchen Plex"]
+
+
+def test_resolve_execute_speaker_rejects_unknown_and_hidden():
+    from cloud_gateway.smart_home import resolve_execute_speaker
+
+    catalog = {
+        "speakers": [
+            {
+                "google_home_device_id": "plex-jukebox:Kitchen",
+                "speaker_name": "Kitchen display",
+                "enabled": True,
+                "google_home_visible": True,
+            },
+            {
+                "google_home_device_id": "plex-jukebox:Bedroom",
+                "speaker_name": "Bedroom Mini",
+                "enabled": True,
+                "google_home_visible": False,
+            },
+            {
+                "google_home_device_id": "plex-jukebox:Office",
+                "speaker_name": "Office Mini",
+                "enabled": False,
+                "google_home_visible": True,
+            },
+        ]
+    }
+    speaker, err = resolve_execute_speaker(catalog, "plex-jukebox:Kitchen")
+    assert speaker == "Kitchen display" and err is None
+    speaker, err = resolve_execute_speaker(catalog, "plex-jukebox:Bedroom")
+    assert speaker is None and err == "deviceNotFound"
+    speaker, err = resolve_execute_speaker(catalog, "plex-jukebox:Office")
+    assert speaker is None and err == "deviceTurnedOff"
+    speaker, err = resolve_execute_speaker(catalog, "plex-jukebox:Missing")
+    assert speaker is None and err == "deviceNotFound"
+    speaker, err = resolve_execute_speaker(catalog, None)
+    assert speaker is None and err == "deviceNotFound"
+
+
+def test_fulfillment_multi_device_execute_routes_independently(client, auth_headers):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-multi"
+
+    payload = {
+        "requestId": "exec-multi",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [
+                                {"id": "plex-jukebox:Kitchen"},
+                                {"id": "plex-jukebox:Master Bedroom"},
+                            ],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaNext", "params": {}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    assert len(published) == 2
+    speakers = {m["speaker"] for m in published}
+    assert speakers == {"Kitchen", "Master Bedroom"}
+
+
+def test_fulfillment_rejects_unknown_device_id(client, auth_headers):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-x"
+
+    payload = {
+        "requestId": "exec-unknown",
+        "inputs": [
+            {
+                "intent": "action.devices.EXECUTE",
+                "payload": {
+                    "commands": [
+                        {
+                            "devices": [{"id": "plex-jukebox:DoesNotExist"}],
+                            "execution": [
+                                {"command": "action.devices.commands.mediaNext", "params": {}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    body = res.json()
+    assert published == []
+    assert body["payload"]["commands"][0]["status"] == "ERROR"
+    assert body["payload"]["commands"][0]["errorCode"] == "deviceNotFound"

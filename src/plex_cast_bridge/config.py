@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     plex_music_section: str = "Music"
     default_speaker_name: str = ""
     default_speaker_host: str = ""
-    default_cast_volume: float = 0.20
+    default_cast_volume: float = 0.40
     max_cast_volume: float = 0.85
     night_cast_volume: float | None = None
     gemini_api_key: SecretStr = SecretStr("")
@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     enable_pubsub_listener: bool = False
     cloud_gateway_url: str = ""
     catalog_write_key: SecretStr | None = None
+    # Optional background Cast discovery. 0 disables; default 15 minutes.
+    speaker_discovery_interval_sec: int = 900
+    catalog_reconcile_interval_sec: int = 60
 
     @model_validator(mode="after")
     def require_local_api_key_unless_opted_in(self):

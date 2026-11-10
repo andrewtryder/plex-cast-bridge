@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -80,6 +81,12 @@ async def _init_plex_flexible(settings: Settings, auth: PlexAuthService):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Skip automatic mDNS / slow Plex retries during pytest TestClient lifespan.
+    skip_auto_discovery = os.environ.get("PCB_DISABLE_BACKGROUND_DISCOVERY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     settings = Settings()
     stored = load_app_settings()
     if stored:
@@ -101,7 +108,14 @@ async def lifespan(app: FastAPI):
         log.info("LOCAL_API_KEY authentication enabled for local API control endpoints.")
 
     try:
-        app.state.plex = await _init_plex_flexible(settings, app.state.plex_auth)
+        plex_attempts = 1 if skip_auto_discovery else int(os.environ.get("PCB_PLEX_STARTUP_ATTEMPTS", "5") or "5")
+        app.state.plex = await run_in_threadpool(
+            init_plex_service,
+            settings,
+            app.state.plex_auth,
+            max(1, plex_attempts),
+            0.1 if skip_auto_discovery else 1.0,
+        )
     except Exception as exc:
         log.error("Plex initialization failed; continuing without library access: %s", exc)
         app.state.plex = None
@@ -125,13 +139,60 @@ async def lifespan(app: FastAPI):
             catalog_sync.configure_gateway(cloud_url, write_key)
         except Exception as exc:
             log.warning("Could not configure catalog sync from env: %s", exc)
-    try:
-        discovered = await run_in_threadpool(app.state.cast.discover)
-        await run_in_threadpool(_persist_discovered_speakers_to_catalog, discovered, app.state.cast)
-        log.info("Startup LAN scan discovered %d Cast targets", len(discovered))
-    except Exception as exc:
-        log.warning("Initial speaker discovery warning: %s", exc)
+    catalog_sync.resume_pending_push()
+    discovery_task: asyncio.Task | None = None
+    discovery_lock = asyncio.Lock()
+    interval = int(getattr(settings, "speaker_discovery_interval_sec", 0) or 0)
 
+    if not skip_auto_discovery:
+        try:
+            discovered = await run_in_threadpool(app.state.cast.discover)
+            await run_in_threadpool(_persist_discovered_speakers_to_catalog, discovered, app.state.cast)
+            log.info("Startup LAN scan discovered %d Cast targets", len(discovered))
+        except Exception as exc:
+            log.warning("Initial speaker discovery warning: %s", exc)
+
+    async def _background_speaker_discovery():
+        while True:
+            await asyncio.sleep(max(interval, 60))
+            if discovery_lock.locked():
+                log.debug("Skipping overlapping speaker discovery job")
+                continue
+            async with discovery_lock:
+                try:
+                    discovered = await run_in_threadpool(app.state.cast.discover)
+                    result = await run_in_threadpool(
+                        _persist_discovered_speakers_to_catalog, discovered, app.state.cast
+                    )
+                    summary = (result or {}).get("summary") or {}
+                    if (result or {}).get("changed"):
+                        log.info("Background speaker discovery: %s", summary.get("message") or "catalog updated")
+                    else:
+                        log.debug("Background speaker discovery: unchanged")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("Background speaker discovery failed: %s", exc)
+
+    if interval > 0 and not skip_auto_discovery:
+        discovery_task = asyncio.create_task(_background_speaker_discovery())
+        log.info("Background speaker discovery every %ss", interval)
+
+    async def _reconcile_google_home():
+        interval_sec = max(10, int(settings.catalog_reconcile_interval_sec))
+        backoff = interval_sec
+        while True:
+            try:
+                result = await run_in_threadpool(catalog_sync.reconcile_cloud)
+                backoff = min(300, backoff * 2) if result.get("state") == "failed" else interval_sec
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Google Home reconciliation failed")
+                backoff = min(300, backoff * 2)
+            await asyncio.sleep(backoff)
+
+    reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
     if settings.enable_pubsub_listener:
 
@@ -142,13 +203,14 @@ async def lifespan(app: FastAPI):
                     plex=app.state.plex,
                     cast=app.state.cast,
                     settings=app.state.settings,
-                    command=Command(query=data["query"], speaker=data.get("speaker")),
+                    command=Command(query=data["query"], speaker=data.get("speaker"), device_id=data.get("device_id")),
                 )
             return await transport(
                 cast=app.state.cast,
                 settings=app.state.settings,
                 command=Transport(
                     action=data["action"],
+                    device_id=data.get("device_id"),
                     speaker=data.get("speaker"),
                     volume=data.get("volume"),
                     relative_volume=data.get("relative_volume"),
@@ -159,6 +221,18 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        catalog_sync.stop_pending_push()
+        reconcile_task.cancel()
+        try:
+            await reconcile_task
+        except asyncio.CancelledError:
+            pass
+        if discovery_task is not None:
+            discovery_task.cancel()
+            try:
+                await discovery_task
+            except asyncio.CancelledError:
+                pass
         if app.state.worker:
             app.state.worker.close()
         await run_in_threadpool(app.state.cast.close)

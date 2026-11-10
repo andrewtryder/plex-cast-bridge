@@ -50,3 +50,4 @@ gcp-cloud-run/catalog.json
 data/
 dead_letter_queue.jsonl
 *.jsonl
+.secrets/
