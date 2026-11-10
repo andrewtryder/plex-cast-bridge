@@ -51,3 +51,10 @@ data/
 dead_letter_queue.jsonl
 *.jsonl
 .secrets/
+
+# Runtime state when running from the repository root (may contain credentials)
+/google_home_sync.json
+/google_home_setup.json
+/plex_connection.json
+/app_settings.json
+/dashboard_sessions.sqlite3*

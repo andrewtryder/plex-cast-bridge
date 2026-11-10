@@ -34,6 +34,11 @@ tests/
 test-speaker/
 
 # Runtime mutable data and logs
+/google_home_sync.json
+/google_home_setup.json
+/plex_connection.json
+/app_settings.json
+/dashboard_sessions.sqlite3*
 data/
 dead_letter_queue.jsonl
 *.jsonl

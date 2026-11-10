@@ -7,6 +7,16 @@ umask 077
 # Deploy Script: Plex Google Home Fulfillment on GCP Cloud Run
 # ==============================================================================
 
+# Provisioning and image upgrades are different operations. Refuse to invent OAuth
+# credentials when the existing installation's environment file is unavailable.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: $ENV_FILE is missing. Restore the existing gateway configuration before provisioning, or create it explicitly for a new installation." >&2
+    echo "For an existing Cloud Run service, update its image without replacing environment variables; see gcp-cloud-run/README.md." >&2
+    exit 1
+fi
+
 # Resource attribution for Google Cloud metrics
 export CLOUDSDK_METRICS_ENVIRONMENT="${CLOUDSDK_METRICS_ENVIRONMENT:+$CLOUDSDK_METRICS_ENVIRONMENT }datacloud.antigravity"
 
@@ -168,22 +178,6 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 
 # 6. Check environment variables
 echo "[6/8] Checking environment configuration..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-
-if [ ! -f "$ENV_FILE" ]; then
-    echo "  Notice: .env not found at $ENV_FILE. Creating from .env.example with random keys..."
-    cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
-    # Generate random secrets
-    GEN_CLIENT_SECRET=$(openssl rand -hex 16)
-    GEN_PASSPHRASE=$(openssl rand -hex 8)
-    GEN_SIGNING_SECRET=$(openssl rand -hex 32)
-    sed -i '' "s/GCP_PROJECT_ID=.*/GCP_PROJECT_ID=$PROJECT_ID/" "$ENV_FILE" 2>/dev/null || sed -i "s/GCP_PROJECT_ID=.*/GCP_PROJECT_ID=$PROJECT_ID/" "$ENV_FILE"
-    sed -i '' "s/GOOGLE_CLIENT_SECRET=.*/GOOGLE_CLIENT_SECRET=$GEN_CLIENT_SECRET/" "$ENV_FILE" 2>/dev/null || sed -i "s/GOOGLE_CLIENT_SECRET=.*/GOOGLE_CLIENT_SECRET=$GEN_CLIENT_SECRET/" "$ENV_FILE"
-    sed -i '' "s/ADMIN_PASSPHRASE=.*/ADMIN_PASSPHRASE=$GEN_PASSPHRASE/" "$ENV_FILE" 2>/dev/null || sed -i "s/ADMIN_PASSPHRASE=.*/ADMIN_PASSPHRASE=$GEN_PASSPHRASE/" "$ENV_FILE"
-    sed -i '' "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE" 2>/dev/null || sed -i "s/OAUTH_SIGNING_SECRET=.*/OAUTH_SIGNING_SECRET=$GEN_SIGNING_SECRET/" "$ENV_FILE"
-    echo "  Generated default secrets in $ENV_FILE."
-fi
 chmod 600 "$ENV_FILE"
 
 # 7. Deploy to Cloud Run
