@@ -14,7 +14,7 @@ from typing import Iterator
 
 from . import catalog_store
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def database_path() -> Path:
@@ -96,6 +96,10 @@ def initialize() -> None:
             for statement in schema.split(";"):
                 if statement.strip():
                     db.execute(statement)
+        if version < 2:
+            db.execute('ALTER TABLE tracks ADD COLUMN play_count INTEGER')
+            db.execute('ALTER TABLE scan_tracks ADD COLUMN play_count INTEGER')
+            db.execute('PRAGMA user_version=2')
         db.commit()
 
 
@@ -140,10 +144,12 @@ def status() -> dict:
             COUNT(DISTINCT NULLIF(album_key, '')) albums,
             COALESCE(SUM(CASE WHEN COALESCE(artist, '') != '' AND COALESCE(album, '') != '' THEN 1 ELSE 0 END), 0) artist_album,
             COALESCE(SUM(CASE WHEN genres != '[]' THEN 1 ELSE 0 END), 0) genre,
-            COALESCE(SUM(CASE WHEN moods != '[]' THEN 1 ELSE 0 END), 0) mood
+            COALESCE(SUM(CASE WHEN moods != '[]' THEN 1 ELSE 0 END), 0) mood,
+            COALESCE(SUM(CASE WHEN play_count IS NOT NULL THEN 1 ELSE 0 END), 0) play_count
             FROM tracks WHERE server_id=? AND library_id=?''', scope).fetchone()
         years = db.execute('''SELECT COUNT(*) FROM (SELECT album_key FROM tracks WHERE server_id=? AND library_id=?
             AND COALESCE(album_key,'') != '' GROUP BY album_key HAVING MAX(COALESCE(year,0)) > 0)''', scope).fetchone()[0]
         return {'scan': scan, 'counts': {'tracks': row['tracks'], 'artists': row['artists'], 'albums': row['albums']},
                 'quality': {'tracks_with_artist_and_album': row['artist_album'], 'tracks_with_genres': row['genre'],
-                            'tracks_with_moods': row['mood'], 'albums_with_year': years}}
+                            'tracks_with_moods': row['mood'], 'albums_with_year': years,
+                            'tracks_with_play_count': row['play_count']}}

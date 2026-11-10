@@ -54,11 +54,13 @@ def _record(track: Any, server_id: str, library_id: str) -> tuple:
     year = getattr(track, 'year', None)
     duration = getattr(track, 'duration', None)
     updated = getattr(track, 'updatedAt', None)
+    play_count = getattr(track, 'viewCount', None)
     return (server_id, library_id, key, title, _text(getattr(track, 'grandparentTitle', None)),
             _text(getattr(track, 'grandparentRatingKey', None)), _text(getattr(track, 'parentTitle', None)),
             _text(getattr(track, 'parentRatingKey', None)), int(year) if year else None,
             int(duration) if duration is not None else None, _tags(track, 'genres'), _tags(track, 'moods'),
-            updated.isoformat() if hasattr(updated, 'isoformat') else _text(updated))
+            updated.isoformat() if hasattr(updated, 'isoformat') else _text(updated),
+            int(play_count) if play_count is not None else None)
 
 
 def _is_cancelled() -> bool:
@@ -102,7 +104,7 @@ def _run(plex: Any, lock_file) -> None:
             if _is_cancelled():
                 raise InterruptedError('Scan cancelled')
             with music_index.connect() as db:
-                db.executemany('INSERT INTO scan_tracks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', records)
+                db.executemany('INSERT INTO scan_tracks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', records)
                 db.execute('UPDATE scan_state SET scanned=? WHERE id=1', (offset + len(records),))
                 db.commit()
             offset += len(records)
@@ -121,12 +123,13 @@ def _run(plex: Any, lock_file) -> None:
                   title=excluded.title, artist=excluded.artist, artist_key=excluded.artist_key,
                   album=excluded.album, album_key=excluded.album_key, year=excluded.year,
                   duration_ms=excluded.duration_ms, genres=excluded.genres, moods=excluded.moods,
-                  updated_at=excluded.updated_at
+                  updated_at=excluded.updated_at, play_count=excluded.play_count
                 WHERE tracks.title IS NOT excluded.title OR tracks.artist IS NOT excluded.artist
                    OR tracks.artist_key IS NOT excluded.artist_key OR tracks.album IS NOT excluded.album
                    OR tracks.album_key IS NOT excluded.album_key OR tracks.year IS NOT excluded.year
                    OR tracks.duration_ms IS NOT excluded.duration_ms OR tracks.genres IS NOT excluded.genres
-                   OR tracks.moods IS NOT excluded.moods OR tracks.updated_at IS NOT excluded.updated_at''')
+                   OR tracks.moods IS NOT excluded.moods OR tracks.updated_at IS NOT excluded.updated_at
+                   OR tracks.play_count IS NOT excluded.play_count''')
             db.execute('''DELETE FROM tracks WHERE server_id=? AND library_id=? AND NOT EXISTS
                 (SELECT 1 FROM scan_tracks s WHERE s.server_id=tracks.server_id AND s.library_id=tracks.library_id
                  AND s.rating_key=tracks.rating_key)''', (server_id, library_id))

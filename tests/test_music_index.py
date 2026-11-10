@@ -12,10 +12,10 @@ def index_dir(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _track(key, title):
+def _track(key, title, view_count=None):
     return SimpleNamespace(ratingKey=key, title=title, grandparentTitle='Artist', grandparentRatingKey='a1',
                            parentTitle='Album', parentRatingKey='b1', year=2020, duration=1000,
-                           genres=[SimpleNamespace(tag='Jazz')], moods=[], updatedAt=None)
+                           genres=[SimpleNamespace(tag='Jazz')], moods=[], updatedAt=None, viewCount=view_count)
 
 
 def _plex(tracks):
@@ -129,6 +129,28 @@ def test_refuses_unknown_future_schema(index_dir):
         db.execute('PRAGMA user_version=999')
     with pytest.raises(RuntimeError, match='newer'):
         music_index.initialize()
+
+
+def test_migrates_v1_index_without_losing_tracks(index_dir):
+    import sqlite3
+
+    path = music_index.database_path()
+    with sqlite3.connect(path) as db:
+        db.execute('''CREATE TABLE tracks (
+            server_id TEXT NOT NULL, library_id TEXT NOT NULL, rating_key TEXT NOT NULL,
+            title TEXT NOT NULL, artist TEXT, artist_key TEXT, album TEXT, album_key TEXT,
+            year INTEGER, duration_ms INTEGER, genres TEXT NOT NULL DEFAULT '[]',
+            moods TEXT NOT NULL DEFAULT '[]', updated_at TEXT,
+            PRIMARY KEY(server_id, library_id, rating_key))''')
+        db.execute('CREATE TABLE scan_tracks AS SELECT * FROM tracks WHERE 0')
+        db.execute("INSERT INTO tracks VALUES ('server', 'library', '42', 'Old track', NULL, NULL, NULL, NULL, NULL, NULL, '[]', '[]', NULL)")
+        db.execute('PRAGMA user_version=1')
+    music_index.initialize()
+    with music_index.connect() as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        migrated = db.execute('SELECT title, play_count FROM tracks WHERE rating_key=?', ('42',)).fetchone()
+        assert tuple(migrated) == ('Old track', None)
+        assert 'play_count' in {row['name'] for row in db.execute('PRAGMA table_info(scan_tracks)')}
 
 
 def test_changed_library_during_scan_preserves_snapshot(index_dir):
