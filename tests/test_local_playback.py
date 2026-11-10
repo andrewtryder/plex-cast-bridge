@@ -181,59 +181,20 @@ def test_transport_volume_actions():
     assert sq.armed is False
 
 
-def test_local_api_key_authentication():
-    from pydantic import SecretStr, ValidationError
+def test_local_api_is_open_even_with_legacy_key():
+    from pydantic import SecretStr
 
     from plex_cast_bridge.config import Settings
 
-    with pytest.raises(ValidationError):
-        Settings(
-            plex_token=SecretStr("tok"),
-            local_api_key=None,
-            allow_unauthenticated_local_api=False,
-        )
-
-    ok = Settings(
-        plex_token=SecretStr("tok"),
-        local_api_key=None,
-        allow_unauthenticated_local_api=True,
-    )
-    assert ok.allow_unauthenticated_local_api is True
-
+    settings = Settings(plex_token=None, local_api_key=SecretStr("legacy-key"))
+    assert settings.local_api_key.get_secret_value() == "legacy-key"
     mock_speaker = MagicMock()
     mock_speaker.status.return_value = {"speaker": "Master Bedroom", "state": "IDLE"}
-    mock_cast = MagicMock()
-    mock_cast.get.return_value = mock_speaker
-
-    app.state.cast = mock_cast
-    app.state.settings = SimpleNamespace(
-        default_speaker_name="Master Bedroom",
-        local_api_key=SecretStr("super-secret-local-key"),
-    )
-
-    client = TestClient(app)
-
-    # 1. Unauthenticated request rejected
-    resp = client.post("/api/transport", json={"action": "pause", "speaker": "Master Bedroom"})
-    assert resp.status_code == 401
-
-    # 2. Authenticated with X-API-Key succeeds
-    resp = client.post(
-        "/api/transport",
-        headers={"X-API-Key": "super-secret-local-key"},
-        json={"action": "pause", "speaker": "Master Bedroom"},
-    )
-    assert resp.status_code == 200
-
-    # 3. API keys in URLs are rejected.
-    resp = client.post(
-        "/api/transport?api_key=super-secret-local-key",
-        json={"action": "resume", "speaker": "Master Bedroom"},
-    )
-    assert resp.status_code == 400
-
-    # Restore settings without local_api_key
-    app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
+    app.state.cast = MagicMock()
+    app.state.cast.get.return_value = mock_speaker
+    app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom", local_api_key=SecretStr("legacy-key"))
+    response = TestClient(app).post("/api/transport", json={"action": "pause", "speaker": "Master Bedroom"})
+    assert response.status_code == 200
 
 
 def test_plex_startup_retry_eventually_succeeds(monkeypatch):

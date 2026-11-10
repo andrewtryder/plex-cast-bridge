@@ -7,11 +7,10 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .api_auth import verify_local_api
 from .api_models import Command, LibraryPlay, QueueMutate, SpeakerPatch, SpeakerTest, SpeakerToggle, Transport
 from .app_settings_store import apply_to_settings, load as load_app_settings, public_dict, save as save_app_settings
 from .catalog_store import (
@@ -35,7 +34,7 @@ DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.
 router = APIRouter()
 
 
-@router.get("/api/activity", dependencies=[Depends(verify_local_api)])
+@router.get("/api/activity")
 async def recent_activity():
     return {"events": activity.recent()}
 
@@ -90,7 +89,7 @@ async def dashboard_ui():
     return HTMLResponse("<h1>Plex Cast Bridge Dashboard template missing</h1>")
 
 
-@router.post("/api/command", dependencies=[Depends(verify_local_api)])
+@router.post("/api/command")
 async def command_endpoint(request: Request, command: Command):
     state = request.app.state
     plex = _require_plex(request)
@@ -109,7 +108,7 @@ async def command_endpoint(request: Request, command: Command):
         raise HTTPException(status_code=500, detail=f"Playback failed: {exc}") from exc
 
 
-@router.get("/api/library/tracks", dependencies=[Depends(verify_local_api)])
+@router.get("/api/library/tracks")
 async def library_tracks(request: Request, query: str = "", limit: int = 25):
     plex = _require_plex(request)
     if not 1 <= limit <= 100:
@@ -132,7 +131,7 @@ async def library_tracks(request: Request, query: str = "", limit: int = 25):
     return await run_in_threadpool(search)
 
 
-@router.post("/api/speakers/test", dependencies=[Depends(verify_local_api)])
+@router.post("/api/speakers/test")
 async def test_speaker_endpoint(request: Request, command: SpeakerTest):
     state = request.app.state
     plex = _require_plex(request)
@@ -155,7 +154,7 @@ async def test_speaker_endpoint(request: Request, command: SpeakerTest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/transport", dependencies=[Depends(verify_local_api)])
+@router.post("/api/transport")
 async def transport_endpoint(request: Request, command: Transport):
     state = request.app.state
     try:
@@ -195,7 +194,7 @@ def _public_speaker(rec: dict) -> dict:
     }
 
 
-@router.get("/api/speakers", dependencies=[Depends(verify_local_api)])
+@router.get("/api/speakers")
 async def speakers_endpoint(request: Request, scan: bool = False):
     state = request.app.state
 
@@ -217,7 +216,7 @@ async def speakers_endpoint(request: Request, scan: bool = False):
         raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
 
 
-@router.post("/api/speakers/refresh", dependencies=[Depends(verify_local_api)])
+@router.post("/api/speakers/refresh")
 async def refresh_speakers_endpoint(request: Request):
     state = request.app.state
 
@@ -236,7 +235,7 @@ async def refresh_speakers_endpoint(request: Request):
         raise HTTPException(status_code=500, detail=f"Speaker refresh failed: {exc}") from exc
 
 
-@router.post("/api/speakers/toggle", dependencies=[Depends(verify_local_api)])
+@router.post("/api/speakers/toggle")
 async def toggle_speaker_endpoint(request: Request, toggle: SpeakerToggle):
     state = request.app.state
 
@@ -275,7 +274,7 @@ async def toggle_speaker_endpoint(request: Request, toggle: SpeakerToggle):
         raise HTTPException(status_code=500, detail=f"Catalog persistence failed: {exc}") from exc
 
 
-@router.patch("/api/speakers/{device_id}", dependencies=[Depends(verify_local_api)])
+@router.patch("/api/speakers/{device_id}")
 async def patch_speaker_endpoint(request: Request, device_id: str, body: SpeakerPatch):
     state = request.app.state
     patch = body.model_dump(exclude_none=True)
@@ -298,7 +297,7 @@ async def patch_speaker_endpoint(request: Request, device_id: str, body: Speaker
         raise HTTPException(status_code=500, detail=f"Speaker update failed: {exc}") from exc
 
 
-@router.delete("/api/speakers/{device_id}", dependencies=[Depends(verify_local_api)])
+@router.delete("/api/speakers/{device_id}")
 async def forget_speaker_endpoint(device_id: str):
     def remove():
         rec = forget_speaker(device_id)
@@ -317,26 +316,26 @@ async def forget_speaker_endpoint(device_id: str):
         raise HTTPException(status_code=404, detail="Speaker not found") from None
 
 
-@router.get("/api/status", dependencies=[Depends(verify_local_api)])
+@router.get("/api/status")
 async def status_endpoint(request: Request):
     state = request.app.state
     return {name: speaker.status() for name, speaker in list(state.cast.speakers.items())}
 
 
-@router.post("/api/library/refresh", dependencies=[Depends(verify_local_api)])
+@router.post("/api/library/refresh")
 async def refresh_endpoint(request: Request):
     plex = _require_plex(request)
     return await run_in_threadpool(plex.refresh)
 
 
-@router.get("/api/sync-catalog", dependencies=[Depends(verify_local_api)])
+@router.get("/api/sync-catalog")
 async def catalog_endpoint(request: Request):
     plex = _require_plex(request)
     catalog = plex.catalog
     return {"genres": catalog["genres"], "artists": catalog["artists"][:100]}
 
 
-@router.get("/api/artwork/{rating_key}", dependencies=[Depends(verify_local_api)])
+@router.get("/api/artwork/{rating_key}")
 async def artwork_proxy(request: Request, rating_key: str):
     """Proxy Plex thumbnails without exposing tokens to the browser (SSRF-hardened)."""
     plex = _require_plex(request)
@@ -375,7 +374,7 @@ async def artwork_proxy(request: Request, rating_key: str):
     return Response(content=data, media_type=content_type)
 
 
-@router.get("/api/queue", dependencies=[Depends(verify_local_api)])
+@router.get("/api/queue")
 async def queue_get(request: Request, speaker: str | None = None):
     state = request.app.state
     name = speaker or state.settings.default_speaker_name
@@ -389,7 +388,7 @@ async def queue_get(request: Request, speaker: str | None = None):
     }
 
 
-@router.post("/api/queue", dependencies=[Depends(verify_local_api)])
+@router.post("/api/queue")
 async def queue_mutate(request: Request, body: QueueMutate):
     state = request.app.state
     plex = _require_plex(request)
@@ -427,7 +426,7 @@ async def queue_mutate(request: Request, body: QueueMutate):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/library/browse", dependencies=[Depends(verify_local_api)])
+@router.get("/api/library/browse")
 async def library_browse(
     request: Request,
     kind: str = "artists",
@@ -506,7 +505,7 @@ async def library_browse(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/api/library/play", dependencies=[Depends(verify_local_api)])
+@router.post("/api/library/play")
 async def library_play(request: Request, body: LibraryPlay):
     state = request.app.state
     plex = _require_plex(request)
@@ -542,7 +541,7 @@ async def library_play(request: Request, body: LibraryPlay):
 
 
 
-@router.get("/api/settings", dependencies=[Depends(verify_local_api)])
+@router.get("/api/settings")
 async def get_settings(request: Request):
     """Public non-secret settings + library summary for Settings → Playback."""
     settings = request.app.state.settings
@@ -574,7 +573,7 @@ async def get_settings(request: Request):
     }
 
 
-@router.patch("/api/settings", dependencies=[Depends(verify_local_api)])
+@router.patch("/api/settings")
 async def patch_settings(request: Request):
     """Update editable volumes; persist to data/app_settings.json and apply live."""
     try:
@@ -628,7 +627,7 @@ async def patch_settings(request: Request):
 
     return await get_settings(request)
 
-@router.get("/api/diagnostics", dependencies=[Depends(verify_local_api)])
+@router.get("/api/diagnostics")
 async def diagnostics(request: Request):
     from . import catalog_sync
     from . import google_home_setup as gh
@@ -698,7 +697,7 @@ async def diagnostics(request: Request):
     }
 
 
-@router.get("/api/backup", dependencies=[Depends(verify_local_api)])
+@router.get("/api/backup")
 async def backup_export(request: Request):
     """Download non-secret configuration backup (excludes tokens, PEMs, SA keys)."""
     buf = io.BytesIO()
@@ -744,7 +743,7 @@ async def backup_export(request: Request):
     )
 
 
-@router.post("/api/backup/restore/preview", dependencies=[Depends(verify_local_api)])
+@router.post("/api/backup/restore/preview")
 async def backup_restore_preview(request: Request):
     """Preview a non-secret backup zip without writing files."""
     form = await request.form()
@@ -778,7 +777,7 @@ async def backup_restore_preview(request: Request):
     }
 
 
-@router.post("/api/backup/restore", dependencies=[Depends(verify_local_api)])
+@router.post("/api/backup/restore")
 async def backup_restore(request: Request):
     """Apply a non-secret backup. Requires confirm=true."""
     form = await request.form()

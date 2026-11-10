@@ -1,4 +1,4 @@
-export function initMaintenance({ $, api, announce, authHeaders }) {
+export function initMaintenance({ $, api, announce, jsonHeaders }) {
   async function refreshDiagnostics() {
     try {
       const data = await api('/api/diagnostics');
@@ -49,7 +49,7 @@ export function initMaintenance({ $, api, announce, authHeaders }) {
   $('backupDownloadBtn')?.addEventListener('click', async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/backup', { headers: authHeaders() });
+      const res = await fetch('/api/backup', { headers: jsonHeaders() });
       if (!res.ok) throw new Error('Backup failed');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

@@ -29,13 +29,14 @@ def test_local_state_survives_process_restart_and_ignores_new_seed(tmp_path):
     data.mkdir()
     env = {**os.environ, "DATA_DIR": str(data)}
     initial = """
-from plex_cast_bridge import catalog_store, catalog_sync, dashboard_sessions
+from plex_cast_bridge import catalog_store, catalog_sync
 catalog_store.save_catalog_data({'speakers': [], 'artists': ['user library']}, sync_cloud=False)
 catalog_sync.save_sync_state({'version': 7, 'catalog_write_key': 'private-key'})
-print(dashboard_sessions.create_session())
+
 """
-    created = subprocess.run([sys.executable, "-c", initial], env=env, capture_output=True, text=True, check=True)
-    token = created.stdout.strip()
+    subprocess.run([sys.executable, "-c", initial], env=env, capture_output=True, text=True, check=True)
+    legacy_db = data / "dashboard_sessions.sqlite3"
+    legacy_db.write_bytes(b"preserve legacy file")
     # A separate process simulates code replacement with a different bundled catalog.
     seed = tmp_path / "new-image"
     seed.mkdir()
@@ -43,11 +44,11 @@ print(dashboard_sessions.create_session())
     restarted = """
 import os
 from pathlib import Path
-from plex_cast_bridge import catalog_store, catalog_sync, dashboard_sessions
+from plex_cast_bridge import catalog_store, catalog_sync
 catalog_store.PROJECT_ROOT = Path(os.environ["TEST_SEED_DIR"])
 assert catalog_store.load_catalog_data()['artists'] == ['user library']
 assert catalog_sync.load_sync_state()['catalog_write_key'] == 'private-key'
 assert catalog_sync.load_sync_state()['version'] == 7
-assert dashboard_sessions.valid_session(os.environ['TEST_SESSION_TOKEN'])
+assert (Path(os.environ["DATA_DIR"]) / "dashboard_sessions.sqlite3").read_bytes() == b"preserve legacy file"
 """
-    subprocess.run([sys.executable, "-c", restarted], env={**env, "TEST_SESSION_TOKEN": token, "TEST_SEED_DIR": str(seed)}, check=True)
+    subprocess.run([sys.executable, "-c", restarted], env={**env, "TEST_SEED_DIR": str(seed)}, check=True)

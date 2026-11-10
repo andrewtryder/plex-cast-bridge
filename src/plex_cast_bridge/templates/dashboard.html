@@ -11,16 +11,6 @@
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-<section id="dashboardAccess" class="shell" aria-label="Dashboard access" hidden>
-  <div class="conn-card">
-    <h2 class="conn-title">Dashboard access</h2>
-    <p class="conn-meta">Request access, then approve the matching code in an already authorized dashboard. An administrator can also approve it from the bridge over SSH.</p>
-    <p id="dashboardHttpWarning" class="conn-meta" hidden>This dashboard uses HTTP. Anyone who can observe your network traffic may capture your session. Use only on a trusted network.</p>
-    <button type="button" class="accent-button" id="dashboardRequestAccess">Request access</button>
-    <p id="dashboardAccessStatus" role="status" aria-live="polite"></p>
-    <p class="conn-meta">Local recovery: <code>docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE</code></p>
-  </div>
-</section>
 <svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
   <symbol id="play-icon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" stroke="none" fill="currentColor"/></symbol>
   <symbol id="pause-icon" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" stroke="none" fill="currentColor"/></symbol>
@@ -40,12 +30,13 @@
 <header class="masthead">
   <div class="shell masthead-inner">
     <a href="#player" class="brand" aria-label="Plex Cast Bridge home">
-      <img class="brand-icon" src="/assets/icon.png" alt="" width="31" height="31">
+      <img class="brand-icon" src="/assets/icon.png" alt="" width="40" height="40">
       <span class="brand-name">Plex Cast Bridge</span>
     </a>
     <nav class="primary-nav" aria-label="Main navigation">
       <a id="navPlayer" href="#player" aria-current="page">Player</a>
       <a id="navDj" href="#dj">DJ</a>
+      <a id="navSpeakers" href="#speakers">Speakers</a>
     </nav>
     <div class="masthead-right">
       <div class="connection" id="connectionStatus" aria-live="polite">
@@ -161,22 +152,7 @@
     </div>
   </section>
 
-  <section class="page page-settings" id="settingsPage" hidden aria-label="Settings">
-    <div class="settings-head">
-      <span class="label">Settings</span>
-      <h1>Connections</h1>
-      <p>Manage connections, speakers, and dashboard access.</p>
-    </div>
-
-    <nav class="settings-tabs" aria-label="Settings sections">
-      <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
-      <button type="button" class="settings-tab" data-settings-tab="speakers">Speakers</button>
-      <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
-      <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
-      <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
-    </nav>
-
-    <div class="settings-panel" data-settings-panel="speakers" hidden>
+    <section class="page page-speakers" id="speakersPage" aria-label="Speakers" hidden>
     <section class="speaker-settings" id="speakers" aria-labelledby="speakerHeading">
       <div class="section-top">
         <h2 id="speakerHeading" class="section-title">Speakers</h2>
@@ -189,21 +165,26 @@
       <div id="deviceList" class="device-list" aria-live="polite"></div>
       <p class="below-note" id="deviceHint">Stable IDs survive renames and IP changes. Forgetting a speaker removes its virtual Plex device on the next Google Home sync — it does not remove the Nest speaker from Google Home.</p>
     </section>
+      <button type="button" class="ghost-button" id="speakersSyncBtn">Refresh &amp; Sync Google Home</button>
       <p id="speakerSyncStatus" class="conn-meta" aria-live="polite">Google Home sync status unavailable.</p>
+    </section>
+
+
+  <section class="page page-settings" id="settingsPage" hidden aria-label="Settings">
+    <div class="settings-head">
+      <span class="label">Settings</span>
+      <h1>Connections</h1>
+      <p>Manage connections and playback settings.</p>
     </div>
 
+    <nav class="settings-tabs" aria-label="Settings sections">
+      <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
+      <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
+      <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
+      <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
+    </nav>
+
     <div class="settings-panel" data-settings-panel="connections">
-      <div class="conn-card">
-        <h2 class="conn-title">Dashboard access</h2>
-        <p class="conn-meta">Approve another browser only after checking that its code matches.</p>
-        <p id="dashboardSessionWarning" class="conn-meta" hidden>This dashboard uses HTTP; network observers may capture your session. Use only on a trusted network.</p>
-        <div id="dashboardPendingRequests" aria-live="polite"></div>
-        <div class="conn-actions">
-          <button type="button" class="ghost-button" id="dashboardRefreshRequests">Refresh requests</button>
-          <button type="button" class="ghost-button" id="dashboardRevokeOthers">Sign out other browsers</button>
-          <button type="button" class="ghost-button" id="dashboardLogout">Sign out</button>
-        </div>
-      </div>
     <div class="conn-card">
       <div class="conn-row">
         <div>
@@ -376,8 +357,7 @@
 </main>
 
 <footer class="footnote">
-  <span>Plex Cast Bridge <span class="divider-symbol">/</span> A quieter way to listen</span>
-  <span>Local control</span>
+  <span>Plex Cast Bridge <span class="divider-symbol">·</span> <a href="https://github.com/andrewtryder/plex-cast-bridge">View on GitHub</a></span>
 </footer>
 </div>
 

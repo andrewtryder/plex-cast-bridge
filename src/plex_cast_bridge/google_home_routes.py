@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from .api_auth import verify_local_api
 from . import catalog_sync
 from . import google_home_setup as setup
 from . import wizard_verify
@@ -17,7 +16,7 @@ from .gcp_provision import build_provision_plan, describe_cost_notes, run_provis
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/google-home", dependencies=[Depends(verify_local_api)])
+router = APIRouter(prefix="/api/google-home")
 
 
 class WizardAdvance(BaseModel):
@@ -161,7 +160,7 @@ async def provision_execute(body: ProvisionRequest):
 
 @router.post("/gateway/configure")
 async def gateway_configure(body: GatewayConfig):
-    sync_state = catalog_sync.configure_gateway(body.cloud_gateway_url, body.catalog_write_key)
+    catalog_sync.configure_gateway(body.cloud_gateway_url, body.catalog_write_key)
     url = body.cloud_gateway_url.rstrip("/")
     setup.save_setup(
         {
@@ -173,7 +172,7 @@ async def gateway_configure(body: GatewayConfig):
             },
         }
     )
-    return {"setup": setup.public_status(), "catalog_sync": catalog_sync.public_sync_status(), "sync_state": sync_state}
+    return {"setup": setup.public_status(), "catalog_sync": catalog_sync.public_sync_status()}
 
 
 
@@ -182,15 +181,8 @@ class PairingApproval(BaseModel):
     code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
 
 
-def _require_authenticated_dashboard(request: Request) -> None:
-    local_key = getattr(request.app.state.settings, "local_api_key", None)
-    if not local_key or not local_key.get_secret_value():
-        raise HTTPException(status_code=403, detail="Configure LOCAL_API_KEY before approving links")
-
-
 @router.get("/pairing")
 async def pending_pairing(request: Request):
-    _require_authenticated_dashboard(request)
     try:
         return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/pending")
     except Exception:
@@ -200,7 +192,6 @@ async def pending_pairing(request: Request):
 
 @router.post("/pairing/approve")
 async def approve_pairing(body: PairingApproval, request: Request):
-    _require_authenticated_dashboard(request)
     try:
         return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/approve", body.model_dump())
     except Exception:

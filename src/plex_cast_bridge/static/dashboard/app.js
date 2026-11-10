@@ -1,7 +1,6 @@
 import { createDjHelpers } from './dj.js';
 import { initMaintenance } from './maintenance.js';
 import { initGoogleHome } from './google-home.js';
-import { migrationReady, initDashboardSession } from './session.js';
 import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingState, pctFromUnit, unitFromPct } from './util.js';
 
 
@@ -17,16 +16,15 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
   let volumeTimer = null;
   let statusInFlight = false;
   let commandPending = false;
-  let authFailed = false;
   let bridgeOk = null;
   let volumeDragging = false;
   let plexStatus = { linked: false, plex_ready: false };
   let plexPollTimer = null;
   let plexConnecting = false;
 
-  initDashboardSession({ api, announce });
+  localStorage.removeItem('plex_cast_api_key');
 
-  function authHeaders(extra = {}) {
+  function jsonHeaders(extra = {}) {
     return { 'Content-Type': 'application/json', ...extra };
   }
 
@@ -94,17 +92,25 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     const hash = location.hash || '#player';
     const settings = hash === '#settings';
     const dj = hash === '#dj';
-    const player = !settings && !dj;
+    const speakersView = hash === '#speakers';
+    const player = !settings && !dj && !speakersView;
     $('playerPage').hidden = !player;
     $('djPage').hidden = !dj;
     $('settingsPage').hidden = !settings;
+    $('speakersPage').hidden = !speakersView;
     $('navPlayer').removeAttribute('aria-current');
     $('navDj').removeAttribute('aria-current');
+    $('navSpeakers').removeAttribute('aria-current');
     $('navSettings').removeAttribute('aria-current');
     if (settings) {
       $('navSettings').setAttribute('aria-current', 'page');
       document.title = 'Settings — Plex Cast Bridge';
       refreshPlexStatus();
+    } else if (speakersView) {
+      $('navSpeakers').setAttribute('aria-current', 'page');
+      document.title = 'Speakers — Plex Cast Bridge';
+      loadSpeakers();
+      refreshGoogleHome();
     } else if (dj) {
       $('navDj').setAttribute('aria-current', 'page');
       document.title = 'Smart DJ — Plex Cast Bridge';
@@ -145,11 +151,11 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     try {
       plexStatus = await api('/api/plex/status');
       renderPlexStatus();
-      if (bridgeOk !== false && !authFailed) {
+      if (bridgeOk !== false) {
         setConnection(true, plexStatus.linked ? 'Local bridge connected' : 'Bridge online · Plex not linked');
       }
     } catch (err) {
-      if (!authFailed) setConnection(false, 'Bridge unreachable');
+      setConnection(false, 'Bridge unreachable');
       $('plexLinkLabel').textContent = err.message || 'Could not load Plex status';
     }
   }
@@ -388,7 +394,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     if (!art) return;
     if (art.startsWith('/api/')) {
       try {
-        const res = await fetch(art, { headers: authHeaders() });
+        const res = await fetch(art, { headers: jsonHeaders() });
         if (!res.ok) throw new Error('art');
         const blob = await res.blob();
         if (coverObjectUrl) URL.revokeObjectURL(coverObjectUrl);
@@ -439,14 +445,6 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
   function renderDevices() {
     const list = $('deviceList');
     list.replaceChildren();
-
-    if (authFailed) {
-      const row = document.createElement('div');
-      row.className = 'error-row';
-      row.textContent = 'Dashboard access is required. Request approval above.';
-      list.appendChild(row);
-      return;
-    }
 
     if (!speakers.length) {
       const row = document.createElement('div');
@@ -592,20 +590,12 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
   }
 
   async function api(path, options = {}) {
-    await migrationReady;
     const res = await fetch(path, {
       ...options,
-      headers: { ...authHeaders(), ...(options.headers || {}) },
+      headers: { ...jsonHeaders(), ...(options.headers || {}) },
     });
-    if (res.status === 401) {
-      authFailed = true;
-      setConnection(false, 'Auth required');
-      $('dashboardAccess').hidden = false;
-      throw new Error('Dashboard access requires approval.');
-    }
     const data = await readJson(res);
     if (!res.ok) throw new Error(errorDetail(data, `HTTP ${res.status}`));
-    authFailed = false;
     setConnection(true, 'Local bridge connected');
     return data;
   }
@@ -636,7 +626,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
         announce(msg);
       }
     } catch (err) {
-      if (bridgeOk !== false && !authFailed) setConnection(false, 'Bridge unreachable');
+      if (bridgeOk !== false) setConnection(false, 'Bridge unreachable');
       renderDevices();
       updateOutputSelect();
       if (forceScan || !speakers.length) announce(err.message || 'Could not load speakers');
@@ -738,7 +728,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       }
       applyPlayback(playback);
     } catch (err) {
-      if (!authFailed) setConnection(false, 'Bridge unreachable');
+      setConnection(false, 'Bridge unreachable');
     } finally {
       statusInFlight = false;
     }
@@ -873,8 +863,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       document.querySelectorAll('[data-settings-panel]').forEach((p) => {
         p.hidden = p.getAttribute('data-settings-panel') !== tab;
       });
-      if (tab === 'connections' || tab === 'speakers') refreshGoogleHome();
-      if (tab === 'speakers') loadSpeakers();
+      if (tab === 'connections') refreshGoogleHome();
       if (tab === 'playback') refreshPlaybackSettings();
       if (tab === 'diagnostics') refreshDiagnostics();
     });
@@ -948,7 +937,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
 
   const { refreshGoogleHome, refreshGoogleHomePairing } = initGoogleHome({ $, api, announce, copyText, loadSpeakers });
 
-  const { refreshDiagnostics } = initMaintenance({ $, api, announce, authHeaders });
+  const { refreshDiagnostics } = initMaintenance({ $, api, announce, jsonHeaders });
 
   window.addEventListener('hashchange', updateView);
   if (!location.hash) location.hash = '#player';

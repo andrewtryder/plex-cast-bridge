@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
-from .api_auth import verify_local_api
 from .api_models import PlexSelect
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/plex", dependencies=[Depends(verify_local_api)])
+router = APIRouter(prefix="/api/plex")
 
 
 def _require_auth(request: Request):

@@ -23,13 +23,10 @@ Edit `.env`:
 | `PLEX_URL` | No† | e.g. `http://192.168.1.50:32400` |
 | `PLEX_TOKEN` | No† | Plex `X-Plex-Token` (legacy / headless) |
 | `PLEX_MUSIC_SECTION` | No† | Usually `Music` |
-| `LOCAL_API_KEY` | Yes* | `openssl rand -hex 32` |
 | `GEMINI_API_KEY` | No | Needed for theme / mood mixes |
 | `ENABLE_PUBSUB_LISTENER` | No | Leave `false` until Google Home is set up |
 | `DATA_DIR` | No | Defaults to `/data` in Docker; stores `plex_connection.json`, optional `app_settings.json`, device keys |
 | `DEFAULT_CAST_VOLUME` / `MAX_CAST_VOLUME` | No | Bootstrap volumes (0–1). Overridden after **Settings → Playback → Save** writes `app_settings.json` |
-
-\* Or set `ALLOW_UNAUTHENTICATED_LOCAL_API=true` only on a trusted home LAN.
 
 † Preferred setup: open the dashboard Settings gear → **Connect with Plex**, authorize on plex.tv, then pick your server and Music library. Env `PLEX_TOKEN` remains supported for existing installs.
 
@@ -68,7 +65,7 @@ set **Visibility → Public**, then retry the pull. A public GitHub repo does **
 
 ## 4. Open the dashboard
 
-Visit `http://<host>:8000/` and request access. Approve the matching code in an authorized dashboard, or run `docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE` on the host. Scripts can send `X-API-Key`. HTTP exposes the session to network observers, so use a trusted LAN or HTTPS.
+Visit `http://<host>:8000/`. The dashboard and local APIs have no login: anyone who can reach them can control playback and use local administrative actions. Restrict access with a firewall, VPN, or a secured reverse proxy; do not expose the service directly to the public Internet.
 
 From the dashboard:
 

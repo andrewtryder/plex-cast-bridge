@@ -1,4 +1,4 @@
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     night_cast_volume: float | None = None
     gemini_api_key: SecretStr = SecretStr("")
     local_api_key: SecretStr | None = None
-    # Explicit opt-in for trusted LAN / local development without an API key.
+    # Legacy settings are accepted but ignored; access is controlled at the network layer.
     allow_unauthenticated_local_api: bool = False
     gcp_project_id: str = ""
     gcp_pubsub_subscription_id: str = ""
@@ -25,13 +25,3 @@ class Settings(BaseSettings):
     # Optional background Cast discovery. 0 disables; default 15 minutes.
     speaker_discovery_interval_sec: int = 900
     catalog_reconcile_interval_sec: int = 60
-
-    @model_validator(mode="after")
-    def require_local_api_key_unless_opted_in(self):
-        key = self.local_api_key.get_secret_value() if self.local_api_key else ""
-        if not key and not self.allow_unauthenticated_local_api:
-            raise ValueError(
-                "LOCAL_API_KEY is required unless ALLOW_UNAUTHENTICATED_LOCAL_API=true "
-                "(explicit trusted-LAN / development opt-in)."
-            )
-        return self

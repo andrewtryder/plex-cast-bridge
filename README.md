@@ -33,14 +33,14 @@ The easiest path is the prebuilt multi-arch image (`linux/amd64` + `linux/arm64`
 git clone https://github.com/andrewtryder/plex-cast-bridge.git
 cd plex-cast-bridge
 cp .env.example .env
-# Set PLEX_URL, PLEX_TOKEN, and LOCAL_API_KEY=$(openssl rand -hex 32)
+# Optionally set PLEX_URL and PLEX_TOKEN for headless setup
 echo '{}' > gcp-credentials.json   # placeholder until Google Home voice is enabled
 
 docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Open `http://<host>:8000/` and request dashboard access. Approve the displayed code in an already authorized browser, or on the bridge run `docker exec plex-cast-bridge python -m plex_cast_bridge.dashboard_sessions approve CODE`. Discover speakers and play. HTTP sessions can be captured by network observers; use a trusted LAN or configure HTTPS.
+Open `http://<host>:8000/`, connect Plex, discover speakers, and play. The dashboard and local APIs have no login: anyone who can reach them can control playback and use local administrative actions. Restrict access with a firewall, VPN, or a secured reverse proxy; do not expose the service directly to the public Internet.
 
 Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
 
@@ -113,7 +113,7 @@ plex-cast-bridge/
 ```bash
 uv sync
 cp .env.example .env
-# Set PLEX_URL, PLEX_TOKEN, LOCAL_API_KEY (or ALLOW_UNAUTHENTICATED_LOCAL_API=true)
+# Optionally set PLEX_URL and PLEX_TOKEN for headless setup
 uv run python scripts/preflight.py --skip-plex   # or full check without --skip-plex
 uv run python scripts/emulate_speaker.py
 ```

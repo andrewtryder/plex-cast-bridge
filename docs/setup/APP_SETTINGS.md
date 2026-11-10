@@ -28,7 +28,7 @@ Checked-in example: [`app_settings.example.json`](app_settings.example.json) (co
 - `GET /api/settings` — effective volumes + library artist/album/track summary
 - `PATCH /api/settings` — body may include `default_cast_volume`, `max_cast_volume`, `night_cast_volume`; applies to the live Cast manager without restart
 
-Requires the same local API auth as other control endpoints (`X-API-Key` / `LOCAL_API_KEY`).
+The local API has no login; restrict network access to trusted clients.
 
 ## Backup
 
@@ -38,6 +38,6 @@ Requires the same local API auth as other control endpoints (`X-API-Key` / `LOCA
 
 | Stays in | Examples |
 |---|---|
-| `.env` / Compose | `LOCAL_API_KEY`, Plex JWT store, `CATALOG_WRITE_KEY`, Pub/Sub |
+| `.env` / Compose | Plex JWT store, `CATALOG_WRITE_KEY`, Pub/Sub |
 | Google Home wizard + companion | OAuth client, Cloud Run URL, GCP project |
 | Player UI | Live per-session Cast volume slider |

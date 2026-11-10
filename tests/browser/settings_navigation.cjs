@@ -17,12 +17,20 @@ const root = path.resolve(__dirname, '../../src/plex_cast_bridge');
       return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(body)});
     });
     await page.goto('http://bridge.test/#settings');
-    const names = ['connections', 'speakers', 'playback', 'diagnostics', 'backup'];
+    for (const [nav, section] of [['navPlayer', 'playerPage'], ['navDj', 'djPage'], ['navSpeakers', 'speakersPage'], ['navSettings', 'settingsPage']]) {
+      await page.locator(`#${nav}`).focus();
+      await page.keyboard.press('Enter');
+      await page.locator(`#${section}`).waitFor({state: 'visible'});
+      if (!await page.locator('header .brand').isVisible() || !await page.getByRole('link', {name: 'View on GitHub'}).isVisible()) throw Error('Missing common header/footer');
+      const size = await page.evaluate(() => ({width: innerWidth, scroll: document.documentElement.scrollWidth}));
+      if (size.scroll > size.width) throw Error(`${section}: horizontal overflow`);
+    }
+    const names = ['connections', 'playback', 'diagnostics', 'backup'];
     const panels = page.locator('[data-settings-panel]');
     if (await panels.count() !== names.length) throw Error('Unexpected settings panel count');
     const nested = await page.locator('[data-settings-panel] [data-settings-panel]').count();
     if (nested) throw Error('Settings panels must not be nested');
-    const controls = {connections: '#plexConnectBtn', speakers: '#scanButton', playback: '#saveVolumeSettingsBtn', diagnostics: '#diagRefreshBtn', backup: '#backupPreviewBtn'};
+    const controls = {connections: '#plexConnectBtn', playback: '#saveVolumeSettingsBtn', diagnostics: '#diagRefreshBtn', backup: '#backupPreviewBtn'};
     for (const name of names) {
       const button = page.locator(`[data-settings-tab="${name}"]`);
       await button.focus();

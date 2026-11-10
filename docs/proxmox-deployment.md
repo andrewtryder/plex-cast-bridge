@@ -162,7 +162,6 @@ cp -r ~/plex-cast-bridge-repo/deploy ~/plex-cast-bridge/
 Create `.env` inside `~/plex-cast-bridge/`:
 
 ```bash
-LOCAL_API_KEY="$(openssl rand -hex 32)"
 cat << EOF > ~/plex-cast-bridge/.env
 # Plex Media Server Settings (optional if you use Settings → Connect with Plex)
 PLEX_URL=http://192.168.1.50:32400
@@ -177,23 +176,16 @@ DEFAULT_CAST_VOLUME=0.20
 # Google Gemini SmartDJ API Key
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Required local API authentication (fail-closed)
-LOCAL_API_KEY=${LOCAL_API_KEY}
-
-# Only for trusted LAN labs — do not use on shared networks:
-# ALLOW_UNAUTHENTICATED_LOCAL_API=true
-
 # Google Cloud Platform Pub/Sub Settings (optional until Google Home voice is enabled)
 GCP_PROJECT_ID=<your-project-id>
 GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
 ENABLE_PUBSUB_LISTENER=true
 EOF
 chmod 600 ~/plex-cast-bridge/.env
-echo "Saved LOCAL_API_KEY=${LOCAL_API_KEY}"
 ```
 
 > [!IMPORTANT]
-> **Local API auth is required.** The bridge refuses to start without `LOCAL_API_KEY` unless you explicitly set `ALLOW_UNAUTHENTICATED_LOCAL_API=true`. API clients can send `X-API-Key`. A dashboard browser requests access and is approved by an existing browser or the local SSH/CLI recovery command. Plain HTTP exposes sessions to network observers; use a trusted LAN or HTTPS.
+> The dashboard and local APIs have no login: anyone who can reach them can control playback and use local administrative actions. Restrict access with a firewall, VPN, or a secured reverse proxy; do not expose the service directly to the public Internet.
 
 ### 3. Copy GCP Service Account Credentials
 
@@ -259,9 +251,9 @@ From any browser on your home LAN, open:
 ```
 http://<BRIDGE_IP>:8000/
 ```
-Prefer `X-API-Key` for scripts; the query-string bootstrap is stripped after the page loads.
+The local API is available to clients on the trusted network without a key.
 
-- Confirm your Google Cast speakers appear under **Speakers & settings**.
+- Confirm your Google Cast speakers appear under **Speakers**.
 - Toggle **Playback** and **Show in Google Home** independently; changes persist in `data/catalog.json` with stable Google Home device IDs.
 - After image upgrades, keep the `data/` volume mounted — speaker settings, Plex JWT, and cloud credentials migrate in place without rerunning the Google Home wizard.
 
@@ -271,7 +263,6 @@ From your terminal, test direct playback on your Kitchen speaker:
 ```bash
 curl -X POST "http://<PROXMOX_HOST_IP>:8000/api/command" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <LOCAL_API_KEY>" \
   -d '{"query":"DJ Shadow","speaker":"Kitchen"}'
 ```
 
