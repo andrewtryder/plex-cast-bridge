@@ -84,6 +84,40 @@ def _total_tracks(plex: Any, library_id: str) -> int:
     return total
 
 
+def _library_revision(plex: Any, library_id: str) -> str | None:
+    """Fetch a fresh section revision; fall back to PlexAPI's cached object if needed."""
+    try:
+        sections = plex.server.query('/library/sections')
+        for section in sections.iter('Directory'):
+            if str(section.get('key') or section.get('id')) == str(library_id):
+                updated = section.get('updatedAt')
+                if updated:
+                    return str(updated)
+    except Exception:
+        log.debug('Could not read Plex library revision; will perform a full scan', exc_info=True)
+    library = plex.library
+    value = getattr(library, 'updatedAt', None)
+    return value.isoformat() if hasattr(value, 'isoformat') else (str(value) if value else None)
+
+
+def _can_skip_full_scan(revision: str | None, state: dict, total: int, indexed_count: int,
+                        now: datetime | None = None) -> bool:
+    if not revision or revision != state.get('source_updated_at'):
+        return False
+    if indexed_count != total:
+        return False
+    last_full = state.get('last_full_scan_at')
+    if not last_full:
+        return False
+    try:
+        completed = datetime.fromisoformat(last_full)
+        if completed.tzinfo is None:
+            return False
+        return (now or datetime.now(UTC)) - completed < timedelta(days=7)
+    except (TypeError, ValueError):
+        return False
+
+
 def _run(plex: Any, lock_file) -> None:
     try:
         server_id = _text(getattr(plex.server, 'machineIdentifier', None))
@@ -91,6 +125,20 @@ def _run(plex: Any, lock_file) -> None:
         if not server_id or not library_id:
             raise ValueError('Plex server or library identity is unavailable')
         initial_total = _total_tracks(plex, library_id)
+        revision = _library_revision(plex, library_id)
+        with music_index.connect() as db:
+            previous = dict(db.execute('SELECT * FROM scan_state WHERE id=1').fetchone())
+            indexed_count = db.execute('SELECT COUNT(*) FROM tracks WHERE server_id=? AND library_id=?',
+                                       (server_id, library_id)).fetchone()[0]
+        if (previous.get('server_id') == server_id and previous.get('library_id') == library_id
+                and _can_skip_full_scan(revision, previous, initial_total, indexed_count)):
+            if _is_cancelled():
+                raise InterruptedError('Scan cancelled')
+            with music_index.connect() as db:
+                db.execute("UPDATE scan_state SET status='idle', completed_at=?, scanned=?, error=NULL WHERE id=1",
+                           (music_index.utcnow(), initial_total))
+                db.commit()
+            return
         with music_index.connect() as db:
             db.execute('DELETE FROM scan_tracks')
             db.commit()
@@ -112,7 +160,9 @@ def _run(plex: Any, lock_file) -> None:
                 break
         if _is_cancelled():
             raise InterruptedError('Scan cancelled')
-        if offset != initial_total or _total_tracks(plex, library_id) != initial_total:
+        ending_revision = _library_revision(plex, library_id)
+        if (offset != initial_total or _total_tracks(plex, library_id) != initial_total
+                or (revision and ending_revision and revision != ending_revision)):
             raise ValueError('Plex library changed during scan; preserving the previous index')
         with music_index.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -149,6 +199,8 @@ def _run(plex: Any, lock_file) -> None:
             db.execute('DELETE FROM scan_tracks')
             db.execute("UPDATE scan_state SET status='idle', server_id=?, library_id=?, completed_at=?, error=NULL WHERE id=1",
                        (server_id, library_id, music_index.utcnow()))
+            db.execute('UPDATE scan_state SET source_updated_at=?, last_full_scan_at=? WHERE id=1',
+                       (revision, music_index.utcnow()))
             db.commit()
     except Exception as exc:
         log.warning('Music library scan stopped: %s', exc)

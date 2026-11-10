@@ -18,12 +18,14 @@ def _track(key, title, view_count=None):
                            genres=[SimpleNamespace(tag='Jazz')], moods=[], updatedAt=None, viewCount=view_count)
 
 
-def _plex(tracks):
+def _plex(tracks, revision=None, calls=None):
     def search(**kwargs):
         start = kwargs['container_start']
+        if calls is not None:
+            calls.append(start)
         return tracks[start:start + kwargs['container_size']]
     return SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1', query=lambda *args, **kwargs: {'totalSize': str(len(tracks))}),
-                           library=SimpleNamespace(key='library-1', search=search))
+                           library=SimpleNamespace(key='library-1', search=search, updatedAt=revision))
 
 
 def _join():
@@ -143,14 +145,63 @@ def test_migrates_v1_index_without_losing_tracks(index_dir):
             moods TEXT NOT NULL DEFAULT '[]', updated_at TEXT,
             PRIMARY KEY(server_id, library_id, rating_key))''')
         db.execute('CREATE TABLE scan_tracks AS SELECT * FROM tracks WHERE 0')
+        db.execute('''CREATE TABLE scan_state (
+            id INTEGER PRIMARY KEY CHECK (id=1), status TEXT NOT NULL DEFAULT 'idle',
+            server_id TEXT, library_id TEXT, started_at TEXT, completed_at TEXT,
+            scanned INTEGER NOT NULL DEFAULT 0, error TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0)''')
+        db.execute("INSERT INTO scan_state (id, server_id, library_id, scanned) VALUES (1, 'server', 'library', 1)")
         db.execute("INSERT INTO tracks VALUES ('server', 'library', '42', 'Old track', NULL, NULL, NULL, NULL, NULL, NULL, '[]', '[]', NULL)")
         db.execute('PRAGMA user_version=1')
     music_index.initialize()
     with music_index.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
         migrated = db.execute('SELECT title, play_count FROM tracks WHERE rating_key=?', ('42',)).fetchone()
         assert tuple(migrated) == ('Old track', None)
         assert 'play_count' in {row['name'] for row in db.execute('PRAGMA table_info(scan_tracks)')}
+        assert {'source_updated_at', 'last_full_scan_at'} <= {row['name'] for row in db.execute('PRAGMA table_info(scan_state)')}
+
+
+def test_daily_scans_skip_unchanged_plex_library_revision(index_dir):
+    music_index.update_settings({'indexing_enabled': True})
+    calls = []
+    plex = _plex([_track('1', 'First')], revision='rev-1', calls=calls)
+    music_index_scan.start(plex)
+    _join()
+    assert calls == [0]
+    calls.clear()
+    music_index_scan.start(plex)
+    _join()
+    assert calls == []
+    assert music_index.status()['scan']['status'] == 'idle'
+    changed = _plex([_track('1', 'Changed')], revision='rev-2', calls=calls)
+    music_index_scan.start(changed)
+    _join()
+    assert calls == [0]
+    with music_index.connect() as db:
+        assert db.execute('SELECT title FROM tracks WHERE rating_key="1"').fetchone()[0] == 'Changed'
+
+
+def test_unchanged_library_still_gets_weekly_full_reconciliation():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 11, 10, tzinfo=UTC)
+    state = {'source_updated_at': 'rev-1', 'last_full_scan_at': (now - timedelta(days=6)).isoformat()}
+    assert music_index_scan._can_skip_full_scan('rev-1', state, 10, 10, now)
+    state['last_full_scan_at'] = (now - timedelta(days=7)).isoformat()
+    assert not music_index_scan._can_skip_full_scan('rev-1', state, 10, 10, now)
+    assert not music_index_scan._can_skip_full_scan('rev-2', state, 10, 10, now)
+    assert not music_index_scan._can_skip_full_scan('rev-1', state, 10, 9, now)
+
+
+def test_library_revision_is_refetched_from_plex_sections():
+    from xml.etree import ElementTree
+
+    plex = SimpleNamespace(
+        server=SimpleNamespace(query=lambda path: ElementTree.fromstring(
+            '<MediaContainer><Directory key="1" updatedAt="fresh-revision" /></MediaContainer>')),
+        library=SimpleNamespace(updatedAt='stale-cached-revision'),
+    )
+    assert music_index_scan._library_revision(plex, '1') == 'fresh-revision'
 
 
 def test_changed_library_during_scan_preserves_snapshot(index_dir):

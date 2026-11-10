@@ -14,7 +14,7 @@ from typing import Iterator
 
 from . import catalog_store
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def database_path() -> Path:
@@ -100,6 +100,10 @@ def initialize() -> None:
             db.execute('ALTER TABLE tracks ADD COLUMN play_count INTEGER')
             db.execute('ALTER TABLE scan_tracks ADD COLUMN play_count INTEGER')
             db.execute('PRAGMA user_version=2')
+        if version < 3:
+            db.execute('ALTER TABLE scan_state ADD COLUMN source_updated_at TEXT')
+            db.execute('ALTER TABLE scan_state ADD COLUMN last_full_scan_at TEXT')
+            db.execute('PRAGMA user_version=3')
         db.commit()
 
 
