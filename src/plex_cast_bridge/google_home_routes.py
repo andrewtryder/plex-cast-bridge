@@ -52,21 +52,24 @@ class LinkConfirm(BaseModel):
 async def google_home_status(request: Request):
     plex = getattr(request.app.state, "plex", None)
     speakers = []
-    cast = getattr(request.app.state, "cast", None)
-    if cast is not None:
-        try:
-            discovered = getattr(cast, "last_discovered", None) or []
-            speakers = [
-                {
-                    "name": s.get("name"),
-                    "enabled": not cast.is_disabled(s.get("name", "")),
-                    "model": s.get("model"),
-                    "kind": "group" if "group" in str(s.get("model", "")).lower() else "speaker",
-                }
-                for s in discovered
-            ]
-        except Exception:
-            speakers = []
+    try:
+        from .catalog_store import list_speaker_records
+
+        speakers = [
+            {
+                "name": s.get("speaker_name") or s.get("name"),
+                "enabled": bool(s.get("enabled", True)),
+                "google_home_visible": bool(s.get("google_home_visible", False)),
+                "google_home_name": s.get("google_home_name"),
+                "google_home_device_id": s.get("google_home_device_id") or s.get("id"),
+                "model": s.get("model"),
+                "kind": s.get("kind") or ("group" if "group" in str(s.get("model", "")).lower() else "speaker"),
+                "availability": s.get("availability"),
+            }
+            for s in list_speaker_records()
+        ]
+    except Exception:
+        speakers = []
     return {
         "setup": setup.public_status(),
         "catalog_sync": catalog_sync.public_sync_status(),
@@ -173,9 +176,47 @@ async def gateway_configure(body: GatewayConfig):
     return {"setup": setup.public_status(), "catalog_sync": catalog_sync.public_sync_status(), "sync_state": sync_state}
 
 
+
+class PairingApproval(BaseModel):
+    ticket: str = Field(min_length=32, max_length=128)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+def _require_authenticated_dashboard(request: Request) -> None:
+    local_key = getattr(request.app.state.settings, "local_api_key", None)
+    if not local_key or not local_key.get_secret_value():
+        raise HTTPException(status_code=403, detail="Configure LOCAL_API_KEY before approving links")
+
+
+@router.get("/pairing")
+async def pending_pairing(request: Request):
+    _require_authenticated_dashboard(request)
+    try:
+        return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/pending")
+    except Exception:
+        log.exception("Could not fetch Google Home pairing request")
+        raise HTTPException(status_code=503, detail="Google Home approval is unavailable") from None
+
+
+@router.post("/pairing/approve")
+async def approve_pairing(body: PairingApproval, request: Request):
+    _require_authenticated_dashboard(request)
+    try:
+        return await run_in_threadpool(catalog_sync.pairing_gateway_request, "/internal/oauth/approve", body.model_dump())
+    except Exception:
+        log.exception("Could not approve Google Home pairing request")
+        raise HTTPException(status_code=409, detail="Approval failed or expired. Start linking again.") from None
+
 @router.post("/sync")
 async def sync_google_home():
-    return await run_in_threadpool(catalog_sync.push_catalog_now, True)
+    def run():
+        result = catalog_sync.push_catalog_now(True)
+        if result.get("last_push_status") in {"failed", "pending"}:
+            catalog_sync.resume_pending_push()
+        status = catalog_sync.public_sync_status()
+        return {**result, **status}
+
+    return await run_in_threadpool(run)
 
 
 @router.get("/sync/status")

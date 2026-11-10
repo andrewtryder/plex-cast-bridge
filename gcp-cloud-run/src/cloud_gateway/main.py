@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import verify_bearer_token, verify_webhook_api_key
+from .approval_store import ApprovalStore
 from .catalog_sync import CatalogCloudStore
 from .config import Settings
 from .oauth_routes import router as oauth_router
@@ -47,6 +48,9 @@ async def lifespan(app: FastAPI):
         health = app.state.catalog_store.health()
         if not health.get("storage_ok") and not explicit_mock:
             log.error("Catalog storage unavailable at startup: %s", health.get("init_error"))
+    app.state.approval_store = ApprovalStore(
+        app.state.catalog_store._fs, mock=app.state.catalog_store.mock
+    )
     log.info(
         f"Started Plex Google Home Fulfillment service (Project: {app.state.settings.gcp_project_id}, Topic: {app.state.settings.gcp_pubsub_topic_id})"
     )
@@ -108,7 +112,7 @@ async def health(
 
 
 @app.put("/internal/catalog")
-async def put_catalog(
+def put_catalog(
     payload: CatalogPutRequest,
     api_key: str = Depends(verify_webhook_api_key),
     settings: Settings = Depends(get_settings),
@@ -141,11 +145,20 @@ async def put_catalog(
 
 
 @app.post("/internal/request-sync")
-async def manual_request_sync(
+def manual_request_sync(
     api_key: str = Depends(verify_webhook_api_key),
     catalog_store: CatalogCloudStore = Depends(get_catalog_store),
 ):
     return catalog_store.request_sync(force=True)
+
+
+@app.post("/internal/reconcile")
+def reconcile_catalog(
+    api_key: str = Depends(verify_webhook_api_key),
+    catalog_store: CatalogCloudStore = Depends(get_catalog_store),
+):
+    result = catalog_store.reconcile()
+    return {**result, "catalog_version": catalog_store.get_meta().version}
 
 
 @app.post("/fulfillment")

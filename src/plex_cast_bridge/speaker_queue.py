@@ -8,9 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pychromecast.controllers.media import MediaStatusListener
 
+from . import activity
+
 log = logging.getLogger(__name__)
 
-DEFAULT_CAST_VOLUME = 0.20
+DEFAULT_CAST_VOLUME = 0.40
 
 
 def track_art_url(track) -> str | None:
@@ -81,19 +83,58 @@ class SpeakerQueue(MediaStatusListener):
         self.ignore_load_failures = False
         self.load_watchdog_seconds = 8.0
         self.lock = threading.RLock()
+        self._closed = False
+        self._watchdogs: set[threading.Timer] = set()
+        self._saved_volume: float | None = None
+        self._receiver_app_seen = False
+        self._last_observed_state: str | None = None
+        self._native_revision = 0
+        self._native_pending = False
+        self._native_item_id: int | None = None
+        self._native_content_id: str | None = None
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cast-queue")
         cast.media_controller.register_status_listener(self)
+        register = getattr(cast, "register_status_listener", None)
+        if callable(register):
+            register(self)
 
-        # Apply startup volume clamp (default 20% to prevent unexpected loud bursts)
-        if self.default_volume is not None and hasattr(self.cast, "set_volume"):
-            try:
-                self.cast.set_volume(self.default_volume)
-                log.info("Clamped startup volume to %.0f%% on '%s'", self.default_volume * 100, self.cast.name)
-            except Exception as exc:
-                log.warning("Could not set startup volume on '%s': %s", self.cast.name, exc)
+    def _begin_volume_session(self):
+        if self._saved_volume is not None or self.default_volume is None:
+            return
+        volume = getattr(getattr(self.cast, "status", None), "volume_level", None)
+        if not isinstance(volume, (int, float)) or not 0 <= volume <= 1:
+            log.warning("Receiver volume unavailable on '%s'; leaving it unchanged", self.cast.name)
+            return
+        self._saved_volume = float(volume)
+        try:
+            self._send_session_volume(max(0.0, min(float(self.default_volume), self.max_volume, 1.0)))
+        except Exception:
+            self._saved_volume = None
+            log.exception("Could not set playback volume on '%s'", self.cast.name)
+
+    def _send_session_volume(self, volume: float):
+        # The queue lock is held here. Waiting for a Cast reply can deadlock the
+        # socket thread when it is delivering a media status callback to us.
+        receiver = getattr(getattr(self.cast, "socket_client", None), "receiver_controller", None)
+        if receiver is not None:
+            receiver.send_message({"type": "SET_VOLUME", "volume": {"level": volume}})
+        else:
+            self.cast.set_volume(volume)
+
+    def _restore_volume(self):
+        volume = self._saved_volume
+        if volume is None:
+            return
+        try:
+            self._send_session_volume(volume)
+        except Exception:
+            log.exception("Could not restore receiver volume on '%s'", self.cast.name)
+        else:
+            self._saved_volume = None
 
     def _invalidate_inflight_load(self):
         """Drop unresolved load state and suppress device callbacks during replacement."""
+        self._invalidate_native_next(remove=False)
         if self.pending_load_generation is not None and self.current_load_item_id is None:
             # Superseded load never reported an item id; a later LOAD_FAILED may be orphaned.
             self.unidentified_superseded_count += 1
@@ -106,9 +147,87 @@ class SpeakerQueue(MediaStatusListener):
         self.armed = False
         self.ignore_load_failures = True
         try:
-            self.cast.media_controller.stop()
+            self._stop_media()
         except Exception as exc:
             log.debug("Media controller stop during invalidate on '%s' (ignored): %s", self.cast.name, exc)
+
+    def _stop_media(self):
+        media = self.cast.media_controller
+        if getattr(getattr(self.cast, "socket_client", None), "receiver_controller", None) is not None:
+            media._send_command({"type": "STOP"}, None)
+        else:
+            media.stop()
+
+    def _invalidate_native_next(self, *, remove=True):
+        self._native_revision += 1
+        item_id = self._native_item_id
+        self._native_item_id = None
+        self._native_content_id = None
+        if remove and item_id is not None:
+            try:
+                self.cast.media_controller._send_command({"type": "QUEUE_REMOVE", "itemIds": [item_id]}, None)
+            except Exception:
+                log.exception("Could not remove stale receiver queue item on '%s'", self.cast.name)
+
+    def _schedule_native_next(self):
+        if self._closed or self._native_pending or self._native_item_id is not None or not self.queue:
+            return
+        if getattr(getattr(self.cast, "socket_client", None), "receiver_controller", None) is None:
+            return
+        try:
+            self.executor.submit(self._prime_native_next, self.generation, self._native_revision)
+        except RuntimeError:
+            pass
+
+    def _prime_native_next(self, generation, revision):
+        with self.lock:
+            if (self._closed or generation != self.generation or revision != self._native_revision
+                    or self._native_pending or self._native_item_id is not None or not self.armed or not self.queue):
+                return
+            track = self.queue[0]
+            media = getattr(track, "media", None) or []
+            parts = getattr(media[0], "parts", None) or [] if media else []
+            if not parts:
+                return
+            url = track._server.url(parts[0].key, includeToken=True)
+            content_type = {"mp3": "audio/mpeg", "flac": "audio/flac", "m4a": "audio/mp4",
+                            "aac": "audio/aac", "ogg": "audio/ogg", "wav": "audio/wav"}.get(
+                                getattr(media[0], "container", "").lower(), "audio/mpeg")
+            metadata = {"metadataType": 3, "title": track.title,
+                        "artist": getattr(track, "grandparentTitle", ""),
+                        "albumName": getattr(track, "parentTitle", "")}
+            self._native_pending = True
+            self._native_content_id = url
+            media_session = getattr(self.cast.media_controller.status, "media_session_id", None)
+
+            def inserted(success, response):
+                with self.lock:
+                    self._native_pending = False
+                    item_id = None
+                    for status in (response or {}).get("status", []):
+                        current_id = status.get("currentItemId")
+                        for item in status.get("items", []):
+                            if item.get("itemId") != current_id and item.get("media", {}).get("contentId") == url:
+                                item_id = item.get("itemId")
+                    stale = generation != self.generation or revision != self._native_revision
+                    if success and item_id is not None and not stale:
+                        self._native_item_id = item_id
+                    elif (item_id is not None and self.expected_content_id != url
+                          and getattr(self.cast.media_controller.status, "media_session_id", None) == media_session):
+                        try:
+                            self.cast.media_controller._send_command({"type": "QUEUE_REMOVE", "itemIds": [item_id]}, None)
+                        except Exception:
+                            log.exception("Could not remove stale receiver queue item on '%s'", self.cast.name)
+                    if stale:
+                        self._schedule_native_next()
+
+            try:
+                self.cast.media_controller.play_media(url, content_type, title=track.title, metadata=metadata,
+                                                      stream_type="BUFFERED", enqueue=True, callback_function=inserted)
+            except Exception:
+                self._native_pending = False
+                self._native_content_id = None
+                log.exception("Could not prepare receiver queue on '%s'", self.cast.name)
 
     def replace(self, tracks, repeat):
         with self.lock:
@@ -128,6 +247,7 @@ class SpeakerQueue(MediaStatusListener):
             self._next()
             return
 
+        self._begin_volume_session()
         self.current = track
         self.armed = False
         self.play_generation = self.generation
@@ -169,14 +289,19 @@ class SpeakerQueue(MediaStatusListener):
             len(self.queue),
         )
 
-        self.cast.media_controller.play_media(
-            url,
-            content_type,
-            title=track.title,
-            thumb=thumb,
-            stream_type="BUFFERED",
-            metadata=metadata,
-        )
+        try:
+            self.cast.media_controller.play_media(
+                url,
+                content_type,
+                title=track.title,
+                thumb=thumb,
+                stream_type="BUFFERED",
+                metadata=metadata,
+            )
+        except Exception:
+            self.current = None
+            self._restore_volume()
+            raise
         # Accept failures only for the load we just started (not stop()-induced leftovers).
         self.ignore_load_failures = False
         self._schedule_load_watchdog(self.generation)
@@ -193,7 +318,8 @@ class SpeakerQueue(MediaStatusListener):
 
         def _watch():
             with self.lock:
-                if self.pending_load_generation != generation or self.armed:
+                self._watchdogs.discard(timer)
+                if self._closed or self.pending_load_generation != generation or self.armed:
                     return
                 if generation != self.generation:
                     return
@@ -203,11 +329,25 @@ class SpeakerQueue(MediaStatusListener):
                     generation,
                 )
                 self.pending_load_generation = None
-            self.executor.submit(self._advance, generation)
+                try:
+                    self.executor.submit(self._advance, generation)
+                except RuntimeError:
+                    log.debug("Cast queue executor already shut down")
 
         timer = threading.Timer(delay, _watch)
         timer.daemon = True
+        self._watchdogs.add(timer)
         timer.start()
+
+    def close(self):
+        with self.lock:
+            self._closed = True
+            self.generation += 1
+            self.pending_load_generation = None
+            for timer in self._watchdogs:
+                timer.cancel()
+            self._watchdogs.clear()
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _next(self):
         if self.current is not None:
@@ -221,6 +361,7 @@ class SpeakerQueue(MediaStatusListener):
             if not self.queue:
                 self.current = None
                 self.armed = False
+                self._restore_volume()
                 return
             track = self.queue.popleft()
             break
@@ -249,8 +390,12 @@ class SpeakerQueue(MediaStatusListener):
 
     def new_media_status(self, status):
         with self.lock:
-            if self.current is None:
+            if self._closed or self.current is None:
                 return
+            state = getattr(status, "player_state", None)
+            if state in ("PLAYING", "PAUSED", "BUFFERING", "IDLE") and state != self._last_observed_state:
+                self._last_observed_state = state
+                activity.record("Cast status", state.lower(), self.cast.name)
             content_id = getattr(status, "content_id", None)
             session_id = getattr(status, "media_session_id", None)
             # Bind Cast queue item id when the receiver reports it (attribute may be
@@ -260,6 +405,16 @@ class SpeakerQueue(MediaStatusListener):
                 item_id = getattr(status, "item_id", None)
 
             if status.player_state in ("PLAYING", "BUFFERING"):
+                if (content_id and content_id == self._native_content_id and self.queue
+                        and content_id != self.expected_content_id):
+                    self.history.append(self.current)
+                    self.current = self.queue.popleft()
+                    self.expected_content_id = content_id
+                    self._native_revision += 1
+                    self._native_item_id = None
+                    self._native_content_id = None
+                    self.play_generation = self.generation
+                    activity.record("Cast status", "next track", self.cast.name)
                 # Require content_id match when we know what we loaded; identity-less
                 # PLAYING must not arm or clear a replacement's pending state.
                 if self.expected_content_id and (
@@ -273,6 +428,7 @@ class SpeakerQueue(MediaStatusListener):
                 if item_id is not None:
                     self.current_load_item_id = item_id
                     self.rejected_load_item_ids.discard(item_id)
+                self._schedule_native_next()
             elif status.player_state == "IDLE" and status.idle_reason == "FINISHED" and self.armed:
                 if content_id:
                     if self.expected_content_id and content_id != self.expected_content_id:
@@ -284,14 +440,96 @@ class SpeakerQueue(MediaStatusListener):
                     # Armed without a session id only happens after matching content_id.
                     pass
                 self.armed = False
-                log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
-                self.executor.submit(self._advance, self.play_generation)
+                if self._native_item_id is not None:
+                    self._wait_for_native_advance(self.play_generation, self.expected_content_id)
+                else:
+                    log.info("Track finished on '%s'. Advancing queue automatically.", self.cast.name)
+                    self.executor.submit(self._advance, self.play_generation)
+            elif status.player_state == "IDLE" and status.idle_reason == "CANCELLED" and self.armed:
+                if not content_id or content_id != self.expected_content_id:
+                    return
+                if self.active_media_session_id is not None and session_id != self.active_media_session_id:
+                    return
+                self.armed = False
+                self.executor.submit(self._finish_cancelled, self.play_generation)
+
+    def _wait_for_native_advance(self, generation, previous_content):
+        """Give the receiver time to transition before falling back to bridge playback."""
+        def check():
+            with self.lock:
+                self._watchdogs.discard(timer)
+                if (self._closed or generation != self.generation
+                        or self.expected_content_id != previous_content or self.armed):
+                    return
+                try:
+                    self.executor.submit(self._advance, generation)
+                except RuntimeError:
+                    pass
+
+        timer = threading.Timer(3.0, check)
+        timer.daemon = True
+        self._watchdogs.add(timer)
+        timer.start()
+
+    def new_cast_status(self, status):
+        """Observe receiver ownership changes; callbacks run on the Cast socket thread."""
+        with self.lock:
+            if self._closed or self.current is None:
+                return
+            app_id = getattr(status, "app_id", None)
+            if app_id == "CC1AD845":
+                self._receiver_app_seen = True
+                return
+            if not self._receiver_app_seen or not self.armed:
+                return
+            self._receiver_app_seen = False
+            generation = self.generation
+            try:
+                self.executor.submit(self._receiver_session_ended, generation, app_id)
+            except RuntimeError:
+                pass
+
+    def _receiver_session_ended(self, generation, app_id):
+        with self.lock:
+            if self._closed or generation != self.generation or self.current is None:
+                return
+            current_app = getattr(getattr(self.cast, "status", None), "app_id", None)
+            if current_app != app_id:
+                return
+            self.generation += 1
+            self.queue.clear()
+            self.original = []
+            self.current = None
+            self.armed = False
+            if app_id in (None, "E8C28D3C"):
+                activity.record("Cast status", "session ended", self.cast.name)
+                self._restore_volume()
+            else:
+                activity.record("Cast status", "another app took over", self.cast.name)
+                self._saved_volume = None
+
+    def _finish_cancelled(self, generation):
+        with self.lock:
+            if self._closed or generation != self.generation:
+                return
+            # A different Cast app may already own the device. Never change its volume.
+            receiver = getattr(self.cast, "status", None)
+            app_id = getattr(receiver, "app_id", None)
+            media = getattr(self.cast.media_controller, "status", None)
+            if app_id not in (None, "CC1AD845") or getattr(media, "player_state", None) != "IDLE":
+                self._saved_volume = None
+                return
+            self.queue.clear()
+            self.original = []
+            self.current = None
+            self._restore_volume()
 
     def _advance(self, generation):
         with self.lock:
             if generation != self.generation:
                 return
             try:
+                self._invalidate_native_next(remove=False)
                 self._next()
             except Exception:
                 log.exception("Could not advance the Cast queue")
@@ -307,7 +545,7 @@ class SpeakerQueue(MediaStatusListener):
         # an orphan-failure allowance so a delayed A failure cannot claim B's pending slot;
         # a watchdog advances if the current load never arms after orphans are consumed.
         with self.lock:
-            if self.ignore_load_failures:
+            if self._closed or self.ignore_load_failures:
                 log.info(
                     "Ignoring Cast media load failure on '%s' during queue transition",
                     self.cast.name,
@@ -387,20 +625,33 @@ class SpeakerQueue(MediaStatusListener):
         self.skip()
 
     def stop(self):
+        stopped = threading.Event()
+        accepted = []
         with self.lock:
             self.generation += 1
+            generation = self.generation
             self._invalidate_inflight_load()
             self.queue.clear()
             self.original = []
             self.current = None
             try:
-                self.cast.media_controller.stop()
-            except Exception as exc:
-                log.debug("Media controller stop error on '%s' (ignored): %s", self.cast.name, exc)
-            try:
-                self.cast.quit_app()
+                receiver = getattr(getattr(self.cast, "socket_client", None), "receiver_controller", None)
+                if receiver is not None:
+                    def on_stopped(success, _response):
+                        accepted.append(success)
+                        stopped.set()
+
+                    receiver.stop_app(callback_function=on_stopped)
+                else:
+                    self.cast.quit_app()
+                    accepted.append(True)
+                    stopped.set()
             except Exception as exc:
                 log.debug("Cast quit_app error on '%s' (ignored): %s", self.cast.name, exc)
+        stopped.wait(timeout=5)
+        with self.lock:
+            if generation == self.generation and (not accepted or accepted[0]):
+                self._restore_volume()
 
     def queue_snapshot(self) -> list[dict]:
         with self.lock:
@@ -413,6 +664,8 @@ class SpeakerQueue(MediaStatusListener):
             items = list(self.queue)
             removed = items.pop(index)
             self.queue = deque(items)
+            self._invalidate_native_next()
+            self._schedule_native_next()
             return _track_summary(removed)
 
     def move(self, from_index: int, to_index: int) -> None:
@@ -424,19 +677,25 @@ class SpeakerQueue(MediaStatusListener):
             item = items.pop(from_index)
             items.insert(to_index, item)
             self.queue = deque(items)
+            self._invalidate_native_next()
+            self._schedule_native_next()
 
     def play_next(self, track) -> None:
         with self.lock:
             self.queue.appendleft(track)
+            self._invalidate_native_next()
+            self._schedule_native_next()
 
     def add_end(self, track) -> None:
         with self.lock:
             self.queue.append(track)
+            self._schedule_native_next()
 
     def clear_upcoming(self) -> int:
         with self.lock:
             n = len(self.queue)
             self.queue.clear()
+            self._invalidate_native_next()
             return n
 
     def status(self):

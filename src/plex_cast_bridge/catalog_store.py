@@ -8,9 +8,15 @@ import os
 import shutil
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .cast_discovery import extract_room_name
+from .speaker_registry import (
+    google_home_sync_fingerprint,
+    migrate_catalog_speakers,
+    migrate_speaker_record,
+    reconcile_speakers,
+    speaker_playback_target,
+)
 
 if TYPE_CHECKING:
     from .cast_manager import CastManager
@@ -59,24 +65,6 @@ def get_catalog_path(for_writing: bool = False) -> Path:
     return data_cat
 
 
-def load_disabled_speakers_from_catalog() -> set[str]:
-    disabled: set[str] = set()
-    cat_path = get_catalog_path(for_writing=False)
-    if cat_path.exists():
-        try:
-            with open(cat_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for spk in data.get("speakers", []):
-                    if not spk.get("enabled", True):
-                        if spk.get("speaker_name"):
-                            disabled.add(spk["speaker_name"].casefold())
-                        if spk.get("roomHint"):
-                            disabled.add(spk["roomHint"].casefold())
-        except Exception as exc:
-            log.warning("Could not read disabled speakers from %s: %s", cat_path, exc)
-    return disabled
-
-
 def _atomic_write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
@@ -88,70 +76,176 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp_path, path)
 
 
-def persist_discovered_speakers_to_catalog(discovered: list[dict], cast_mgr: CastManager):
-    """Persist discovered LAN speakers and their enabled/disabled flags into catalog.json."""
-    with _CATALOG_LOCK:
+def _mirror_cloud_run_catalog(write_path: Path) -> None:
+    if CLOUD_RUN_CATALOG.parent.exists():
         try:
-            read_path = get_catalog_path(for_writing=False)
-            data = {}
-            if read_path.exists():
-                with open(read_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-            existing_by_room = {
-                (s.get("roomHint") or "").casefold(): s
-                for s in data.get("speakers", [])
-                if s.get("roomHint")
-            }
-
-            speakers_list = []
-            seen_rooms = set()
-            for dev in discovered:
-                name = dev["name"]
-                if name.casefold() == "test speaker":
-                    continue
-                room = dev.get("room") or extract_room_name(name)
-                r_fold = room.casefold()
-                if r_fold in seen_rooms:
-                    continue
-                seen_rooms.add(r_fold)
-                enabled = not cast_mgr.is_disabled(name) and not cast_mgr.is_disabled(room)
-                speakers_list.append({
-                    "id": f"plex-jukebox:{room}",
-                    "name": "Plex",
-                    "nicknames": [f"{room} Plex", "Plex", "Plex Cast Bridge", "Plex Radio"],
-                    "roomHint": room,
-                    "speaker_name": name,
-                    "model": dev.get("model", "Google Cast"),
-                    "host": dev.get("host", ""),
-                    "port": dev.get("port", 8009),
-                    "uuid": dev.get("uuid", ""),
-                    "enabled": enabled,
-                })
-
-            # Keep any previously known speakers that might be temporarily asleep on LAN
-            for r_fold, old_spk in existing_by_room.items():
-                if r_fold not in seen_rooms:
-                    old_name = old_spk.get("speaker_name", "")
-                    old_room = old_spk.get("roomHint", "")
-                    old_spk["enabled"] = (
-                        not cast_mgr.is_disabled(old_name) and not cast_mgr.is_disabled(old_room)
-                    )
-                    speakers_list.append(old_spk)
-
-            if speakers_list:
-                data["speakers"] = speakers_list
-                data["inputs"] = [s["roomHint"] for s in speakers_list if s.get("enabled", True)]
-                write_path = get_catalog_path(for_writing=True)
-                _atomic_write_json(write_path, data)
-                if CLOUD_RUN_CATALOG.parent.exists():
-                    try:
-                        shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
-                    except Exception as exc:
-                        log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
+            shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
         except Exception as exc:
-            log.warning("Could not persist speaker states to catalog.json: %s", exc)
-            raise
+            log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
+
+
+def load_catalog_data() -> dict[str, Any]:
+    path = get_catalog_path(for_writing=False)
+    if not path.exists():
+        return {"speakers": [], "inputs": [], "genres": [], "artists": [], "themes": []}
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return {"speakers": []}
+    migrated, changed = migrate_catalog_speakers(data)
+    if changed:
+        save_catalog_data(migrated, sync_cloud=False)
+    return migrated
+
+
+def save_catalog_data(data: dict[str, Any], *, sync_cloud: bool = True) -> dict[str, Any]:
+    with _CATALOG_LOCK:
+        migrated, _ = migrate_catalog_speakers(data)
+        write_path = get_catalog_path(for_writing=True)
+        _atomic_write_json(write_path, migrated)
+        _mirror_cloud_run_catalog(write_path)
+        if sync_cloud:
+            _maybe_schedule_google_home_push(migrated)
+        return migrated
+
+
+def _maybe_schedule_google_home_push(catalog: dict[str, Any]) -> None:
+    """Debounced catalog push only when Google Home SYNC metadata changed."""
+    try:
+        from . import catalog_sync as gh_sync
+
+        state = gh_sync.load_sync_state()
+        fingerprint = google_home_sync_fingerprint(catalog.get("speakers") or [])
+        if state.get("last_gh_fingerprint") == fingerprint and state.get("last_push_status") in {
+            "succeeded",
+            "pending",
+            "configured",
+        }:
+            return
+        gh_sync.save_sync_state({"last_gh_fingerprint": fingerprint})
+        gh_sync.bump_and_schedule_push(delay_sec=2.0)
+    except Exception as exc:
+        log.debug("Google Home push schedule skipped: %s", exc)
+
+
+def load_disabled_speakers_from_catalog() -> set[str]:
+    disabled: set[str] = set()
+    try:
+        data = load_catalog_data()
+        for spk in data.get("speakers", []):
+            if spk.get("removed"):
+                continue
+            if not spk.get("enabled", True):
+                target = speaker_playback_target(spk)
+                if target:
+                    disabled.add(target.casefold())
+                if spk.get("room_hint"):
+                    disabled.add(spk["room_hint"].casefold())
+    except Exception as exc:
+        log.warning("Could not read disabled speakers: %s", exc)
+    return disabled
+
+
+def list_speaker_records(*, include_removed: bool = False) -> list[dict[str, Any]]:
+    data = load_catalog_data()
+    out = []
+    for s in data.get("speakers") or []:
+        if s.get("removed") and not include_removed:
+            continue
+        out.append(s)
+    return out
+
+
+def persist_discovered_speakers_to_catalog(
+    discovered: list[dict],
+    cast_mgr: CastManager,
+) -> dict[str, Any]:
+    """Reconcile LAN discovery into catalog.json; returns {speakers, summary, changed}."""
+    with _CATALOG_LOCK:
+        data = load_catalog_data()
+        before_fp = google_home_sync_fingerprint(data.get("speakers") or [])
+        before_json = json.dumps(data.get("speakers") or [], sort_keys=True)
+
+        # Align CastManager disabled set into discovered enabled flags.
+        for dev in discovered:
+            name = dev.get("name") or ""
+            room = dev.get("room") or ""
+            if cast_mgr.is_disabled(name) or cast_mgr.is_disabled(room):
+                dev["enabled"] = False
+            elif "enabled" not in dev:
+                dev["enabled"] = True
+
+        speakers, summary = reconcile_speakers(data.get("speakers") or [], discovered)
+
+        # Honor cast_mgr disabled flags on matched records.
+        for rec in speakers:
+            target = speaker_playback_target(rec) or ""
+            room = rec.get("room_hint") or ""
+            if not rec.get("cast_uuid") and (cast_mgr.is_disabled(target) or cast_mgr.is_disabled(room)):
+                rec["enabled"] = False
+
+        data["speakers"] = speakers
+        data["inputs"] = [
+            s.get("room_hint") or s.get("speaker_name")
+            for s in speakers
+            if s.get("enabled", True) and not s.get("removed")
+        ]
+        after_json = json.dumps(data.get("speakers") or [], sort_keys=True)
+        changed = before_json != after_json
+        if changed:
+            write_path = get_catalog_path(for_writing=True)
+            _atomic_write_json(write_path, data)
+            _mirror_cloud_run_catalog(write_path)
+            after_fp = google_home_sync_fingerprint(data.get("speakers") or [])
+            if after_fp != before_fp:
+                _maybe_schedule_google_home_push(data)
+        return {"speakers": speakers, "summary": summary, "changed": changed}
+
+
+def update_speaker_record(google_home_device_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    with _CATALOG_LOCK:
+        data = load_catalog_data()
+        speakers = list(data.get("speakers") or [])
+        found = None
+        for idx, s in enumerate(speakers):
+            if (s.get("google_home_device_id") or s.get("id")) == google_home_device_id:
+                found = idx
+                break
+        if found is None:
+            raise KeyError(google_home_device_id)
+        rec = dict(speakers[found])
+        allowed = {
+            "enabled",
+            "google_home_visible",
+            "google_home_name",
+            "room_hint",
+            "nicknames",
+            "needs_review",
+            "removed",
+        }
+        for key, value in patch.items():
+            if key in allowed:
+                rec[key] = value
+        if "google_home_name" in patch and patch["google_home_name"]:
+            name = str(patch["google_home_name"]).strip()
+            rec["google_home_name"] = name
+            rec["name"] = name
+            if "nicknames" not in patch:
+                rec["nicknames"] = [name]
+        if "room_hint" in patch:
+            rec["roomHint"] = rec.get("room_hint")
+        speakers[found] = migrate_speaker_record(rec, previously_exposed=rec.get("google_home_visible", False))
+        data["speakers"] = speakers
+        save_catalog_data(data, sync_cloud=True)
+        return speakers[found]
+
+
+def forget_speaker(google_home_device_id: str) -> dict[str, Any]:
+    """Soft-remove a speaker so it disappears from SYNC but can be rediscovered."""
+    return update_speaker_record(
+        google_home_device_id,
+        {"removed": True, "google_home_visible": False, "enabled": False},
+    )
 
 
 # Compatibility aliases matching the previous private names in main.py

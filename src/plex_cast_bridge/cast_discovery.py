@@ -27,6 +27,21 @@ def extract_room_name(friendly_name: str) -> str:
     return " ".join(w.capitalize() if w.islower() else w for w in cleaned.split())
 
 
+def _stop_process(proc: subprocess.Popen, *, wait_sec: float = 1.0) -> tuple[str, str]:
+    """Terminate a dns-sd child without hanging forever on communicate()."""
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        stdout, stderr = proc.communicate(timeout=wait_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=wait_sec)
+        except subprocess.TimeoutExpired:
+            return "", ""
+    return stdout or "", stderr or ""
+
+
 def discover_via_dnssd(timeout_sec=2.0):
     """
     Fallback speaker discovery using macOS native dns-sd command.
@@ -43,8 +58,7 @@ def discover_via_dnssd(timeout_sec=2.0):
             text=True,
         )
         time.sleep(timeout_sec)
-        proc.terminate()
-        stdout, _ = proc.communicate()
+        stdout, _ = _stop_process(proc)
 
         instances = set()
         for line in stdout.splitlines():
@@ -63,8 +77,7 @@ def discover_via_dnssd(timeout_sec=2.0):
                 text=True,
             )
             time.sleep(0.6)
-            lproc.terminate()
-            lout, _ = lproc.communicate()
+            lout, _ = _stop_process(lproc)
 
             host = None
             port = 8009
