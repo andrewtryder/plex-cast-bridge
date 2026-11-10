@@ -2,7 +2,7 @@
 
 This guide adds **Hey Google** control on top of a working local bridge. Complete [Docker install](../install-docker.md) (or the Mac emulator) first so Plex + Cast playback already works.
 
-**Preferred path:** use **Settings → Connections → Google Home** in the dashboard wizard, plus [FRESH_RECREATE.md](FRESH_RECREATE.md) for the canonical wipe/rebuild checklist. This document remains the long-form manual reference.
+**Preferred path:** use **Settings → Connections → Google Home** in the dashboard wizard. This guide is the long-form reference. For an existing installation, preserve its cloud resources and credentials; do not run provisioning scripts unless you intend to create or modify resources.
 
 Speaker/library changes sync to Cloud Run via `PUT /internal/catalog` (no redeploy). Use **Refresh & Sync Google Home** after linking. Room assignment for virtual devices still happens in the Google Home app.
 
@@ -65,7 +65,7 @@ Note the Cloud Run URL, for example `https://plex-google-home-fulfillment-….ru
 2. Add a **Cloud-to-cloud** integration.
 3. Under **Develop → Setup & configuration**:
    - **Integration name:** `Plex Cast Bridge`
-   - **Device type:** Set-top box (or AVR)
+   - **Device type:** Speaker (`action.devices.types.SPEAKER`)
    - **App icon:** Upload a **144×144** PNG with a round presentation (use [`assets/icon-144.png`](../../assets/icon-144.png), generated from [`assets/icon.png`](../../assets/icon.png))
 
 ![Developer Console Welcome](screenshots/02-google-home-developer-console-welcome.png)
@@ -167,10 +167,11 @@ If the web Test Suite shows **Unlinked Action**, link on the phone first:
 
 ## 8. Verify voice
 
-Try naming the virtual device (or the room you assigned it to):
+Pause and next have been observed on the existing deployment. Test controls against your own named virtual device or assigned room:
 
-- “Hey Google, play \<artist\> on Kitchen Plex”
 - “Hey Google, next track on Bedroom Plex”
 - “Hey Google, pause Kitchen Plex”
+
+Artist-search phrases such as “play an artist on Kitchen Plex” have not been verified as a supported Assistant music-provider flow. Use the dashboard to choose music.
 
 Unlinking in the Google Home app sends `action.devices.DISCONNECT` to the gateway; the bridge acknowledges unlink so Home Graph clears the association. Catalog changes stay local until you relink and sync again.

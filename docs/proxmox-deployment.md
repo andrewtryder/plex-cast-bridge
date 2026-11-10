@@ -184,7 +184,7 @@ LOCAL_API_KEY=${LOCAL_API_KEY}
 # ALLOW_UNAUTHENTICATED_LOCAL_API=true
 
 # Google Cloud Platform Pub/Sub Settings (optional until Google Home voice is enabled)
-GCP_PROJECT_ID=plex-cast-bridge-home
+GCP_PROJECT_ID=<your-project-id>
 GCP_PUBSUB_SUBSCRIPTION_ID=plex-commands-local-worker
 ENABLE_PUBSUB_LISTENER=true
 EOF
@@ -306,7 +306,7 @@ Verify that:
    - On macOS, Plex Cast Bridge uses native `afplay` for the local test speaker.
    - On Linux hosts (such as your Proxmox Debian LXC), the service operates in headless mode: it never invokes `afplay`, does not clutter speaker discovery with non-existent audio devices, and channels all playback directly to your physical Google Cast speakers. To enable headless simulation testing without physical speakers, set `ENABLE_TEST_SPEAKER=true` in `.env`.
 4. **Static Speaker Host Fallback:**
-   - If a specific speaker cannot be discovered dynamically, set `DEFAULT_SPEAKER_HOST=192.168.88.X` in `.env` to route all unspecified speaker requests directly to that IP.
+   - If a specific speaker cannot be discovered dynamically, set `DEFAULT_SPEAKER_HOST=<speaker-ip>` in `.env` to route all unspecified speaker requests directly to that IP.
 5. **Dead-Letter Queue Inspection:**
    - If a voice command fails persistently, inspect `data/dead_letter_queue.jsonl`:
      ```bash
