@@ -213,8 +213,7 @@ async def sync_google_home():
         result = catalog_sync.push_catalog_now(True)
         if result.get("last_push_status") in {"failed", "pending"}:
             catalog_sync.resume_pending_push()
-        status = catalog_sync.public_sync_status()
-        return {**result, **status}
+        return catalog_sync.public_sync_status()
 
     return await run_in_threadpool(run)
 
