@@ -225,12 +225,12 @@ def test_local_api_key_authentication():
     )
     assert resp.status_code == 200
 
-    # 3. Authenticated with query param ?api_key= succeeds (deprecated bootstrap path)
+    # 3. API keys in URLs are rejected.
     resp = client.post(
         "/api/transport?api_key=super-secret-local-key",
         json={"action": "resume", "speaker": "Master Bedroom"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 400
 
     # Restore settings without local_api_key
     app.state.settings = SimpleNamespace(default_speaker_name="Master Bedroom")
