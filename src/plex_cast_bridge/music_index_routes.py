@@ -27,10 +27,12 @@ async def index_status():
 
 
 @router.patch('/settings')
-async def index_settings(body: IndexSettings):
+async def index_settings(body: IndexSettings, request: Request):
     patch = body.model_dump(exclude_none=True)
     if patch.get('ai_enabled'):
-        raise HTTPException(400, 'AI-assisted mix generation is not available yet')
+        key = getattr(getattr(request.app.state, 'settings', None), 'gemini_api_key', None)
+        if not key or not key.get_secret_value():
+            raise HTTPException(400, 'Configure a Gemini API key before enabling AI-assisted mixes')
     try:
         result = await run_in_threadpool(music_index.update_settings, patch)
         if patch.get('indexing_enabled') is False:

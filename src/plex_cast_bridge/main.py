@@ -30,6 +30,7 @@ from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 from .routes import router
 from .music_index_routes import router as music_index_router
+from .mix_routes import router as mix_router
 from . import music_index, music_index_scan
 from . import catalog_sync
 
@@ -277,6 +278,7 @@ if _STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 app.include_router(router)
 app.include_router(music_index_router)
+app.include_router(mix_router)
 app.include_router(plex_router)
 app.include_router(google_home_router)
 

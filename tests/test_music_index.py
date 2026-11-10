@@ -263,3 +263,130 @@ def test_index_survives_a_new_process(index_dir):
     assert persisted['scan']['status'] == 'idle'
     with music_index.connect() as db:
         assert db.execute('SELECT title FROM tracks WHERE rating_key=?', ('persisted',)).fetchone()[0] == 'Survives restart'
+
+
+def test_mix_preview_and_saved_edit_are_scoped_and_non_destructive(index_dir):
+    from plex_cast_bridge import mixes
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First', 8), _track('2', 'Second', 0)]))
+    _join()
+    preview = mixes.preview('jazz', 'genre')
+    assert {item['rating_key'] for item in preview['tracks']} == {'1', '2'}
+    assert preview['duration_ms'] == 2000
+    assert mixes.preview('joyful', 'mood')['tracks'] == []
+    deep_cuts = mixes.preview('deep cuts', 'deep_cuts')
+    assert [item['rating_key'] for item in deep_cuts['tracks']] == ['2', '1']
+    assert 'Ranked by Plex play counts' in deep_cuts['warning']
+    with pytest.raises(ValueError, match='no longer'):
+        mixes.save('bad', ['missing'])
+    mix_id = mixes.save('Favorite', ['1', '2'], {'mode': 'genre'})
+    mixes.update(mix_id, name='Renamed', keys=['2', '1'])
+    assert [t['rating_key'] for t in mixes.get(mix_id)['tracks']] == ['2', '1']
+    with pytest.raises(ValueError):
+        mixes.update(mix_id, name='should roll back', keys=['invented'])
+    assert mixes.get(mix_id)['name'] == 'Renamed'
+    music_index_scan.start(_plex([_track('2', 'Second')]))
+    _join()
+    assert mixes.get(mix_id)['tracks'][1]['missing'] is True
+    mixes.update(mix_id, keys=['2'])
+    assert len(mixes.get(mix_id)['tracks']) == 1
+    mixes.delete(mix_id)
+    assert mixes.list_mixes() == []
+
+
+def test_deep_cuts_explains_missing_play_count_metadata(index_dir):
+    from plex_cast_bridge import mixes
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'No view count')]))
+    _join()
+    result = mixes.preview('deep cuts', 'deep_cuts')
+    assert result['tracks'] == []
+    assert 'not provided' in result['warning']
+
+
+def test_mix_playback_rejects_wrong_plex_library_before_cast(index_dir):
+    from unittest.mock import MagicMock
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plex_cast_bridge import mixes
+    from plex_cast_bridge.mix_routes import router
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First')]))
+    _join()
+    mix_id = mixes.save('Favorite', ['1'])
+    app = FastAPI()
+    app.include_router(router)
+    app.state.plex = _plex([])
+    app.state.plex.server.machineIdentifier = 'different-server'
+    app.state.cast = MagicMock()
+    response = TestClient(app).post(f'/api/mixes/{mix_id}/play', json={'speaker': 'Kitchen'})
+    assert response.status_code == 400
+    app.state.cast.get.assert_not_called()
+
+
+def test_ai_is_opt_in_and_validates_bounded_candidate_ids(index_dir, monkeypatch):
+    import json
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pydantic import SecretStr
+    from plex_cast_bridge import mix_ai
+    from plex_cast_bridge.mix_routes import router
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First'), _track('2', 'Second')]))
+    _join()
+    calls = []
+    class Model:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(parsed={'track_ids': ['2']})
+    monkeypatch.setattr(mix_ai.genai, 'Client', lambda **kwargs: SimpleNamespace(models=Model()))
+    app = FastAPI()
+    app.include_router(router)
+    app.state.settings = SimpleNamespace(gemini_api_key=SecretStr('private-secret'))
+    client = TestClient(app)
+    body = {'prompt': 'jazz', 'mode': 'genre', 'use_ai': True}
+    assert client.post('/api/mixes/preview', json=body).status_code == 400
+    assert calls == []
+    music_index.update_settings({'ai_enabled': True})
+    result = client.post('/api/mixes/preview', json=body)
+    assert result.status_code == 200
+    assert [t['rating_key'] for t in result.json()['tracks']] == ['2']
+    assert 'private-secret' not in calls[0]['contents']
+    assert 'jazz' not in calls[0]['contents'].lower()  # free-form request is not transmitted
+    assert 'http' not in calls[0]['contents'].lower()
+    monkeypatch.setattr(mix_ai.genai, 'Client', lambda **kwargs: SimpleNamespace(models=SimpleNamespace(
+        generate_content=lambda **kw: SimpleNamespace(parsed={'track_ids': ['invented']}))))
+    assert client.post('/api/mixes/preview', json=body).status_code == 400
+    assert len(json.dumps(calls[0]['contents'])) < 15000
+
+
+def test_preview_playback_validates_ids_and_skips_deleted_plex_tracks(index_dir):
+    from unittest.mock import MagicMock
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plexapi.exceptions import NotFound
+    from plex_cast_bridge.mix_routes import router
+
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First'), _track('2', 'Second')]))
+    _join()
+    app = FastAPI()
+    app.include_router(router)
+    app.state.plex = _plex([])
+    app.state.plex.server.fetchItem = MagicMock(side_effect=[object(), NotFound('gone')])
+    app.state.cast = MagicMock()
+    speaker = app.state.cast.get.return_value
+    speaker.status.return_value = {'state': 'PLAYING'}
+    client = TestClient(app)
+    bad = client.post('/api/mixes/play-preview', json={'speaker': 'Kitchen', 'track_ids': ['1', 'invented']})
+    assert bad.status_code == 400
+    app.state.cast.get.assert_not_called()
+    response = client.post('/api/mixes/play-preview', json={'speaker': 'Kitchen', 'track_ids': ['1', '2']})
+    assert response.status_code == 200
+    assert response.json()['missing_track_ids'] == ['2']
+    assert len(speaker.replace.call_args.args[0]) == 1
+    assert speaker.replace.call_args.kwargs['repeat'] is False
