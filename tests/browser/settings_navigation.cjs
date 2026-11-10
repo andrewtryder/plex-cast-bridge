@@ -13,7 +13,7 @@ const root = path.resolve(__dirname, '../../src/plex_cast_bridge');
       if (p === '/') return route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(root, 'templates/dashboard.html'))});
       if (p.startsWith('/static/')) return route.fulfill({contentType: p.endsWith('.css') ? 'text/css' : 'text/javascript', body: fs.readFileSync(path.join(root, p.replace('/static/', 'static/')))});
       if (p === '/api/backup/restore/preview' && !route.request().headers()['content-type']?.startsWith('multipart/form-data;')) throw Error('Backup preview must send multipart form data');
-      const body = p === '/api/speakers' ? [] : {};
+      const body = p === '/api/speakers' ? [] : p === '/api/music-index' ? {settings:{indexing_enabled:false,schedule:'manual'},scan:{status:'idle',scanned:0},counts:{tracks:0,artists:0,albums:0},quality:{tracks_with_artist_and_album:0,tracks_with_genres:0,tracks_with_moods:0,albums_with_year:0}} : {};
       return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(body)});
     });
     await page.goto('http://bridge.test/#settings');
@@ -25,12 +25,12 @@ const root = path.resolve(__dirname, '../../src/plex_cast_bridge');
       const size = await page.evaluate(() => ({width: innerWidth, scroll: document.documentElement.scrollWidth}));
       if (size.scroll > size.width) throw Error(`${section}: horizontal overflow`);
     }
-    const names = ['connections', 'playback', 'diagnostics', 'backup'];
+    const names = ['connections', 'playback', 'library', 'diagnostics', 'backup'];
     const panels = page.locator('[data-settings-panel]');
     if (await panels.count() !== names.length) throw Error('Unexpected settings panel count');
     const nested = await page.locator('[data-settings-panel] [data-settings-panel]').count();
     if (nested) throw Error('Settings panels must not be nested');
-    const controls = {connections: '#plexConnectBtn', playback: '#saveVolumeSettingsBtn', diagnostics: '#diagRefreshBtn', backup: '#backupPreviewBtn'};
+    const controls = {connections: '#plexConnectBtn', playback: '#saveVolumeSettingsBtn', library: '#indexSave', diagnostics: '#diagRefreshBtn', backup: '#backupPreviewBtn'};
     for (const name of names) {
       const button = page.locator(`[data-settings-tab="${name}"]`);
       await button.focus();

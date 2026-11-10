@@ -29,6 +29,8 @@ from .plex_routes import router as plex_router
 from .plex_service import PlexService
 from .pubsub_worker import PubSubWorker
 from .routes import router
+from .music_index_routes import router as music_index_router
+from . import music_index, music_index_scan
 from . import catalog_sync
 
 log = logging.getLogger(__name__)
@@ -88,6 +90,8 @@ async def lifespan(app: FastAPI):
         "yes",
     }
     settings = Settings()
+    if music_index.database_path().exists():
+        await run_in_threadpool(music_index_scan.recover_interrupted)
     stored = load_app_settings()
     if stored:
         apply_to_settings(settings, stored)
@@ -186,6 +190,23 @@ async def lifespan(app: FastAPI):
                 backoff = min(300, backoff * 2)
             await asyncio.sleep(backoff)
 
+    async def _schedule_music_index():
+        while True:
+            try:
+                if music_index.database_path().exists():
+                    settings_data = await run_in_threadpool(music_index.get_settings)
+                    plex = getattr(app.state, 'plex', None)
+                    if plex and settings_data['indexing_enabled'] and settings_data['schedule'] != 'manual':
+                        state = await run_in_threadpool(music_index.status)
+                        if music_index_scan.schedule_due(settings_data, state['scan']):
+                            await run_in_threadpool(music_index_scan.start, plex)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception('Music indexing scheduler failed')
+            await asyncio.sleep(60)
+
+    index_task = asyncio.create_task(_schedule_music_index())
     reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
     if settings.enable_pubsub_listener:
@@ -215,6 +236,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        index_task.cancel()
+        try:
+            await index_task
+        except asyncio.CancelledError:
+            pass
+        if music_index.database_path().exists():
+            await run_in_threadpool(music_index_scan.cancel)
         catalog_sync.stop_pending_push()
         reconcile_task.cancel()
         try:
@@ -248,6 +276,7 @@ _STATIC = Path(__file__).resolve().parent / "static"
 if _STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 app.include_router(router)
+app.include_router(music_index_router)
 app.include_router(plex_router)
 app.include_router(google_home_router)
 

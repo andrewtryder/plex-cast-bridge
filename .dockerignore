@@ -39,6 +39,7 @@ test-speaker/
 /plex_connection.json
 /app_settings.json
 /dashboard_sessions.sqlite3*
+/music_index.sqlite3*
 data/
 dead_letter_queue.jsonl
 *.jsonl

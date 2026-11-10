@@ -180,6 +180,7 @@
     <nav class="settings-tabs" aria-label="Settings sections">
       <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
       <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
+      <button type="button" class="settings-tab" data-settings-tab="library">Library</button>
       <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
       <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
     </nav>
@@ -314,6 +315,22 @@
       </div>
     </div>
 
+
+    <div class="settings-panel" data-settings-panel="library" hidden>
+      <div class="conn-card">
+        <h2 class="conn-title">Music library index</h2>
+        <p class="conn-meta">Optional local index for future discovery and mixes. Scans read your Plex metadata; existing DJ playback works without it.</p>
+        <label><input type="checkbox" id="indexEnabled"> Background library indexing</label>
+        <div class="field-wrap">
+          <label class="field-label" for="indexSchedule">Scan schedule</label>
+          <select id="indexSchedule" class="field-select"><option value="manual">Manual only</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
+        </div>
+        <div class="conn-actions"><button type="button" class="accent-button" id="indexSave">Save index settings</button><button type="button" class="ghost-button" id="indexStart">Index now</button><button type="button" class="ghost-button" id="indexCancel">Cancel scan</button></div>
+        <p id="indexStatus" class="conn-meta" role="status" aria-live="polite">Loading…</p>
+        <p id="indexQuality" class="conn-meta"></p>
+        <p class="conn-meta">AI-assisted mix generation is not available yet; no metadata is sent for indexing.</p>
+      </div>
+    </div>
 
     <div class="settings-panel" data-settings-panel="diagnostics" hidden>
       <div class="conn-card">
