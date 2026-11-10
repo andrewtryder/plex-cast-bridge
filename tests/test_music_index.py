@@ -19,12 +19,18 @@ def _track(key, title, view_count=None):
 
 
 def _plex(tracks, revision=None, calls=None):
+    from xml.etree import ElementTree
+
     def search(**kwargs):
         start = kwargs['container_start']
         if calls is not None:
             calls.append(start)
         return tracks[start:start + kwargs['container_size']]
-    return SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1', query=lambda *args, **kwargs: {'totalSize': str(len(tracks))}),
+    def query(path, *args, **kwargs):
+        if path == '/library/sections' and revision:
+            return ElementTree.fromstring(f'<MediaContainer><Directory key="library-1" updatedAt="{revision}" /></MediaContainer>')
+        return {'totalSize': str(len(tracks))}
+    return SimpleNamespace(server=SimpleNamespace(machineIdentifier='server-1', query=query),
                            library=SimpleNamespace(key='library-1', search=search, updatedAt=revision))
 
 
@@ -202,6 +208,14 @@ def test_library_revision_is_refetched_from_plex_sections():
         library=SimpleNamespace(updatedAt='stale-cached-revision'),
     )
     assert music_index_scan._library_revision(plex, '1') == 'fresh-revision'
+
+
+def test_failed_fresh_revision_lookup_forces_full_scan():
+    plex = SimpleNamespace(
+        server=SimpleNamespace(query=lambda path: (_ for _ in ()).throw(RuntimeError('offline'))),
+        library=SimpleNamespace(updatedAt='stale-cached-revision'),
+    )
+    assert music_index_scan._library_revision(plex, '1') is None
 
 
 def test_changed_library_during_scan_preserves_snapshot(index_dir):
