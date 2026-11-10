@@ -254,15 +254,16 @@ async def connection_test(request: Request):
     try:
         n = len(cast.discover()) if cast else 0
         add("Cast discovery", n > 0, f"{n} speaker(s) found", "Rescan speakers on Player")
-    except Exception as exc:
-        add("Cast discovery", False, str(exc), "Check LAN / mDNS")
+    except Exception:
+        log.exception("Cast discovery failed during connection test")
+        add("Cast discovery", False, "Discovery failed; check bridge logs", "Check LAN / mDNS")
 
     sync = catalog_sync.public_sync_status()
     # Only a successful push counts as verified; "configured"/pending are not ready.
     sync_ok = bool(sync.get("cloud_gateway_configured")) and sync.get("status") == "succeeded"
     sync_detail = f"status={sync.get('status')}"
     if sync.get("last_error"):
-        sync_detail = f"{sync_detail}; {sync.get('last_error')}"
+        sync_detail = f"{sync_detail}; check bridge logs for the sync error"
     add(
         "Cloud catalog sync",
         sync_ok,

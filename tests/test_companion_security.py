@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,3 +41,15 @@ def test_origin_allowlist():
     mod = _load_companion()
     assert "http://127.0.0.1:8000" in mod.ALLOWED_ORIGINS
     assert "*" not in mod.ALLOWED_ORIGINS
+
+
+@pytest.mark.parametrize("origin,allowed", [
+    ("http://localhost:8000", True),
+    ("http://127.0.0.1:8000", True),
+    ("http://localhost:8000\r\nX-Injected: yes", False),
+    ("https://attacker.example", False),
+])
+def test_cors_does_not_reflect_untrusted_origins(origin, allowed):
+    mod = _load_companion()
+    headers = mod._cors_headers(SimpleNamespace(headers={"Origin": origin}))
+    assert headers.get("Access-Control-Allow-Origin") == (origin if allowed else None)

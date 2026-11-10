@@ -100,8 +100,11 @@ def _cors_headers(handler: BaseHTTPRequestHandler) -> dict[str, str]:
         "Access-Control-Allow-Headers": "Content-Type, X-Companion-Token",
         "Vary": "Origin",
     }
-    if origin in ALLOWED_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = origin
+    # Return literal allowlisted values rather than reflecting request headers.
+    if origin == "http://127.0.0.1:8000":
+        headers["Access-Control-Allow-Origin"] = "http://127.0.0.1:8000"
+    elif origin == "http://localhost:8000":
+        headers["Access-Control-Allow-Origin"] = "http://localhost:8000"
     return headers
 
 

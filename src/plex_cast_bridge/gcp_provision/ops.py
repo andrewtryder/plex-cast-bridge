@@ -141,8 +141,9 @@ def auth_status() -> dict[str, Any]:
             check=False,
         )
         account = (proc.stdout or "").strip().splitlines()[0] if proc.stdout.strip() else ""
-    except Exception as exc:
-        return {"ok": False, "account": None, "adc": False, "detail": str(exc)}
+    except Exception:
+        log.exception("Could not check gcloud authentication")
+        return {"ok": False, "account": None, "adc": False, "detail": "Could not check gcloud authentication; see logs"}
     adc_ok = (
         subprocess.run(
             ["gcloud", "auth", "application-default", "print-access-token"],
@@ -285,9 +286,9 @@ def run_provision_step(plan: ProvisionPlan, step: str, dry_run: bool = True) -> 
 
     try:
         return _run_provision_step_inner(plan, step)
-    except Exception as exc:
+    except Exception:
         log.exception("provision step %s failed", step)
-        return {"step": step, "status": "failed", "detail": str(exc)[:500]}
+        return {"step": step, "status": "failed", "detail": "Provisioning failed; see logs"}
 
 
 def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
