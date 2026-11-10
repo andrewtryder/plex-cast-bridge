@@ -1,3 +1,4 @@
+import { initMusicIndex } from './music-index.js';
 import { createDjHelpers } from './dj.js';
 import { initMaintenance } from './maintenance.js';
 import { initGoogleHome } from './google-home.js';
@@ -865,6 +866,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       });
       if (tab === 'connections') refreshGoogleHome();
       if (tab === 'playback') refreshPlaybackSettings();
+      if (tab === 'library') refreshMusicIndex();
       if (tab === 'diagnostics') refreshDiagnostics();
     });
   });
@@ -936,6 +938,8 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
 
 
   const { refreshGoogleHome, refreshGoogleHomePairing } = initGoogleHome({ $, api, announce, copyText, loadSpeakers });
+
+  const { refreshMusicIndex } = initMusicIndex({ $, api, announce });
 
   const { refreshDiagnostics } = initMaintenance({ $, api, announce, jsonHeaders });
 
