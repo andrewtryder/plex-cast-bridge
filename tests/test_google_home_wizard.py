@@ -342,3 +342,26 @@ def test_enable_apis_refuses_without_billing(monkeypatch):
     result = ops_mod.run_provision_step(plan, "enable_apis", dry_run=False)
     assert result["status"] == "failed"
     assert "billing" in result["detail"].lower()
+
+
+def test_pairing_dashboard_requires_local_auth_and_forwards_approval(wizard_env, monkeypatch):
+    from pydantic import SecretStr
+
+    calls = []
+    ticket = 't' * 43
+    def gateway(path, body=None):
+        calls.append((path, body))
+        return {'pending': {'ticket': ticket, 'code': '123456'}} if body is None else {'status': 'approved'}
+    monkeypatch.setattr(catalog_sync, 'pairing_gateway_request', gateway)
+    with TestClient(app) as browser:
+        app.state.settings.local_api_key = SecretStr('test-local-key')
+        assert browser.get('/api/google-home/pairing').status_code == 401
+        headers = {'X-API-Key': 'test-local-key'}
+        pending = browser.get('/api/google-home/pairing', headers=headers)
+        assert pending.json()['pending']['code'] == '123456'
+        result = browser.post('/api/google-home/pairing/approve', headers=headers,
+                              json={'ticket': ticket, 'code': '123456'})
+        assert result.json()['status'] == 'approved'
+        assert calls[-1] == ('/internal/oauth/approve', {'ticket': ticket, 'code': '123456'})
+        app.state.settings.local_api_key = None
+        assert browser.get('/api/google-home/pairing').status_code == 403

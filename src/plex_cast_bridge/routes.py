@@ -24,6 +24,7 @@ from .catalog_store import (
 )
 from .playback_service import play, transport
 from .speaker_queue import track_art_proxy_path
+from . import activity
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,11 @@ ICON_144_PATH = PROJECT_ROOT / "assets" / "icon-144.png"
 DASHBOARD_TEMPLATE = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 
 router = APIRouter()
+
+
+@router.get("/api/activity", dependencies=[Depends(verify_local_api)])
+async def recent_activity():
+    return {"events": activity.recent()}
 
 PLEX_REQUIRED_DETAIL = "Plex is not linked. Connect with Plex in Settings, or set PLEX_TOKEN."
 
@@ -603,12 +609,22 @@ async def patch_settings(request: Request):
     if merged_default > merged_max:
         raise HTTPException(status_code=400, detail="default_cast_volume cannot exceed max_cast_volume")
 
-    stored = await run_in_threadpool(save_app_settings, patch)
+    current_volumes = {
+        "default_cast_volume": settings.default_cast_volume,
+        "max_cast_volume": settings.max_cast_volume,
+        "night_cast_volume": settings.night_cast_volume,
+    }
+    stored = await run_in_threadpool(save_app_settings, {**current_volumes, **patch})
     apply_to_settings(settings, stored)
     cast = getattr(request.app.state, "cast", None)
     if cast is not None:
         cast.default_volume = settings.default_cast_volume
         cast.max_volume = settings.max_cast_volume
+        with cast.lock:
+            for speaker in cast.speakers.values():
+                if hasattr(speaker, "default_volume") and hasattr(speaker, "max_volume"):
+                    speaker.default_volume = settings.default_cast_volume
+                    speaker.max_volume = settings.max_cast_volume
 
     return await get_settings(request)
 

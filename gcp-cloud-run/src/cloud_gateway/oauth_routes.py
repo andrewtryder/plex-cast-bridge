@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from .auth import (
     create_authorization_code,
@@ -80,19 +82,62 @@ async def oauth_authorize_get(
             detail=f"Invalid client_id. Expected '{settings.google_client_id}'.",
         )
 
-    return templates.TemplateResponse(
-        request=request,
-        name="login.html",
-        context={
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "response_type": response_type,
-            "scope": scope,
-            "error": None,
-            "require_passphrase": True,
-        },
+    if response_type != "code":
+        raise HTTPException(status_code=400, detail="Unsupported response_type")
+    check_rate_limit(request.client.host if request.client else "unknown")
+    approval = await run_in_threadpool(
+        request.app.state.approval_store.create,
+        client_id=client_id, redirect_uri=redirect_uri, state=state, scope=scope,
     )
+    return templates.TemplateResponse(
+        request=request, name="pairing.html", context=approval,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+class PairingTicket(BaseModel):
+    ticket: str = Field(min_length=32, max_length=128)
+
+
+class PairingApproval(PairingTicket):
+    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+@router.post("/oauth/pairing/status")
+def pairing_status(body: PairingTicket, request: Request):
+    return JSONResponse({"status": request.app.state.approval_store.status(body.ticket)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/oauth/pairing/complete")
+def pairing_complete(request: Request, ticket: str = Form(...), settings: Settings = Depends(get_settings)):
+    approval = request.app.state.approval_store.consume(ticket)
+    if approval is None:
+        raise HTTPException(status_code=400, detail="Approval missing, expired, or already used")
+    validate_redirect_uri(approval["redirect_uri"], allow_local=settings.mock_pubsub)
+    if approval["client_id"] != settings.google_client_id:
+        raise HTTPException(status_code=400, detail="Invalid client_id")
+    return _issue_auth_redirect(settings=settings, **approval)
+
+
+def verify_pairing_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")) -> None:
+    configured = request.app.state.settings.catalog_write_key
+    expected = configured.get_secret_value() if configured else ""
+    if not expected or not x_api_key or not secrets.compare_digest(expected, x_api_key):
+        raise HTTPException(status_code=401, detail="Invalid pairing key")
+
+
+@router.get("/internal/oauth/pending")
+def pending_pairing(request: Request, api_key: None = Depends(verify_pairing_key)):
+    return JSONResponse({"pending": request.app.state.approval_store.pending()},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/oauth/approve")
+def approve_pairing(body: PairingApproval, request: Request, api_key: None = Depends(verify_pairing_key)):
+    if not request.app.state.approval_store.approve(body.ticket, body.code):
+        raise HTTPException(status_code=409, detail="Approval expired or code did not match")
+    return {"status": "approved"}
 
 
 @router.post("/oauth/authorize", response_class=HTMLResponse)

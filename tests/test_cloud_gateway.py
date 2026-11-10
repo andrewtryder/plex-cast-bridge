@@ -47,7 +47,7 @@ def test_oauth_authorize_get_validation(client):
     )
     assert res.status_code == 200
     assert "Plex Cast Bridge" in res.text
-    assert "ADMIN_PASSPHRASE" in res.text
+    assert "dashboard" in res.text.lower()
 
 
 def test_oauth_authorize_post_failure(client):

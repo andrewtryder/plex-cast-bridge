@@ -234,6 +234,20 @@ def reconcile_cloud() -> dict[str, Any]:
         return {"state": "failed", "detail": "Cloud reconciliation unavailable"}
 
 
+def pairing_gateway_request(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Forward a dashboard-approved link request without exposing the cloud key."""
+    state = load_sync_state()
+    url = (state.get("cloud_gateway_url") or "").rstrip("/")
+    key = state.get("catalog_write_key") or ""
+    if not url or not key:
+        raise ValueError("Google Home gateway is not configured")
+    data = json.dumps(body).encode() if body is not None else None
+    req = request.Request(url + path, data=data, method="POST" if data is not None else "GET",
+                          headers={"X-API-Key": key, "Content-Type": "application/json"})
+    with request.urlopen(req, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def configure_gateway(cloud_gateway_url: str, catalog_write_key: str) -> dict[str, Any]:
     return save_sync_state({
         "cloud_gateway_url": cloud_gateway_url.rstrip("/"),

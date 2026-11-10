@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     plex_music_section: str = "Music"
     default_speaker_name: str = ""
     default_speaker_host: str = ""
-    default_cast_volume: float = 0.20
+    default_cast_volume: float = 0.40
     max_cast_volume: float = 0.85
     night_cast_volume: float | None = None
     gemini_api_key: SecretStr = SecretStr("")
