@@ -120,18 +120,7 @@
       </div>
     </details>
 
-    <section class="speaker-settings rule" id="speakers" aria-labelledby="speakerHeading">
-      <div class="section-top">
-        <h2 id="speakerHeading" class="section-title">Speakers &amp; settings</h2>
-        <button type="button" class="plain-button" id="scanButton">
-          <svg class="icon sm" aria-hidden="true"><use href="#refresh-icon"/></svg>
-          <span id="scanButtonLabel">Refresh speakers</span>
-        </button>
-      </div>
-      <p class="section-description">Each Cast destination can allow local playback and optionally advertise its own virtual Plex device in Google Home (for example Kitchen Plex). New speakers stay hidden from Google Home until you opt in. Room assignment for virtual devices still happens in the Google Home app.</p>
-      <div id="deviceList" class="device-list" aria-live="polite"></div>
-      <p class="below-note" id="deviceHint">Stable IDs survive renames and IP changes. Forgetting a speaker removes its virtual Plex device on the next Google Home sync — it does not remove the Nest speaker from Google Home.</p>
-    </section>
+
   </section>
 
   <section class="page page-dj" id="djPage" hidden aria-label="Smart DJ">
@@ -176,15 +165,32 @@
     <div class="settings-head">
       <span class="label">Settings</span>
       <h1>Connections</h1>
-      <p>Link Plex and Google Home. Local dashboard access still uses your API key.</p>
+      <p>Manage connections, speakers, and dashboard access.</p>
     </div>
 
     <nav class="settings-tabs" aria-label="Settings sections">
       <button type="button" class="settings-tab" data-settings-tab="connections" aria-current="true">Connections</button>
+      <button type="button" class="settings-tab" data-settings-tab="speakers">Speakers</button>
       <button type="button" class="settings-tab" data-settings-tab="playback">Playback</button>
       <button type="button" class="settings-tab" data-settings-tab="diagnostics">Diagnostics</button>
       <button type="button" class="settings-tab" data-settings-tab="backup">Backup</button>
     </nav>
+
+    <div class="settings-panel" data-settings-panel="speakers" hidden>
+    <section class="speaker-settings" id="speakers" aria-labelledby="speakerHeading">
+      <div class="section-top">
+        <h2 id="speakerHeading" class="section-title">Speakers</h2>
+        <button type="button" class="plain-button" id="scanButton">
+          <svg class="icon sm" aria-hidden="true"><use href="#refresh-icon"/></svg>
+          <span id="scanButtonLabel">Refresh speakers</span>
+        </button>
+      </div>
+      <p class="section-description">Each Cast destination can allow local playback and optionally advertise its own virtual Plex device in Google Home (for example Kitchen Plex). New speakers stay hidden from Google Home until you opt in. Room assignment for virtual devices still happens in the Google Home app.</p>
+      <div id="deviceList" class="device-list" aria-live="polite"></div>
+      <p class="below-note" id="deviceHint">Stable IDs survive renames and IP changes. Forgetting a speaker removes its virtual Plex device on the next Google Home sync — it does not remove the Nest speaker from Google Home.</p>
+    </section>
+      <p id="speakerSyncStatus" class="conn-meta" aria-live="polite">Google Home sync status unavailable.</p>
+    </div>
 
     <div class="settings-panel" data-settings-panel="connections">
       <div class="conn-card">
@@ -300,6 +306,8 @@
         </details>
       </div>
     </div>
+
+    </div> <!-- connections panel -->
 
     <div class="settings-panel" data-settings-panel="playback" hidden>
       <div class="conn-card">
@@ -1026,7 +1034,7 @@
       sub.className = 'device-desc';
       const avail = d.availability && d.availability !== 'online' ? ` · ${d.availability}` : '';
       const ghLabel = d.google_home_name || `${roomLabel(d)} Plex`;
-      sub.textContent = `${d.name} · ${d.model || 'Google Cast'}${avail} · Virtual: ${ghLabel}`;
+      sub.textContent = `Physical: ${d.name} · ${d.model || 'Google Cast'}${avail} · Virtual: ${ghLabel}`;
       text.append(name, sub);
       if (d.needs_review) {
         const warning = document.createElement('span');
@@ -1041,7 +1049,7 @@
       const bits = [];
       if (d.host) bits.push(`${d.host}${d.port ? ':' + d.port : ''}`);
       if (d.model) bits.push(d.model);
-      if (d.uuid) bits.push(`cast ${String(d.uuid).slice(0, 8)}…`);
+      if (d.uuid) bits.push(`Cast UUID: ${d.uuid}`);
       if (d.google_home_device_id) bits.push(`gh ${String(d.google_home_device_id)}`);
       if (d.last_seen) bits.push(`seen ${d.last_seen}`);
       meta.textContent = bits.length ? bits.join(' · ') : 'No technical details available.';
@@ -1054,8 +1062,19 @@
       nameInput.value = ghLabel;
       nameInput.setAttribute('aria-label', `Google Home name for ${d.name}`);
       nameInput.placeholder = 'Kitchen Plex';
-      nameInput.addEventListener('change', () => patchSpeaker(d, { google_home_name: nameInput.value.trim() }));
-      nameWrap.appendChild(nameInput);
+      const saveName = document.createElement('button');
+      saveName.type = 'button';
+      saveName.className = 'ghost-button';
+      saveName.textContent = 'Save';
+      saveName.setAttribute('aria-label', `Save Google Home name for ${d.name}`);
+      saveName.addEventListener('click', () => patchSpeaker(d, { google_home_name: nameInput.value.trim() }));
+      const cancelName = document.createElement('button');
+      cancelName.type = 'button';
+      cancelName.className = 'ghost-button';
+      cancelName.textContent = 'Cancel';
+      cancelName.setAttribute('aria-label', `Cancel Google Home name for ${d.name}`);
+      cancelName.addEventListener('click', () => { nameInput.value = ghLabel; });
+      nameWrap.append(nameInput, saveName, cancelName);
 
       const toggleMeta = document.createElement('button');
       toggleMeta.type = 'button';
@@ -1410,10 +1429,10 @@
       document.querySelectorAll('[data-settings-panel]').forEach((p) => {
         p.hidden = p.getAttribute('data-settings-panel') !== tab;
       });
-      if (tab === 'connections') refreshGoogleHome();
+      if (tab === 'connections' || tab === 'speakers') refreshGoogleHome();
+      if (tab === 'speakers') loadSpeakers();
       if (tab === 'playback') refreshPlaybackSettings();
       if (tab === 'diagnostics') refreshDiagnostics();
-      if (tab === 'playback') refreshPlaybackSettings();
     });
   });
 
@@ -1988,6 +2007,7 @@
         syncLabel.hidden = false;
         syncLabel.textContent = sync.label || sync.status || '';
       }
+      $('speakerSyncStatus').textContent = `Google Home sync: ${sync.label || sync.status || 'unknown'}${sync.note ? ' · ' + sync.note : ''}`;
       $('ghSyncNote').hidden = false;
       $('ghSyncNote').textContent = sync.note || '';
       $('ghSetupBtn').textContent = ghWizardOpen ? 'Setup in progress' : (setup.completed_steps?.length ? 'Resume Google Home setup' : 'Set up Google Home');
@@ -2001,6 +2021,7 @@
       }
     } catch (err) {
       $('ghLinkLabel').textContent = 'Unavailable';
+      $('speakerSyncStatus').textContent = 'Google Home sync status unavailable.';
     }
   }
 
