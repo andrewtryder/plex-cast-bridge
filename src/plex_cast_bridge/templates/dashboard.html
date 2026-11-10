@@ -879,7 +879,9 @@
     list.replaceChildren();
     (items || []).slice(0, 12).forEach((t, idx) => {
       const li = document.createElement('li');
-      li.innerHTML = `<span>${t.title || 'Track'} — ${t.artist || ''}</span>`;
+      const description = document.createElement('span');
+      description.textContent = `${t.title || 'Track'} — ${t.artist || ''}`;
+      li.appendChild(description);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'ghost-button';
@@ -1476,9 +1478,9 @@
     }
   }
 
-  function fieldInput(id, label, placeholder, value) {
+  function fieldInput(id, label, placeholder) {
     return `<label class="field-label" for="${id}">${label}</label>
-      <div class="field-wrap"><input id="${id}" class="field-select" placeholder="${placeholder || ''}" value="${value || ''}" autocomplete="off"></div>`;
+      <div class="field-wrap"><input id="${id}" class="field-select" placeholder="${placeholder || ''}" autocomplete="off"></div>`;
   }
 
   function setGhBusy(on, label) {
@@ -1536,10 +1538,11 @@
           <label class="gh-checkrow"><input type="radio" name="ghProjectMode" value="create_new_project" ${mode !== 'attach_existing' ? 'checked' : ''}> Create a new GCP project</label>
           <label class="gh-checkrow"><input type="radio" name="ghProjectMode" value="attach_existing" ${mode === 'attach_existing' ? 'checked' : ''}> Use an existing GCP project</label>
         </fieldset>
-        ${fieldInput('ghProjectId', mode === 'attach_existing' ? 'Existing GCP project ID' : 'New GCP project ID', mode === 'attach_existing' ? 'e.g. plex-cast-bridge' : 'e.g. plex-cast-home-a7f3', s.project_id || (mode === 'attach_existing' ? 'plex-cast-bridge' : ''))}
+        ${fieldInput('ghProjectId', mode === 'attach_existing' ? 'Existing GCP project ID' : 'New GCP project ID', mode === 'attach_existing' ? 'e.g. plex-cast-bridge' : 'e.g. plex-cast-home-a7f3')}
         <p class="conn-meta" id="ghProjectModeHint">${mode === 'attach_existing'
           ? 'We verify the project is ACTIVE with your local gcloud, then continue inside it.'
           : 'Deleted project IDs cannot be reused. Prefer a fresh ID only when you need a brand-new project.'}</p>`;
+      $('ghProjectId').value = s.project_id || (mode === 'attach_existing' ? 'plex-cast-bridge' : '');
       box.querySelectorAll('input[name="ghProjectMode"]').forEach((el) => {
         el.addEventListener('change', () => {
           const next = box.querySelector('input[name="ghProjectMode"]:checked')?.value || 'create_new_project';
@@ -1554,16 +1557,18 @@
         });
       });
     } else if (step.id === 'prepare_services') {
-      const billingUrl = s.billing_url || `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(s.project_id || '')}`;
+      const billingUrl = `https://console.cloud.google.com/billing/linkedaccount?project=${encodeURIComponent(s.project_id || '')}`;
       const billingOk = Boolean(s.billing_confirmed) || progress.confirm_billing === 'ok';
       box.innerHTML = `
-        <p class="conn-meta">Project: <code>${s.project_id || '(set in previous step)'}</code></p>
+        <p class="conn-meta">Project: <code id="ghProjectSummary"></code></p>
         <p class="gh-status-pill ${billingOk ? 'is-ok' : 'is-bad'}" id="ghBillingStatus">
           <span class="dot" aria-hidden="true"></span>
           <span>${billingOk ? 'Billing linked' : 'Billing not linked yet'}</span>
         </p>
         <p class="conn-meta">Google requires a billing account for Cloud Run / Pub/Sub even on personal free-tier usage. <a href="${billingUrl}" target="_blank" rel="noopener">Open billing console</a> or use Do this step to link your open Default Billing Account, then provision.</p>
-        <p class="conn-meta" id="ghProvisionNote">Progress: ${Object.keys(progress).length ? JSON.stringify(progress) : 'not started'}</p>`;
+        <p class="conn-meta" id="ghProvisionNote"></p>`;
+      $('ghProjectSummary').textContent = s.project_id || '(set in previous step)';
+      $('ghProvisionNote').textContent = `Progress: ${Object.keys(progress).length ? JSON.stringify(progress) : 'not started'}`;
     } else if (step.id === 'subscriber_auth') {
       box.innerHTML = `
         ${fieldInput('ghCatalogWriteKey', 'CATALOG_WRITE_KEY (auto-filled after mint)', 'paste from mint output', '')}
@@ -1577,8 +1582,9 @@
         <p class="conn-meta">Mint writes secrets to <code>gcp-cloud-run/.env</code> on this Mac. Only the catalog write key is stored on the bridge.</p>`;
     } else if (step.id === 'deploy_gateway') {
       box.innerHTML = `
-        ${fieldInput('ghCloudRunUrl', 'Cloud Run service URL', 'https://….run.app', s.cloud_run_url || '')}
+        ${fieldInput('ghCloudRunUrl', 'Cloud Run service URL', 'https://….run.app')}
         <p class="conn-meta">Click <strong>Deploy Cloud Run</strong> on this Mac (takes a few minutes). The URL fills in automatically. Or paste an existing <code>*.run.app</code> URL, then Check this step.</p>`;
+      $('ghCloudRunUrl').value = s.cloud_run_url || '';
     } else if (step.id === 'developer_console') {
       const oauth = s.oauth || {};
       box.innerHTML = `
@@ -1605,7 +1611,8 @@
           <li>Save in Google’s console, then click <strong>Save &amp; verify console</strong> here</li>
         </ol>
         <ul class="gh-paste-list" id="ghPasteList"></ul>
-        ${fieldInput('ghClientId', 'OAuth client ID (confirm)', 'from mint', oauth.client_id || '')}`;
+        ${fieldInput('ghClientId', 'OAuth client ID (confirm)', 'from mint')}`;
+      $('ghClientId').value = oauth.client_id || '';
       const renderPaste = (vals) => {
         const rows = [
           ['Integration name', vals.integration_name],
@@ -1726,7 +1733,10 @@
         }
       });
     } else if (step.id === 'connection_test') {
-      box.innerHTML = `<p class="conn-meta">${s.last_test?.summary || 'No test run yet. Click Do this step to run diagnostics.'}</p>`;
+      const summary = document.createElement('p');
+      summary.className = 'conn-meta';
+      summary.textContent = s.last_test?.summary || 'No test run yet. Click Do this step to run diagnostics.';
+      box.replaceChildren(summary);
     } else {
       box.replaceChildren();
     }
@@ -1745,8 +1755,20 @@
     checks.forEach((c) => {
       const li = document.createElement('li');
       li.className = c.ok ? 'ok' : 'bad';
-      li.innerHTML = `<span class="mark" aria-hidden="true">${c.ok ? '✓' : '!'}</span>
-        <span><strong>${c.name}</strong> — ${c.detail || ''}${c.recovery && !c.ok ? `<small>${c.recovery}</small>` : ''}</span>`;
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = c.ok ? '✓' : '!';
+      const details = document.createElement('span');
+      const name = document.createElement('strong');
+      name.textContent = c.name || '';
+      details.append(name, document.createTextNode(` — ${c.detail || ''}`));
+      if (c.recovery && !c.ok) {
+        const recovery = document.createElement('small');
+        recovery.textContent = c.recovery;
+        details.appendChild(recovery);
+      }
+      li.append(mark, details);
       ul.appendChild(li);
     });
   }
@@ -2467,7 +2489,14 @@
         const row = document.createElement('div');
         row.className = 'diag-row';
         const st = c.status === 'connected' ? 'Connected' : (c.status === 'needs_attention' ? 'Needs attention' : 'Not configured');
-        row.innerHTML = `<span>${c.label}<br><small>${c.detail || ''}</small></span><span class="${c.status === 'connected' ? 'diag-ok' : 'diag-bad'}">${st}</span>`;
+        const detail = document.createElement('span');
+        const small = document.createElement('small');
+        small.textContent = c.detail || '';
+        detail.append(document.createTextNode(c.label || ''), document.createElement('br'), small);
+        const state = document.createElement('span');
+        state.className = c.status === 'connected' ? 'diag-ok' : 'diag-bad';
+        state.textContent = st;
+        row.append(detail, state);
         list.appendChild(row);
       });
       if ($('diagTechnical')) $('diagTechnical').textContent = JSON.stringify(data.technical || {}, null, 2);
