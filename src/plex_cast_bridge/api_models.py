@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, model_validator
 
 
 class Command(BaseModel):
@@ -34,7 +34,21 @@ class Transport(BaseModel):
     speaker: str | None = None
     volume: float | None = Field(default=None, ge=0, le=1)
     relative_volume: float | None = Field(default=None, ge=-1, le=1)
-    mute: bool | None = None
+    mute: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_action_parameters(self):
+        has_volume = self.volume is not None
+        has_relative_volume = self.relative_volume is not None
+        if self.action == "mute":
+            if self.mute is None or has_volume or has_relative_volume:
+                raise ValueError("mute action requires a boolean mute value only")
+        elif self.action == "volume":
+            if has_volume == has_relative_volume or self.mute is not None:
+                raise ValueError("volume action requires exactly one volume value")
+        elif self.mute is not None or has_volume or has_relative_volume:
+            raise ValueError("volume parameters are only valid for volume or mute actions")
+        return self
 
 
 class PlexSelect(BaseModel):

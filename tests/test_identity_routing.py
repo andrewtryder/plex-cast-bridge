@@ -14,6 +14,14 @@ from plex_cast_bridge.cast_manager import CastManager, SpeakerQueue
 from plex_cast_bridge.playback_service import transport
 
 
+@pytest.mark.parametrize("payload", [{}, {"mute": None}, {"mute": 1}, {"mute": "true"}])
+def test_transport_requires_strict_mute_boolean(payload):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Transport(action="mute", **payload)
+
+
 def test_fulfillment_message_routes_by_uuid(client, auth_headers, test_settings, tmp_path, monkeypatch):
     speakers = [
         {"id": "plex-jukebox:a", "speaker_name": "Twin", "cast_uuid": "uuid-a", "enabled": True, "google_home_visible": True},

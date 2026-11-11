@@ -610,7 +610,7 @@ class SpeakerQueue(MediaStatusListener):
             self.cast.set_volume(clamped)
         except Exception as exc:
             log.warning("Set volume error on '%s': %s", self.cast.name, exc)
-            return
+            raise
 
         with self.lock:
             if clamped > 0:
@@ -628,11 +628,15 @@ class SpeakerQueue(MediaStatusListener):
                     return
                 current = getattr(getattr(self.cast, "status", None), "volume_level", None)
                 if isinstance(current, (int, float)) and 0 < current <= 1:
-                    self._mute_volume = float(current)
+                    restore_volume = float(current)
                 elif self._mute_volume is None:
                     fallback = self.default_volume
-                    self._mute_volume = float(fallback) if isinstance(fallback, (int, float)) and fallback > 0 else 0.2
-                restore_volume = None
+                    restore_volume = float(fallback) if isinstance(fallback, (int, float)) and fallback > 0 else 0.2
+                else:
+                    restore_volume = self._mute_volume
+                # Update remembered mute state only after Cast accepts zero volume.
+                self.set_volume(0.0)
+                self._mute_volume = restore_volume
             else:
                 current = getattr(getattr(self.cast, "status", None), "volume_level", None)
                 if not self._is_muted and current != 0:
@@ -641,11 +645,7 @@ class SpeakerQueue(MediaStatusListener):
                 if restore_volume is None or restore_volume <= 0:
                     fallback = self.default_volume
                     restore_volume = float(fallback) if isinstance(fallback, (int, float)) and fallback > 0 else 0.2
-
-        if muted:
-            self.set_volume(0.0)
-        else:
-            self.set_volume(restore_volume)
+                self.set_volume(restore_volume)
 
     def adjust_volume(self, delta: float):
         current = self._mute_volume if self._is_muted else None
