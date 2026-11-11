@@ -784,3 +784,34 @@ def test_catalog_fallback_speaker_resolution(tmp_path, monkeypatch):
     queue = cm.get("Kitchen")
     assert queue.cast == mock_cast
     assert mock_cast.wait.called
+
+
+def test_cast_manager_retries_nonstandard_port_on_8009(monkeypatch):
+    import pychromecast
+
+    from plex_cast_bridge.cast_manager import CastManager
+
+    first = MagicMock()
+    first.wait.side_effect = TimeoutError("advertised endpoint is not a Cast receiver")
+    fallback = MagicMock()
+    calls = []
+
+    def connect(host_tuple):
+        calls.append(host_tuple)
+        return first if len(calls) == 1 else fallback
+
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", connect)
+    manager = CastManager()
+    queue = manager._connect_from_host(
+        "Living Room group",
+        ("192.168.1.20", 32245, "group-uuid", "Google Cast Group", "Living Room group"),
+        timeout=0.1,
+    )
+
+    assert calls == [
+        ("192.168.1.20", 32245, "group-uuid", "Google Cast Group", "Living Room group"),
+        ("192.168.1.20", 8009, "group-uuid", "Google Cast Group", "Living Room group"),
+    ]
+    first.disconnect.assert_called_once()
+    fallback.wait.assert_called_once_with(timeout=0.1)
+    assert queue.cast == fallback
