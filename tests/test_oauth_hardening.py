@@ -3,6 +3,31 @@
 from __future__ import annotations
 
 
+def test_firestore_client_retries_after_transient_initialization_failure(monkeypatch):
+    from google.cloud import firestore
+    from cloud_gateway import auth
+
+    monkeypatch.setattr(auth, "_firestore_client", None)
+    monkeypatch.setattr(auth, "_firestore_checked", False)
+    expected_client = object()
+    calls = 0
+
+    def create_client():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient Firestore startup failure")
+        return expected_client
+
+    monkeypatch.setattr(firestore, "Client", create_client)
+
+    assert auth.get_firestore_client() is None
+    assert auth._firestore_checked is False
+    assert auth.get_firestore_client() is expected_client
+    assert auth.get_firestore_client() is expected_client
+    assert calls == 2
+
+
 def test_token_rejects_wrong_client_secret(client, test_settings):
     # Even if REQUIRE_ADMIN_PASSPHRASE were false, secret must still match.
     test_settings.require_admin_passphrase = False
