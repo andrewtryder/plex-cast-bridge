@@ -280,7 +280,7 @@ Verify that:
    ```bash
    docker compose -f deploy/docker-compose.yml up -d --force-recreate
    ```
-4. For future application image upgrades, use `scripts/proxmox_upgrade.sh`. It backs up `data/`, `.env`, Compose, and the separate Google credential file, then verifies their protected configuration fingerprint after replacement. Do not edit or regenerate OAuth or project credentials during an upgrade.
+4. For future application image upgrades, use `scripts/proxmox_upgrade.sh`. It backs up `data/`, `.env`, Compose, and the separate Google credential file, then verifies their protected configuration fingerprint after replacement. Do not edit or regenerate OAuth or project credentials during an upgrade. Published releases are pulled explicitly by default. For a preloaded test image, set `PULL_TARGET_IMAGE=0` and provide its exact local tag with `TARGET_IMAGE`; the helper refuses to proceed unless that image is already present on the Docker host.
 5. Speak to your Google Home / Nest device:
    > *"Hey Google, play Pink Floyd on Plex in the Kitchen"*
 6. Confirm the playback starts immediately!

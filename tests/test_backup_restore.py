@@ -82,6 +82,8 @@ def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):
     assert res.returncode == 0, res.stderr
     assert 'umask 077' in script.read_text()
     assert 'else}}{{.Id}}' in script.read_text()
+    assert 'PULL_TARGET_IMAGE="${PULL_TARGET_IMAGE:-1}"' in script.read_text()
+    assert 'docker image inspect "$INTENDED_IMAGE"' in script.read_text()
 
     # 2. Test verify-rollback action with valid backup
     backup_dir = tmp_path / "backup"
