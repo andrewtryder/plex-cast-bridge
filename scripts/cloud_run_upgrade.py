@@ -331,6 +331,7 @@ def main() -> int:
         update = subprocess.run([
             "gcloud", "run", "services", "update", args.service,
             f"--project={args.project}", f"--region={args.region}", f"--image={args.image}",
+            "--no-traffic",
         ], capture_output=True, text=True, check=False)
         if update.returncode:
             raise RuntimeError((update.stderr or update.stdout or "Cloud Run image update failed").strip()[:500])
