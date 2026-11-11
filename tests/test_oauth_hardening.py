@@ -358,6 +358,61 @@ def test_firestore_refresh_state_survives_store_recreation_and_revokes():
     assert not second_revision.is_active(token, "opaque-v1")
 
 
+def test_legacy_refresh_token_first_use_migrates_across_firestore_store_recreation(client, test_settings):
+    import hashlib
+
+    from google.api_core.exceptions import AlreadyExists
+
+    from cloud_gateway.auth import create_legacy_token_pair
+    from cloud_gateway.refresh_tokens import FirestoreRefreshTokenStore, validate_refresh_token
+
+    class Snapshot:
+        def __init__(self, state):
+            self.state = state
+            self.exists = bool(state)
+
+        def to_dict(self):
+            return dict(self.state)
+
+    class Document:
+        def __init__(self):
+            self.state = {}
+
+        def create(self, value):
+            if self.state:
+                raise AlreadyExists("exists")
+            self.state.update(value)
+
+        def get(self):
+            return Snapshot(self.state)
+
+    class Collection:
+        def __init__(self, document):
+            self.document_ref = document
+
+        def document(self, _name):
+            return self.document_ref
+
+    class Client:
+        def __init__(self):
+            self.document = Document()
+
+        def collection(self, _name):
+            return Collection(self.document)
+
+    firestore_client = Client()
+    refresh_token = create_legacy_token_pair(test_settings)["refresh_token"]
+    first_revision = FirestoreRefreshTokenStore(firestore_client)
+    validate_refresh_token(refresh_token, test_settings, first_revision)
+    assert firestore_client.document.state["token_format"] == "legacy-jwt"
+    assert firestore_client.document.state["token_hash"] == hashlib.sha256(refresh_token.encode()).hexdigest()
+    assert refresh_token not in str(firestore_client.document.state)
+
+    next_revision = FirestoreRefreshTokenStore(firestore_client)
+    validate_refresh_token(refresh_token, test_settings, next_revision)
+    assert next_revision.is_active(refresh_token, "legacy-jwt")
+
+
 def test_firestore_code_exchange_retry_survives_store_recreation(monkeypatch):
     import pytest
 
