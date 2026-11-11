@@ -49,6 +49,31 @@ def test_upgrade_fingerprint_contains_only_identity_and_hashes():
     assert result["env_fingerprints"]["GOOGLE_CLIENT_SECRET"] != "never-print-this"
 
 
+@pytest.mark.parametrize("version", ["latest", "current"])
+def test_service_fingerprint_rejects_mutable_secret_versions(version):
+    service = _service()
+    secret_env = service["spec"]["template"]["spec"]["containers"][0]["env"][2]
+    secret_env.pop("value")
+    secret_env["valueSource"] = {
+        "secretKeyRef": {"secret": "oauth-client-secret", "version": version}
+    }
+
+    with pytest.raises(ValueError, match="numeric, immutable version"):
+        upgrade.service_fingerprint(service, "sample-project", "gateway", "us-central1", TEST_KEY)
+
+
+def test_service_fingerprint_accepts_only_pinned_secret_version():
+    service = _service()
+    secret_env = service["spec"]["template"]["spec"]["containers"][0]["env"][2]
+    secret_env.pop("value")
+    secret_env["valueSource"] = {
+        "secretKeyRef": {"secret": "oauth-client-secret", "version": "12"}
+    }
+
+    result = upgrade.service_fingerprint(service, "sample-project", "gateway", "us-central1", TEST_KEY)
+    assert result["env_fingerprints"]["GOOGLE_CLIENT_SECRET"]
+
+
 def test_upgrade_fingerprint_changes_if_oauth_identity_changes():
     before = upgrade.service_fingerprint(_service(), "sample-project", "gateway", "us-central1", TEST_KEY)
     after = upgrade.service_fingerprint(
