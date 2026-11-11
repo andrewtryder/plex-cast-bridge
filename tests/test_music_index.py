@@ -69,6 +69,21 @@ def test_failure_keeps_previous_snapshot(index_dir):
         assert [r['title'] for r in db.execute('SELECT * FROM tracks')] == ['First']
 
 
+def test_untitled_plex_tracks_are_skipped_and_old_rows_are_preserved(index_dir):
+    music_index.update_settings({'indexing_enabled': True})
+    music_index_scan.start(_plex([_track('1', 'First')]))
+    _join()
+
+    music_index_scan.start(_plex([_track('1', ''), _track('2', '')]))
+    _join()
+
+    status = music_index.status()
+    assert status['scan']['status'] == 'idle'
+    assert status['scan']['scanned'] == 2
+    with music_index.connect() as db:
+        assert [(r['rating_key'], r['title']) for r in db.execute('SELECT * FROM tracks')] == [('1', 'First')]
+
+
 def test_settings_reject_invalid_values(index_dir):
     with pytest.raises(ValueError):
         music_index.update_settings({'indexing_enabled': 'true'})
