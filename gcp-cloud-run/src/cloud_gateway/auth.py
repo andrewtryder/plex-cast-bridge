@@ -1,8 +1,11 @@
+import base64
+import hashlib
+import hmac
 import logging
 import secrets
 import urllib.parse
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -36,18 +39,26 @@ def get_firestore_client():
             _firestore_client = None
     return _firestore_client
 
-def _check_local_jti(jti: str, exp: int | None):
+def _check_local_jti(jti: str, exp: int | None, refresh_token_hash: str | None = None) -> bool:
     _cleanup_expired_jtis()
-    if jti in _REDEEMED_JTIS:
+    existing = _REDEEMED_JTIS.get(jti)
+    if existing is not None:
+        existing_hash = existing.get("refresh_token_hash") if isinstance(existing, dict) else None
+        if refresh_token_hash and existing_hash and hmac.compare_digest(existing_hash, refresh_token_hash):
+            return True
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Authorization code has already been redeemed (single-use violated)",
         )
-    _REDEEMED_JTIS[jti] = exp or (int(datetime.now(UTC).timestamp()) + 600)
+    _REDEEMED_JTIS[jti] = {
+        "exp": exp or (int(datetime.now(UTC).timestamp()) + 600),
+        "refresh_token_hash": refresh_token_hash,
+    }
+    return False
 
 
-# In-memory store for redeemed authorization code JTIs: {jti: exp_timestamp}
-_REDEEMED_JTIS: dict[str, int] = {}
+# In-memory store for redeemed authorization code JTIs and idempotent exchanges.
+_REDEEMED_JTIS: dict[str, dict[str, Any] | int] = {}
 
 ALLOWED_REDIRECT_DOMAINS = {
     "oauth-redirect.googleusercontent.com",
@@ -57,7 +68,10 @@ ALLOWED_REDIRECT_DOMAINS = {
 
 def _cleanup_expired_jtis():
     now_ts = int(datetime.now(UTC).timestamp())
-    expired = [jti for jti, exp in _REDEEMED_JTIS.items() if exp < now_ts]
+    expired = [
+        jti for jti, entry in _REDEEMED_JTIS.items()
+        if (entry.get("exp", 0) if isinstance(entry, dict) else entry) < now_ts
+    ]
     for jti in expired:
         _REDEEMED_JTIS.pop(jti, None)
 
@@ -113,6 +127,7 @@ def verify_authorization_code(
     expected_client_id: str,
     settings: Settings,
     expected_redirect_uri: str | None = None,
+    refresh_token_factory: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     try:
         payload = jwt.decode(
@@ -155,6 +170,10 @@ def verify_authorization_code(
             detail="Authorization code missing jti identifier",
         )
 
+    refresh_token = refresh_token_factory(jti) if refresh_token_factory else None
+    refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest() if refresh_token else None
+    exchange_replay = False
+
     is_dev = getattr(settings, "environment", "production").lower() in {
         "development", "dev", "local", "test", "testing"
     }
@@ -165,12 +184,34 @@ def verify_authorization_code(
             from google.cloud import firestore
             server_ts = getattr(firestore, "SERVER_TIMESTAMP", None)
             doc_ref = db.collection("oauth_redeemed_codes").document(jti)
-            doc_ref.create({"exp": payload.get("exp"), "redeemed_at": server_ts})
+            record = {"exp": payload.get("exp"), "redeemed_at": server_ts}
+            if refresh_token_hash:
+                record["refresh_token_hash"] = refresh_token_hash
+            doc_ref.create(record)
         except AlreadyExists:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Authorization code has already been redeemed (single-use violated)",
-            )
+            if refresh_token_hash:
+                try:
+                    snapshot = doc_ref.get()
+                except Exception as exc:
+                    log.error("Could not inspect prior authorization-code exchange (%s)", exc)
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Distributed authorization code store is temporarily unavailable",
+                    ) from exc
+                existing = snapshot.to_dict() if snapshot.exists else {}
+                stored_hash = (existing or {}).get("refresh_token_hash")
+                if isinstance(stored_hash, str) and hmac.compare_digest(stored_hash, refresh_token_hash):
+                    exchange_replay = True
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Authorization code has already been redeemed (single-use violated)",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Authorization code has already been redeemed (single-use violated)",
+                )
         except Exception as exc:
             if not is_dev:
                 log.error("Production Firestore JTI write failed (%s); failing closed.", exc)
@@ -179,7 +220,7 @@ def verify_authorization_code(
                     detail="Distributed authorization code store write failed. Token exchange failed closed for security.",
                 ) from exc
             log.warning("Firestore JTI write failed (%s); falling back to local memory in %s mode.", exc, settings.environment)
-            _check_local_jti(jti, payload.get("exp"))
+            exchange_replay = _check_local_jti(jti, payload.get("exp"), refresh_token_hash)
     else:
         if not is_dev:
             log.error("Production Firestore client unavailable; failing closed.")
@@ -188,9 +229,13 @@ def verify_authorization_code(
                 detail="Distributed authorization code store is unavailable. Token exchange failed closed for security.",
             )
         log.warning("Firestore client unavailable; falling back to local memory in %s mode.", settings.environment)
-        _check_local_jti(jti, payload.get("exp"))
+        exchange_replay = _check_local_jti(jti, payload.get("exp"), refresh_token_hash)
 
-    return payload
+    return {
+        **payload,
+        "_exchange_replay": exchange_replay,
+        "_exchange_refresh_token": refresh_token,
+    }
 
 
 def create_access_token(settings: Settings) -> tuple[str, int]:
@@ -227,6 +272,17 @@ def create_legacy_token_pair(settings: Settings) -> dict[str, Any]:
         "refresh_token": refresh_token,
         "expires_in": access_expires_seconds,
     }
+
+
+def create_exchange_refresh_token(settings: Settings, code_jti: str) -> str:
+    """Derive a retry-stable opaque token from a verified, random authorization JTI."""
+    secret = settings.oauth_signing_secret.get_secret_value().encode("utf-8")
+    material = hmac.new(
+        secret,
+        b"plex-cast-bridge:refresh:v1:" + code_jti.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return "pcb1." + base64.urlsafe_b64encode(material).rstrip(b"=").decode("ascii")
 
 
 async def verify_bearer_token(
