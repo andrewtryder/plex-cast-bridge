@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -95,22 +97,96 @@ def _describe(project: str, region: str, service: str) -> dict[str, Any]:
     ])
 
 
+def _write_preflight(path: Path, manifest: dict[str, Any]) -> None:
+    """Persist the reviewed baseline without storing any plaintext env values."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+
+
+def _read_preflight(path: Path) -> dict[str, Any]:
+    try:
+        if stat.S_IMODE(path.stat().st_mode) & 0o077:
+            raise ValueError("preflight manifest permissions must not grant group or other access")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("preflight manifest must be a JSON object")
+        if manifest.get("schema") != 1:
+            raise ValueError("unsupported preflight manifest schema")
+        if not isinstance(manifest.get("request"), dict):
+            raise ValueError("preflight request identity is missing")
+        if not isinstance(manifest.get("configuration_fingerprint"), str):
+            raise ValueError("configuration fingerprint is missing")
+        if not isinstance(manifest.get("current_image"), str) or not manifest["current_image"]:
+            raise ValueError("current image identity is missing")
+        key = bytes.fromhex(manifest["fingerprint_key"])
+        if len(key) != 32:
+            raise ValueError("invalid preflight fingerprint key")
+        return manifest
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read Cloud Run preflight manifest: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid Cloud Run preflight manifest: {exc}") from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True)
     parser.add_argument("--region", default="us-central1")
     parser.add_argument("--service", default="plex-google-home-fulfillment")
     parser.add_argument("--image", required=True, help="Immutable image reference containing @sha256:")
+    parser.add_argument(
+        "--preflight-file", required=True, type=Path,
+        help="Private manifest path reused for the reviewed preflight and the later apply",
+    )
     parser.add_argument("--apply", action="store_true", help="Deploy image only after a passing preflight")
     args = parser.parse_args()
     if "@sha256:" not in args.image:
         parser.error("--image must be pinned to an immutable sha256 digest")
     try:
-        fingerprint_key = secrets.token_bytes(32)
+        if args.apply:
+            manifest = _read_preflight(args.preflight_file)
+            expected_identity = {
+                "project": args.project,
+                "region": args.region,
+                "service": args.service,
+                "target_image": args.image,
+            }
+            if manifest.get("request") != expected_identity:
+                raise RuntimeError("Preflight manifest does not match the requested project, service, region, or image")
+            fingerprint_key = bytes.fromhex(manifest["fingerprint_key"])
+        else:
+            if args.preflight_file.exists():
+                raise RuntimeError(
+                    f"Preflight manifest already exists: {args.preflight_file}; use a new path for a new review"
+                )
+            fingerprint_key = secrets.token_bytes(32)
         before = service_fingerprint(
             _describe(args.project, args.region, args.service), args.project, args.service, args.region,
             fingerprint_key,
         )
+        if args.apply:
+            if before["configuration_fingerprint"] != manifest.get("configuration_fingerprint"):
+                raise RuntimeError("Cloud Run configuration changed since the reviewed preflight; refusing image update")
+            if before["image"] != manifest.get("current_image"):
+                raise RuntimeError("Cloud Run image changed since the reviewed preflight; refusing image update")
+        else:
+            manifest = {
+                "schema": 1,
+                "request": {
+                    "project": args.project,
+                    "region": args.region,
+                    "service": args.service,
+                    "target_image": args.image,
+                },
+                "fingerprint_key": fingerprint_key.hex(),
+                "configuration_fingerprint": before["configuration_fingerprint"],
+                "current_image": before["image"],
+            }
+            _write_preflight(args.preflight_file, manifest)
         print(json.dumps({
             "mode": "apply" if args.apply else "preflight-only",
             "project": before["project"], "region": before["region"], "service": before["service"],
@@ -119,6 +195,7 @@ def main() -> int:
             "configuration_fingerprint": before["configuration_fingerprint"],
             "protected_environment_fingerprints": before["env_fingerprints"],
             "current_image": before["image"], "target_image": args.image,
+            "preflight_file": str(args.preflight_file),
         }, indent=2, sort_keys=True))
         if not args.apply:
             return 0
@@ -147,7 +224,7 @@ def main() -> int:
             "image": after["image"],
         }, indent=2, sort_keys=True))
         return 0
-    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+    except (RuntimeError, ValueError, json.JSONDecodeError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
