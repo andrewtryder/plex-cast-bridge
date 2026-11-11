@@ -124,7 +124,24 @@ class CastManager:
     def _connect_from_host(self, name: str, host_tuple: tuple, *, timeout: float = 10):
         """Open a host-based Cast connection that does not depend on discovery Zeroconf."""
         cast = pychromecast.get_chromecast_from_host(host_tuple)
-        cast.wait(timeout=timeout)
+        try:
+            cast.wait(timeout=timeout)
+        except Exception:
+            # Some Cast groups are advertised with a nonstandard mDNS service
+            # port even though their receiver endpoint listens on the standard
+            # Cast port. Keep the discovered port as the first attempt, then
+            # retry the same host and UUID on 8009 before reporting failure.
+            try:
+                cast.disconnect()
+            except Exception:
+                log.debug("Could not close failed Cast connection for '%s'", name, exc_info=True)
+            if len(host_tuple) < 2 or host_tuple[1] == 8009:
+                raise
+            fallback = (host_tuple[0], 8009, *host_tuple[2:])
+            log.warning("Cast endpoint for '%s' did not respond on port %s; retrying on 8009",
+                        name, host_tuple[1])
+            cast = pychromecast.get_chromecast_from_host(fallback)
+            cast.wait(timeout=timeout)
         sq = SpeakerQueue(
             cast,
             default_volume=min(self.default_volume, self.max_volume),
