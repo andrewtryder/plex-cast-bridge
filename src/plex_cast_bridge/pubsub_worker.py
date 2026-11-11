@@ -41,6 +41,15 @@ def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
 
 
 log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+if not log.handlers and not logging.getLogger().handlers:
+    # Uvicorn's default configuration only installs handlers for its own
+    # loggers. Without a worker handler, successful INFO command records are
+    # silently dropped even though the activity feed records them.
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    log.addHandler(handler)
 
 VALID_ACTIONS = {"play", "pause", "resume", "next", "previous", "stop", "volume"}
 MAX_MESSAGE_RETRIES = 3
