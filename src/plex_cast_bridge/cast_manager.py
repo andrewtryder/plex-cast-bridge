@@ -224,9 +224,18 @@ class CastManager:
                             "enabled": not self.is_disabled(name),
                         })
             finally:
-                browser.stop_discovery()
+                try:
+                    browser.stop_discovery()
+                except Exception as exc:
+                    log.debug("stop_discovery failed during speaker scan: %s", exc)
                 for c in casts:
-                    c.disconnect()
+                    try:
+                        c.disconnect()
+                    except Exception as exc:
+                        # Discovery returns some Cast objects before their socket
+                        # thread starts. Their disconnect() can raise RuntimeError;
+                        # cleanup must not abort the scan or mask its result.
+                        log.debug("Cast cleanup after discovery failed: %s", exc)
         except Exception as exc:
             log.debug("pychromecast get_chromecasts error: %s", exc)
 
@@ -292,6 +301,11 @@ class CastManager:
                 if self._is_cast_connected(cached):
                     return cached
                 self._discard_speaker(key)
+
+        # Share the same discovery lock used by background/manual speaker scans.
+        # Concurrent Zeroconf browsers can return no result or duplicate Cast
+        # records transiently, which made valid voice commands fail to route.
+        with self._discovery_lock:
             casts, browser = pychromecast.get_chromecasts(timeout=3)
             try:
                 matches = [c.cast_info for c in casts if str(c.uuid).casefold() == uuid]
@@ -300,9 +314,24 @@ class CastManager:
                 info = matches[0]
                 host_tuple = (info.host, info.port, info.uuid, info.model_name, info.friendly_name)
             finally:
-                browser.stop_discovery()
+                try:
+                    browser.stop_discovery()
+                except Exception as exc:
+                    log.debug("stop_discovery failed during virtual-device resolution: %s", exc)
                 for cast in casts:
-                    cast.disconnect()
+                    try:
+                        cast.disconnect()
+                    except Exception as exc:
+                        # A cleanup error must not replace a successful UUID match
+                        # or obscure the actionable discovery error above.
+                        log.debug("Cast cleanup after UUID lookup failed: %s", exc)
+
+        with self.lock:
+            cached = self.speakers.get(key)
+            if cached is not None:
+                if self._is_cast_connected(cached):
+                    return cached
+                self._discard_speaker(key)
             return self._connect_from_host(key, host_tuple)
 
     def get(self, name):

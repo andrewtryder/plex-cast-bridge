@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -54,3 +55,36 @@ def test_uuid_route_fails_closed_when_not_discovered(tmp_path, monkeypatch):
     monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **kwargs: ([], MagicMock()))
     with pytest.raises(ValueError, match="UUID unavailable"):
         manager.get_device("plex-jukebox:a")
+
+
+def test_uuid_route_serializes_discovery_and_ignores_cleanup_errors(tmp_path, monkeypatch):
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"speakers": [{
+        "id": "plex-jukebox:a",
+        "speaker_name": "Bedroom",
+        "cast_uuid": "uuid-a",
+        "enabled": True,
+        "google_home_visible": True,
+    }]}))
+    manager = CastManager(catalog_path=path)
+    info = SimpleNamespace(host="10.0.0.22", port=8009, uuid="uuid-a", model_name="Nest", friendly_name="Bedroom")
+    found = SimpleNamespace(uuid="uuid-a", cast_info=info, disconnect=MagicMock(side_effect=RuntimeError("thread not started")))
+    browser = MagicMock()
+    browser.stop_discovery.side_effect = RuntimeError("discovery already stopped")
+    scan_started = threading.Event()
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **kwargs: (scan_started.set() or [found], browser))
+    queue = MagicMock()
+    monkeypatch.setattr(manager, "_connect_from_host", lambda *_args, **_kwargs: queue)
+
+    manager._discovery_lock.acquire()
+    result = []
+    worker = threading.Thread(target=lambda: result.append(manager.get_device("plex-jukebox:a")))
+    worker.start()
+    scan_started_early = scan_started.wait(0.05)
+    manager._discovery_lock.release()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert not scan_started_early
+    assert scan_started.is_set()
+    assert result == [queue]

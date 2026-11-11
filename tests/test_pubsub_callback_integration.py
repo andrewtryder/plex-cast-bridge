@@ -69,16 +69,19 @@ def test_callback_dispatches_device_id_and_acknowledges(subscriber, caplog):
     msg.nack.assert_not_called()
 
 
-def test_callback_nacks_dispatch_failures_and_acks_invalid_messages(subscriber):
+def test_callback_nacks_dispatch_failures_and_acks_invalid_messages(subscriber, caplog):
     async def dispatch(payload):
-        raise ValueError("target unavailable")
+        raise ValueError(f"target unavailable for {payload.get('query')}")
 
     worker = subscriber(dispatch)
-    msg, done = message({"action": "play", "query": "music", "device_id": "missing"})
+    private_query = "Private Song Title"
+    msg, done = message({"action": "play", "query": private_query, "device_id": "missing"})
     worker._callback(msg)
     assert done.wait(2)
     msg.nack.assert_called_once()
     msg.ack.assert_not_called()
+    assert "error_type=ValueError" in caplog.text
+    assert private_query not in caplog.text
     invalid, done = message({"action": "bogus"})
     worker._callback(invalid)
     assert done.wait(2)
