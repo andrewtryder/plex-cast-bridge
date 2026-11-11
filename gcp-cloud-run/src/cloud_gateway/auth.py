@@ -116,6 +116,7 @@ def create_authorization_code(
         "redirect_uri": redirect_uri,
         "scope": scope,
         "iat": int(now.timestamp()),
+        "exchange_issued_at_us": int(now.timestamp()) * 1_000_000 + now.microsecond,
         "exp": exp,
         "jti": secrets.token_hex(16),
     }

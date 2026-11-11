@@ -276,6 +276,7 @@ async def oauth_token(
             token_store.issue_for_code(
                 durable_refresh_token,
                 authorization["jti"],
+                authorization["exchange_issued_at_us"],
                 allow_replace=not authorization["_exchange_replay"],
             )
         except RefreshTokenConflict as exc:

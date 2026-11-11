@@ -161,9 +161,9 @@ def test_authorization_code_retry_recovers_after_token_write_response_is_lost(cl
     issue = store.issue_for_code
     calls = 0
 
-    def commit_then_lose_response(token, code_jti, *, allow_replace):
+    def commit_then_lose_response(token, code_jti, issued_at_us, *, allow_replace):
         nonlocal calls
-        issue(token, code_jti, allow_replace=allow_replace)
+        issue(token, code_jti, issued_at_us, allow_replace=allow_replace)
         calls += 1
         if calls == 1:
             raise RuntimeError("simulated response loss after Firestore commit")
@@ -212,6 +212,31 @@ def test_replayed_older_exchange_cannot_replace_a_newer_refresh_token(client, te
     store = client.app.state.oauth_token_store
     assert store.is_active(newer_response.json()["refresh_token"], "opaque-v1")
     assert not store.is_active(older_response.json()["refresh_token"], "opaque-v1")
+
+
+def test_delayed_first_exchange_cannot_replace_a_newer_code(client, test_settings):
+    from cloud_gateway.auth import create_authorization_code
+
+    redirect_uri = "https://oauth-redirect.googleusercontent.com/r/test"
+
+    def exchange(code):
+        return client.post("/oauth/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": test_settings.google_client_id,
+            "client_secret": test_settings.google_client_secret.get_secret_value(),
+        })
+
+    older = create_authorization_code(test_settings.google_client_id, redirect_uri, test_settings)
+    newer = create_authorization_code(test_settings.google_client_id, redirect_uri, test_settings)
+    newer_response = exchange(newer)
+    assert newer_response.status_code == 200
+
+    delayed_older_response = exchange(older)
+    assert delayed_older_response.status_code == 400
+    assert delayed_older_response.json()["error"] == "invalid_grant"
+    assert client.app.state.oauth_token_store.is_active(newer_response.json()["refresh_token"], "opaque-v1")
 
 
 def test_revoked_and_unlinked_refresh_tokens_fail(client, test_settings):
@@ -381,11 +406,11 @@ def test_firestore_code_exchange_retry_survives_store_recreation(monkeypatch):
     client = Client()
     token = "pcb1.durable-test-token"
     first_revision = FirestoreRefreshTokenStore(client)
-    first_revision.issue_for_code(token, "code-jti-1", allow_replace=True)
+    first_revision.issue_for_code(token, "code-jti-1", 100, allow_replace=True)
 
     next_revision = FirestoreRefreshTokenStore(client)
-    next_revision.issue_for_code(token, "code-jti-1", allow_replace=False)
+    next_revision.issue_for_code(token, "code-jti-1", 100, allow_replace=False)
     assert next_revision.is_active(token, "opaque-v1")
     with pytest.raises(RefreshTokenConflict):
-        next_revision.issue_for_code("pcb1.old-code-token", "code-jti-old", allow_replace=False)
+        next_revision.issue_for_code("pcb1.old-code-token", "code-jti-old", 50, allow_replace=True)
     assert next_revision.is_active(token, "opaque-v1")
