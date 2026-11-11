@@ -185,11 +185,21 @@ def _read_link_state(project: str) -> dict[str, Any]:
     meta = meta_snapshot.to_dict() if meta_snapshot.exists else {}
     legacy_link = legacy_link_snapshot.to_dict() if legacy_link_snapshot.exists else {}
     linked = meta.get("linked") if "linked" in meta else legacy_link.get("linked", False)
+    catalog_version = int(meta.get("version") or 0)
+    catalog_digest = meta.get("catalog_digest")
+    if linked and catalog_version and not catalog_digest:
+        raise RuntimeError(
+            "Linked Firestore catalog is missing its content digest; refusing an upgrade without a stable-device baseline"
+        )
     return {
         "linked": bool(linked),
         "link_epoch": int(meta.get("link_epoch") or 0),
         "agent_user_id": str(meta.get("agent_user_id") or AGENT_USER_ID),
-        "catalog_version": int(meta.get("version") or 0),
+        "catalog_version": catalog_version,
+        # The catalog digest covers the speaker records and their Google Home
+        # device IDs, so the upgrade preflight also detects silent catalog or
+        # virtual-device identity changes between review and image rollout.
+        "catalog_digest": str(catalog_digest or ""),
     }
 
 
