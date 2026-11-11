@@ -3,6 +3,7 @@
 import logging
 import random
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,6 +83,7 @@ class SpeakerQueue(MediaStatusListener):
         self.unidentified_superseded_count = 0
         self.ignore_load_failures = False
         self.load_watchdog_seconds = 8.0
+        self.stop_confirmation_timeout = 5.0
         self.lock = threading.RLock()
         self._closed = False
         self._watchdogs: set[threading.Timer] = set()
@@ -627,6 +629,10 @@ class SpeakerQueue(MediaStatusListener):
     def stop(self):
         stopped = threading.Event()
         accepted = []
+        media = getattr(self.cast, "media_controller", None)
+        initial_state = getattr(getattr(media, "status", None), "player_state", None)
+        was_playing = initial_state in ("PLAYING", "PAUSED", "BUFFERING")
+        stop_error = None
         with self.lock:
             self.generation += 1
             generation = self.generation
@@ -647,11 +653,33 @@ class SpeakerQueue(MediaStatusListener):
                     accepted.append(True)
                     stopped.set()
             except Exception as exc:
-                log.debug("Cast quit_app error on '%s' (ignored): %s", self.cast.name, exc)
-        stopped.wait(timeout=5)
-        with self.lock:
-            if generation == self.generation and (not accepted or accepted[0]):
-                self._restore_volume()
+                stop_error = exc
+
+        try:
+            if was_playing:
+                # A successful Receiver STOP_APP callback means the request was
+                # accepted, not that media playback actually ended. Wait for a
+                # fresh Cast media status before reporting command completion.
+                deadline = time.monotonic() + self.stop_confirmation_timeout
+                while time.monotonic() < deadline:
+                    state = getattr(getattr(media, "status", None), "player_state", None)
+                    if state == "IDLE":
+                        break
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+                else:
+                    raise RuntimeError(
+                        f"Cast player did not report IDLE after stop on '{self.cast.name}'"
+                    ) from stop_error
+            elif stop_error is not None:
+                raise RuntimeError(f"Cast stop request failed on '{self.cast.name}'") from stop_error
+            elif not stopped.wait(timeout=self.stop_confirmation_timeout):
+                raise RuntimeError(f"Cast did not acknowledge stop on '{self.cast.name}'")
+            elif not accepted or not accepted[0]:
+                raise RuntimeError(f"Cast rejected stop on '{self.cast.name}'")
+        finally:
+            with self.lock:
+                if generation == self.generation:
+                    self._restore_volume()
 
     def queue_snapshot(self) -> list[dict]:
         with self.lock:

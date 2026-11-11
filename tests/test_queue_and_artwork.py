@@ -155,6 +155,48 @@ def test_cast_session_commands_do_not_wait_for_socket_replies():
     q.close()
 
 
+def test_stop_waits_for_cast_media_status_to_be_idle():
+    media = MagicMock()
+    media.status.player_state = "PLAYING"
+    receiver = MagicMock()
+
+    def stop_and_confirm(callback_function):
+        media.status.player_state = "IDLE"
+        callback_function(True, {})
+
+    receiver.stop_app.side_effect = stop_and_confirm
+    cast = SimpleNamespace(
+        media_controller=media,
+        name="Room",
+        set_volume=MagicMock(),
+        socket_client=SimpleNamespace(receiver_controller=receiver),
+    )
+    q = SpeakerQueue(cast)
+    q.current = _track("a")
+    q.stop()
+    assert media.status.player_state == "IDLE"
+    q.close()
+
+
+def test_stop_does_not_report_success_when_cast_remains_playing():
+    media = MagicMock()
+    media.status.player_state = "PLAYING"
+    receiver = MagicMock()
+    receiver.stop_app.side_effect = lambda callback_function: callback_function(True, {})
+    cast = SimpleNamespace(
+        media_controller=media,
+        name="Room",
+        set_volume=MagicMock(),
+        socket_client=SimpleNamespace(receiver_controller=receiver),
+    )
+    q = SpeakerQueue(cast)
+    q.current = _track("a")
+    q.stop_confirmation_timeout = 0.01
+    with pytest.raises(RuntimeError, match="did not report IDLE"):
+        q.stop()
+    q.close()
+
+
 def test_native_queue_advances_bridge_queue_and_removes_stale_item():
     receiver = MagicMock()
     media = MagicMock()
