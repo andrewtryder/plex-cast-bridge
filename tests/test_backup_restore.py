@@ -80,14 +80,16 @@ def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):
     # 1. Syntax check
     res = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+    assert 'umask 077' in script.read_text()
+    assert 'else}}{{.Id}}' in script.read_text()
 
     # 2. Test verify-rollback action with valid backup
     backup_dir = tmp_path / "backup"
     backup_dir.mkdir()
     (backup_dir / "docker-compose.yml").write_text("services: {}\n")
     (backup_dir / ".env").write_text("KEY=val\n")
-    (backup_dir / "previous_image.txt").write_text("\n")
-    (backup_dir / "previous_image_digest.txt").write_text("\n")
+    (backup_dir / "previous_image.txt").write_text("sha256:previous-image\n")
+    (backup_dir / "previous_image_digest.txt").write_text("sha256:previous-digest\n")
     (backup_dir / "gcp-credentials.json").write_text("{}\n")
 
     tar_path = backup_dir / "data.tgz"
@@ -96,7 +98,12 @@ def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):
         dummy.write_text("hello")
         tar.add(dummy, arcname="data/dummy.txt")
 
-    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
+    docker_bin = tmp_path / "bin"
+    docker_bin.mkdir()
+    docker_stub = docker_bin / "docker"
+    docker_stub.write_text("#!/bin/sh\n[ \"$1\" = inspect ] && { [ \"$2\" = sha256:previous-digest ] || [ \"$2\" = sha256:previous-image ]; }\n")
+    docker_stub.chmod(0o755)
+    env = {"PATH": f"{docker_bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
     res = subprocess.run(
         ["bash", str(script), "verify-rollback", str(backup_dir)],
         capture_output=True,
@@ -105,6 +112,25 @@ def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):
     )
     assert res.returncode == 0, res.stderr
     assert "Rollback verification passed." in res.stdout
+
+    # An unavailable registry digest falls back to the recorded immutable image ID.
+    (backup_dir / "previous_image_digest.txt").write_text("\n")
+    res = subprocess.run(
+        ["bash", str(script), "verify-rollback", str(backup_dir)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    (backup_dir / "previous_image.txt").write_text("\n")
+    res = subprocess.run(
+        ["bash", str(script), "verify-rollback", str(backup_dir)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode != 0
 
     # 3. Test failure when docker-compose.yml is missing
     (backup_dir / "docker-compose.yml").unlink()
