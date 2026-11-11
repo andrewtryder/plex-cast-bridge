@@ -97,6 +97,28 @@ def _describe(project: str, region: str, service: str) -> dict[str, Any]:
     ])
 
 
+def _read_link_state(project: str) -> dict[str, Any]:
+    """Read the linked-account identity fields without returning tokens or credentials."""
+    try:
+        from google.cloud import firestore
+
+        client = firestore.Client(project=project)
+        collection = client.collection("plex_cast_bridge")
+        meta_snapshot = collection.document("catalog_meta").get()
+        legacy_link_snapshot = collection.document("home_link").get()
+    except Exception as exc:
+        raise RuntimeError(f"Could not read Firestore linked-account state ({type(exc).__name__})") from exc
+    meta = meta_snapshot.to_dict() if meta_snapshot.exists else {}
+    legacy_link = legacy_link_snapshot.to_dict() if legacy_link_snapshot.exists else {}
+    linked = meta.get("linked") if "linked" in meta else legacy_link.get("linked", False)
+    return {
+        "linked": bool(linked),
+        "link_epoch": int(meta.get("link_epoch") or 0),
+        "agent_user_id": str(meta.get("agent_user_id") or AGENT_USER_ID),
+        "catalog_version": int(meta.get("version") or 0),
+    }
+
+
 def _write_preflight(path: Path, manifest: dict[str, Any]) -> None:
     """Persist the reviewed baseline without storing any plaintext env values."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +142,8 @@ def _read_preflight(path: Path) -> dict[str, Any]:
             raise ValueError("preflight request identity is missing")
         if not isinstance(manifest.get("configuration_fingerprint"), str):
             raise ValueError("configuration fingerprint is missing")
+        if not isinstance(manifest.get("link_state_fingerprint"), str):
+            raise ValueError("Firestore link-state fingerprint is missing")
         if not isinstance(manifest.get("current_image"), str) or not manifest["current_image"]:
             raise ValueError("current image identity is missing")
         key = bytes.fromhex(manifest["fingerprint_key"])
@@ -168,11 +192,17 @@ def main() -> int:
             _describe(args.project, args.region, args.service), args.project, args.service, args.region,
             fingerprint_key,
         )
+        link_state_before = _read_link_state(args.project)
+        link_state_fingerprint_before = _sha(
+            json.dumps(link_state_before, sort_keys=True, separators=(",", ":")), fingerprint_key
+        )
         if args.apply:
             if before["configuration_fingerprint"] != manifest.get("configuration_fingerprint"):
                 raise RuntimeError("Cloud Run configuration changed since the reviewed preflight; refusing image update")
             if before["image"] != manifest.get("current_image"):
                 raise RuntimeError("Cloud Run image changed since the reviewed preflight; refusing image update")
+            if link_state_fingerprint_before != manifest.get("link_state_fingerprint"):
+                raise RuntimeError("Firestore link state changed since the reviewed preflight; refusing image update")
         else:
             manifest = {
                 "schema": 1,
@@ -184,6 +214,7 @@ def main() -> int:
                 },
                 "fingerprint_key": fingerprint_key.hex(),
                 "configuration_fingerprint": before["configuration_fingerprint"],
+                "link_state_fingerprint": link_state_fingerprint_before,
                 "current_image": before["image"],
             }
             _write_preflight(args.preflight_file, manifest)
@@ -193,6 +224,8 @@ def main() -> int:
             "url": before["url"], "execution_service_account": before["execution_service_account"],
             "agent_user_id": before["agent_user_id"], "ready_revision": before["ready_revision"],
             "configuration_fingerprint": before["configuration_fingerprint"],
+            "firestore_link_state": link_state_before,
+            "link_state_fingerprint": link_state_fingerprint_before,
             "protected_environment_fingerprints": before["env_fingerprints"],
             "current_image": before["image"], "target_image": args.image,
             "preflight_file": str(args.preflight_file),
@@ -211,8 +244,14 @@ def main() -> int:
             _describe(args.project, args.region, args.service), args.project, args.service, args.region,
             fingerprint_key,
         )
+        link_state_after = _read_link_state(args.project)
+        link_state_fingerprint_after = _sha(
+            json.dumps(link_state_after, sort_keys=True, separators=(",", ":")), fingerprint_key
+        )
         if before["configuration_fingerprint"] != after["configuration_fingerprint"]:
             raise RuntimeError("Post-upgrade configuration fingerprint changed; inspect the service before further rollout")
+        if link_state_fingerprint_before != link_state_fingerprint_after:
+            raise RuntimeError("Post-upgrade Firestore link state changed; inspect account-link state before further rollout")
         if after["image"] != args.image:
             raise RuntimeError("Post-upgrade service image does not match the requested immutable digest")
         if before["image"] != args.image and after["ready_revision"] == before["ready_revision"]:
@@ -221,6 +260,8 @@ def main() -> int:
             "status": "upgraded",
             "ready_revision": after["ready_revision"],
             "configuration_fingerprint": after["configuration_fingerprint"],
+            "firestore_link_state": link_state_after,
+            "link_state_fingerprint": link_state_fingerprint_after,
             "image": after["image"],
         }, indent=2, sort_keys=True))
         return 0

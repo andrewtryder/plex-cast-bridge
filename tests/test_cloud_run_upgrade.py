@@ -11,6 +11,17 @@ SPEC = importlib.util.spec_from_file_location("cloud_run_upgrade", SCRIPT)
 upgrade = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(upgrade)
 TEST_KEY = hashlib.sha256(b"test-only-key-for-fingerprint").digest()
+TEST_LINK_STATE = {
+    "linked": True,
+    "link_epoch": 4,
+    "agent_user_id": "plex-personal-user",
+    "catalog_version": 11,
+}
+
+
+def _link_fingerprint(state=TEST_LINK_STATE):
+    canonical = json.dumps(state, sort_keys=True, separators=(",", ":"))
+    return upgrade._sha(canonical, TEST_KEY)
 
 
 def _service(secret="never-print-this"):
@@ -66,11 +77,13 @@ def test_apply_changes_only_image_and_preserves_fingerprint(monkeypatch, capsys,
         },
         "fingerprint_key": TEST_KEY.hex(),
         "configuration_fingerprint": baseline["configuration_fingerprint"],
+        "link_state_fingerprint": _link_fingerprint(),
         "current_image": baseline["image"],
     }))
     preflight_file.chmod(0o600)
     descriptions = iter((before, after))
     monkeypatch.setattr(upgrade, "_describe", lambda *_args: next(descriptions))
+    monkeypatch.setattr(upgrade, "_read_link_state", lambda *_args: TEST_LINK_STATE)
     commands = []
 
     def run(args, **kwargs):
@@ -102,10 +115,12 @@ def test_apply_refuses_configuration_changed_since_review(monkeypatch, tmp_path,
         },
         "fingerprint_key": TEST_KEY.hex(),
         "configuration_fingerprint": baseline["configuration_fingerprint"],
+        "link_state_fingerprint": _link_fingerprint(),
         "current_image": baseline["image"],
     }))
     preflight_file.chmod(0o600)
     monkeypatch.setattr(upgrade, "_describe", lambda *_args: changed)
+    monkeypatch.setattr(upgrade, "_read_link_state", lambda *_args: TEST_LINK_STATE)
     calls = []
     monkeypatch.setattr(upgrade.subprocess, "run", lambda args, **_kwargs: calls.append(args))
     monkeypatch.setattr("sys.argv", [str(SCRIPT), "--project", "sample-project", "--service", "gateway",
@@ -117,9 +132,74 @@ def test_apply_refuses_configuration_changed_since_review(monkeypatch, tmp_path,
     assert "changed since the reviewed preflight" in capsys.readouterr().err
 
 
+def test_apply_refuses_firestore_link_state_changed_since_review(monkeypatch, tmp_path, capsys):
+    service = _service()
+    baseline = upgrade.service_fingerprint(service, "sample-project", "gateway", "us-central1", TEST_KEY)
+    preflight_file = tmp_path / "preflight.json"
+    preflight_file.write_text(json.dumps({
+        "schema": 1,
+        "request": {
+            "project": "sample-project", "region": "us-central1", "service": "gateway",
+            "target_image": "registry/image@sha256:new",
+        },
+        "fingerprint_key": TEST_KEY.hex(),
+        "configuration_fingerprint": baseline["configuration_fingerprint"],
+        "link_state_fingerprint": _link_fingerprint(),
+        "current_image": baseline["image"],
+    }))
+    preflight_file.chmod(0o600)
+    changed_link = {**TEST_LINK_STATE, "link_epoch": TEST_LINK_STATE["link_epoch"] + 1}
+    monkeypatch.setattr(upgrade, "_describe", lambda *_args: service)
+    monkeypatch.setattr(upgrade, "_read_link_state", lambda *_args: changed_link)
+    calls = []
+    monkeypatch.setattr(upgrade.subprocess, "run", lambda args, **_kwargs: calls.append(args))
+    monkeypatch.setattr("sys.argv", [str(SCRIPT), "--project", "sample-project", "--service", "gateway",
+                                     "--image", "registry/image@sha256:new", "--preflight-file",
+                                     str(preflight_file), "--apply"])
+
+    assert upgrade.main() == 2
+    assert calls == []
+    assert "Firestore link state changed since the reviewed preflight" in capsys.readouterr().err
+
+
+def test_apply_reports_firestore_link_state_changed_during_upgrade(monkeypatch, tmp_path, capsys):
+    before = _service()
+    after = _service()
+    after["spec"]["template"]["spec"]["containers"][0]["image"] = "registry/image@sha256:new"
+    after["status"]["latestReadyRevisionName"] = "rev-2"
+    baseline = upgrade.service_fingerprint(before, "sample-project", "gateway", "us-central1", TEST_KEY)
+    preflight_file = tmp_path / "preflight.json"
+    preflight_file.write_text(json.dumps({
+        "schema": 1,
+        "request": {
+            "project": "sample-project", "region": "us-central1", "service": "gateway",
+            "target_image": "registry/image@sha256:new",
+        },
+        "fingerprint_key": TEST_KEY.hex(),
+        "configuration_fingerprint": baseline["configuration_fingerprint"],
+        "link_state_fingerprint": _link_fingerprint(),
+        "current_image": baseline["image"],
+    }))
+    preflight_file.chmod(0o600)
+    descriptions = iter((before, after))
+    link_states = iter((TEST_LINK_STATE, {**TEST_LINK_STATE, "linked": False}))
+    monkeypatch.setattr(upgrade, "_describe", lambda *_args: next(descriptions))
+    monkeypatch.setattr(upgrade, "_read_link_state", lambda *_args: next(link_states))
+    calls = []
+    monkeypatch.setattr(upgrade.subprocess, "run", lambda args, **_kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+    monkeypatch.setattr("sys.argv", [str(SCRIPT), "--project", "sample-project", "--service", "gateway",
+                                     "--image", "registry/image@sha256:new", "--preflight-file",
+                                     str(preflight_file), "--apply"])
+
+    assert upgrade.main() == 2
+    assert calls
+    assert "Post-upgrade Firestore link state changed" in capsys.readouterr().err
+
+
 def test_preflight_writes_private_review_manifest(monkeypatch, tmp_path, capsys):
     preflight_file = tmp_path / "nested" / "review.json"
     monkeypatch.setattr(upgrade, "_describe", lambda *_args: _service())
+    monkeypatch.setattr(upgrade, "_read_link_state", lambda *_args: TEST_LINK_STATE)
     monkeypatch.setattr("sys.argv", [str(SCRIPT), "--project", "sample-project", "--service", "gateway",
                                      "--image", "registry/image@sha256:new", "--preflight-file",
                                      str(preflight_file)])
@@ -130,4 +210,8 @@ def test_preflight_writes_private_review_manifest(monkeypatch, tmp_path, capsys)
     manifest = json.loads(preflight_file.read_text())
     assert "never-print-this" not in preflight_file.read_text()
     assert manifest["current_image"] == "registry/image@sha256:old"
+    state_json = json.dumps(TEST_LINK_STATE, sort_keys=True, separators=(",", ":"))
+    assert manifest["link_state_fingerprint"] == upgrade._sha(
+        state_json, bytes.fromhex(manifest["fingerprint_key"])
+    )
     assert '"preflight_file"' in capsys.readouterr().out
