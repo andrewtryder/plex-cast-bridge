@@ -64,16 +64,22 @@ class MemoryRefreshTokenStore:
         self.activate(token, "opaque-v1")
         return token
 
-    def issue_for_code(self, token: str, code_jti: str, *, allow_replace: bool) -> None:
+    def issue_for_code(
+        self, token: str, code_jti: str, issued_at_us: int, *, allow_replace: bool
+    ) -> None:
         active_jti = self.state.get("exchange_jti")
         if active_jti == code_jti:
             if self.is_active(token, "opaque-v1"):
                 return
             raise RefreshTokenConflict("Authorization exchange token is no longer active")
+        active_time = self.state.get("exchange_issued_at_us")
+        if active_time is not None and issued_at_us <= int(active_time):
+            raise RefreshTokenConflict("Authorization code predates the active exchange")
         if active_jti and not allow_replace:
             raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
         self.activate(token, "opaque-v1")
         self.state["exchange_jti"] = code_jti
+        self.state["exchange_issued_at_us"] = issued_at_us
 
     def revoke_current(self) -> None:
         if self.state:
@@ -136,7 +142,9 @@ class FirestoreRefreshTokenStore:
         self.activate(token, "opaque-v1")
         return token
 
-    def issue_for_code(self, token: str, code_jti: str, *, allow_replace: bool) -> None:
+    def issue_for_code(
+        self, token: str, code_jti: str, issued_at_us: int, *, allow_replace: bool
+    ) -> None:
         from google.cloud import firestore
 
         token_hash = _token_hash(token)
@@ -154,6 +162,9 @@ class FirestoreRefreshTokenStore:
                 ):
                     return
                 raise RefreshTokenConflict("Authorization exchange token is no longer active")
+            active_time = state.get("exchange_issued_at_us")
+            if active_time is not None and issued_at_us <= int(active_time):
+                raise RefreshTokenConflict("Authorization code predates the active exchange")
             if active_jti and not allow_replace:
                 raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
             transaction.set(self._document, {
@@ -162,6 +173,7 @@ class FirestoreRefreshTokenStore:
                 "created_at": self._now(),
                 "revoked_at": None,
                 "exchange_jti": code_jti,
+                "exchange_issued_at_us": issued_at_us,
             })
 
         apply(self._client.transaction())
