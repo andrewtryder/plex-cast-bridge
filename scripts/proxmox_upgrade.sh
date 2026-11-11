@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Upgrade helper for Docker-in-LXC deployments of plex-cast-bridge with rollback.
 set -euo pipefail
+umask 077
 
 APP_DIR="${APP_DIR:-/opt/plex-cast-bridge}"
 COMPOSE_FILE="${COMPOSE_FILE:-$APP_DIR/deploy/docker-compose.yml}"
@@ -55,13 +56,17 @@ verify_rollback() {
     echo "ERROR: backup is missing previous_image.txt" >&2
     return 1
   fi
-  local prev_img
+  local prev_img rollback_img
   prev_img="$(cat "$dir/previous_image.txt")"
-  if [[ -n "$prev_img" ]]; then
-    if ! docker inspect "$prev_img" >/dev/null 2>&1; then
-      echo "ERROR: previous image $prev_img not present in local docker cache for rollback" >&2
-      return 1
-    fi
+  rollback_img="$(cat "$dir/previous_image_digest.txt")"
+  rollback_img="${rollback_img:-$prev_img}"
+  if [[ -z "$rollback_img" ]]; then
+    echo "ERROR: backup has no previous image digest or image ID" >&2
+    return 1
+  fi
+  if ! docker inspect "$rollback_img" >/dev/null 2>&1; then
+    echo "ERROR: previous image $rollback_img not present in local docker cache for rollback" >&2
+    return 1
   fi
   echo "Rollback verification passed."
   return 0
@@ -184,7 +189,7 @@ if docker compose -f "$COMPOSE_FILE" ps -q "$SERVICE_NAME" >/dev/null 2>&1; then
   if [[ -n "${cid:-}" ]]; then
     PREV_IMAGE="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
     if [[ -n "$PREV_IMAGE" ]]; then
-      PREV_DIGEST="$(docker inspect -f '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$PREV_IMAGE" 2>/dev/null || true)"
+      PREV_DIGEST="$(docker inspect -f '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "$PREV_IMAGE" 2>/dev/null || true)"
     fi
   fi
 fi
