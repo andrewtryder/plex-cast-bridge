@@ -239,6 +239,110 @@ def test_delayed_first_exchange_cannot_replace_a_newer_code(client, test_setting
     assert client.app.state.oauth_token_store.is_active(newer_response.json()["refresh_token"], "opaque-v1")
 
 
+def test_exchange_order_stays_monotonic_when_wall_clock_moves_back(monkeypatch, test_settings):
+    from cloud_gateway import auth
+
+    monkeypatch.setattr(auth, "get_firestore_client", lambda: None)
+    clock = [2_000_000]
+    monkeypatch.setattr(auth, "_wall_clock_exchange_order", lambda: clock[0])
+    redirect_uri = "https://oauth-redirect.googleusercontent.com/r/test"
+    first = auth.create_authorization_code(test_settings.google_client_id, redirect_uri, test_settings)
+    first_order = auth.jwt.decode(
+        first, test_settings.oauth_signing_secret.get_secret_value(), algorithms=["HS256"]
+    )["exchange_order"]
+
+    clock[0] = 100
+    second = auth.create_authorization_code(test_settings.google_client_id, redirect_uri, test_settings)
+    second_order = auth.jwt.decode(
+        second, test_settings.oauth_signing_secret.get_secret_value(), algorithms=["HS256"]
+    )["exchange_order"]
+    assert second_order > first_order
+
+
+def test_firestore_exchange_order_uses_persistent_sequence_and_active_token(monkeypatch, test_settings):
+    from google.cloud import firestore
+
+    from cloud_gateway import auth
+
+    class Snapshot:
+        def __init__(self, state):
+            self.state = state
+            self.exists = bool(state)
+
+        def to_dict(self):
+            return dict(self.state)
+
+    class Document:
+        def __init__(self, state=None):
+            self.state = state or {}
+
+        def get(self, transaction=None):
+            return Snapshot(self.state)
+
+    class Transaction:
+        def set(self, document, value):
+            document.state.clear()
+            document.state.update(value)
+
+    class Collection:
+        def __init__(self):
+            self.documents = {}
+
+        def document(self, name):
+            return self.documents.setdefault(name, Document())
+
+    class Client:
+        def __init__(self):
+            self.collections = {}
+
+        def collection(self, name):
+            return self.collections.setdefault(name, Collection())
+
+        def transaction(self):
+            return Transaction()
+
+    db = Client()
+    db.collection("oauth_exchange_state").document("authorization_sequence").state["last_order"] = 100
+    db.collection("plex_cast_bridge").document("oauth_refresh_state").state["exchange_issued_at_us"] = 200
+    monkeypatch.setattr(auth, "get_firestore_client", lambda: db)
+    monkeypatch.setattr(auth, "_wall_clock_exchange_order", lambda: 50)
+    monkeypatch.setattr(firestore, "transactional", lambda function: function)
+
+    assert auth._allocate_exchange_order(test_settings) == 201
+    assert auth._allocate_exchange_order(test_settings) == 202
+
+
+def test_previous_revision_authorization_code_order_remains_exchangeable(client, test_settings):
+    import secrets
+    from datetime import UTC, datetime, timedelta
+
+    import jwt
+
+    now = datetime.now(UTC)
+    redirect_uri = "https://oauth-redirect.googleusercontent.com/r/test"
+    legacy_code = jwt.encode({
+        "sub": "admin",
+        "type": "authorization_code",
+        "client_id": test_settings.google_client_id,
+        "redirect_uri": redirect_uri,
+        "scope": "smart-home",
+        "iat": int(now.timestamp()),
+        "exchange_issued_at_us": int(now.timestamp()) * 1_000_000 + now.microsecond,
+        "exp": int((now + timedelta(minutes=10)).timestamp()),
+        "jti": secrets.token_hex(16),
+    }, test_settings.oauth_signing_secret.get_secret_value(), algorithm="HS256")
+
+    response = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": legacy_code,
+        "redirect_uri": redirect_uri,
+        "client_id": test_settings.google_client_id,
+        "client_secret": test_settings.google_client_secret.get_secret_value(),
+    })
+    assert response.status_code == 200
+    assert response.json()["refresh_token"].startswith("pcb1.")
+
+
 def test_revoked_and_unlinked_refresh_tokens_fail(client, test_settings):
     from cloud_gateway.auth import create_legacy_token_pair
 

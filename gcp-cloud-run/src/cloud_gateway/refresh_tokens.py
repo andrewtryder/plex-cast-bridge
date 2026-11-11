@@ -65,21 +65,24 @@ class MemoryRefreshTokenStore:
         return token
 
     def issue_for_code(
-        self, token: str, code_jti: str, issued_at_us: int, *, allow_replace: bool
+        self, token: str, code_jti: str, exchange_order: int, *, allow_replace: bool
     ) -> None:
         active_jti = self.state.get("exchange_jti")
         if active_jti == code_jti:
             if self.is_active(token, "opaque-v1"):
                 return
             raise RefreshTokenConflict("Authorization exchange token is no longer active")
-        active_time = self.state.get("exchange_issued_at_us")
-        if active_time is not None and issued_at_us <= int(active_time):
+        active_order = self.state.get("exchange_order", self.state.get("exchange_issued_at_us"))
+        if active_order is not None and exchange_order <= int(active_order):
             raise RefreshTokenConflict("Authorization code predates the active exchange")
         if active_jti and not allow_replace:
             raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
         self.activate(token, "opaque-v1")
         self.state["exchange_jti"] = code_jti
-        self.state["exchange_issued_at_us"] = issued_at_us
+        self.state["exchange_order"] = exchange_order
+        # Older overlapping revisions compare this field; preserve compatibility
+        # by storing the monotonic order in its legacy timestamp slot as well.
+        self.state["exchange_issued_at_us"] = exchange_order
 
     def revoke_current(self) -> None:
         if self.state:
@@ -143,7 +146,7 @@ class FirestoreRefreshTokenStore:
         return token
 
     def issue_for_code(
-        self, token: str, code_jti: str, issued_at_us: int, *, allow_replace: bool
+        self, token: str, code_jti: str, exchange_order: int, *, allow_replace: bool
     ) -> None:
         from google.cloud import firestore
 
@@ -162,8 +165,8 @@ class FirestoreRefreshTokenStore:
                 ):
                     return
                 raise RefreshTokenConflict("Authorization exchange token is no longer active")
-            active_time = state.get("exchange_issued_at_us")
-            if active_time is not None and issued_at_us <= int(active_time):
+            active_order = state.get("exchange_order", state.get("exchange_issued_at_us"))
+            if active_order is not None and exchange_order <= int(active_order):
                 raise RefreshTokenConflict("Authorization code predates the active exchange")
             if active_jti and not allow_replace:
                 raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
@@ -173,7 +176,10 @@ class FirestoreRefreshTokenStore:
                 "created_at": self._now(),
                 "revoked_at": None,
                 "exchange_jti": code_jti,
-                "exchange_issued_at_us": issued_at_us,
+                "exchange_order": exchange_order,
+                # Older overlapping revisions compare this field; preserve
+                # compatibility while traffic is moved to the new revision.
+                "exchange_issued_at_us": exchange_order,
             })
 
         apply(self._client.transaction())
