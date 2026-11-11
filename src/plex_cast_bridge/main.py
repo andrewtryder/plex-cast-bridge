@@ -230,6 +230,7 @@ async def lifespan(app: FastAPI):
                     speaker=data.get("speaker"),
                     volume=data.get("volume"),
                     relative_volume=data.get("relative_volume"),
+                    mute=data.get("mute"),
                 ),
             )
 

@@ -1,5 +1,6 @@
 import base64
 import urllib.parse
+import pytest
 
 from cloud_gateway.smart_home import generate_voice_synonyms
 
@@ -180,6 +181,11 @@ def test_fulfillment_sync(client, auth_headers):
     assert "action.devices.traits.MediaState" in dev["traits"]
 
     attrs = dev["attributes"]
+    assert "action.devices.traits.Volume" in dev["traits"]
+    assert attrs["volumeMaxLevel"] == 100
+    assert attrs["volumeCanMuteAndUnmute"] is True
+    assert attrs["levelStepSize"] == 5
+    assert attrs["commandOnlyVolume"] is True
     channels = attrs["availableChannels"]
     assert any("Nirvana" in c["names"] for c in channels)
     assert any("Kruder and Dorfmeister" in c["names"] for c in channels)
@@ -302,6 +308,62 @@ def test_fulfillment_execute_commands(client, auth_headers):
     assert res.status_code == 200
     assert published_messages[2]["action"] == "volume"
     assert published_messages[2]["volume"] == 0.65
+
+    relative = {
+        "requestId": "exec-req-4",
+        "inputs": [{"intent": "action.devices.EXECUTE", "payload": {"commands": [{
+            "devices": [{"id": "plex-jukebox:Kitchen"}],
+            "execution": [{"command": "action.devices.commands.volumeRelative", "params": {"relativeSteps": -2}}],
+        }]}}],
+    }
+    res = client.post("/fulfillment", headers=auth_headers, json=relative)
+    assert res.status_code == 200
+    assert published_messages[3]["action"] == "volume"
+    assert published_messages[3]["relative_volume"] == -0.1
+
+    for mute, expected_index in ((True, 4), (False, 5)):
+        payload = {
+            "requestId": f"exec-mute-{mute}",
+            "inputs": [{"intent": "action.devices.EXECUTE", "payload": {"commands": [{
+                "devices": [{"id": "plex-jukebox:Kitchen"}],
+                "execution": [{"command": "action.devices.commands.mute", "params": {"mute": mute}}],
+            }]}}],
+        }
+        res = client.post("/fulfillment", headers=auth_headers, json=payload)
+        assert res.status_code == 200
+        assert res.json()["payload"]["commands"][0]["status"] == "SUCCESS"
+        assert published_messages[expected_index]["action"] == "mute"
+        assert published_messages[expected_index]["mute"] is mute
+        assert published_messages[expected_index]["device_id"] == "plex-jukebox:Kitchen"
+
+
+@pytest.mark.parametrize(
+    ("command", "params", "error_code"),
+    [
+        ("action.devices.commands.mute", {}, "hardError"),
+        ("action.devices.commands.mute", {"mute": "true"}, "hardError"),
+        ("action.devices.commands.mute", ["true"], "hardError"),
+        ("action.devices.commands.setVolume", {}, "hardError"),
+        ("action.devices.commands.setVolume", {"volumeLevel": True}, "hardError"),
+        ("action.devices.commands.setVolume", {"volumeLevel": 101}, "valueOutOfRange"),
+        ("action.devices.commands.volumeRelative", {"relativeSteps": 1.5}, "hardError"),
+        ("action.devices.commands.volumeRelative", {}, "hardError"),
+    ],
+)
+def test_volume_execute_rejects_malformed_parameters(client, auth_headers, command, params, error_code):
+    published = []
+    client.app.state.pubsub.publish_sync = lambda payload: published.append(payload) or "msg-invalid"
+    response = client.post("/fulfillment", headers=auth_headers, json={
+        "requestId": "invalid-volume-command",
+        "inputs": [{"intent": "action.devices.EXECUTE", "payload": {"commands": [{
+            "devices": [{"id": "plex-jukebox:Kitchen"}],
+            "execution": [{"command": command, "params": params}],
+        }]}}],
+    })
+    assert response.status_code == 200
+    assert response.json()["payload"]["commands"][0]["status"] == "ERROR"
+    assert response.json()["payload"]["commands"][0]["errorCode"] == error_code
+    assert published == []
 
 
 def test_custom_webhook_query(client):

@@ -49,6 +49,8 @@ async def transport(
             speaker.stop()
         elif command.action in ("pause", "resume"):
             getattr(speaker, command.action)()
+        elif command.action == "mute" and command.mute is not None:
+            speaker.mute(command.mute)
         if command.volume is not None:
             speaker.set_volume(command.volume)
         elif command.relative_volume is not None and hasattr(speaker, "adjust_volume"):

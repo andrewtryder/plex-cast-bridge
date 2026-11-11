@@ -30,10 +30,11 @@ class SpeakerPatch(BaseModel):
 
 class Transport(BaseModel):
     device_id: str | None = None
-    action: Literal["pause", "resume", "next", "previous", "stop", "volume"]
+    action: Literal["pause", "resume", "next", "previous", "stop", "volume", "mute"]
     speaker: str | None = None
     volume: float | None = Field(default=None, ge=0, le=1)
     relative_volume: float | None = Field(default=None, ge=-1, le=1)
+    mute: bool | None = None
 
 
 class PlexSelect(BaseModel):
