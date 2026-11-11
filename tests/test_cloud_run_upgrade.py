@@ -163,6 +163,7 @@ def test_apply_changes_only_image_and_preserves_fingerprint(monkeypatch, capsys,
     deployment = commands[0]
     assert "services" in deployment and "update" in deployment
     assert any(arg.startswith("--image=") for arg in deployment)
+    assert "--no-traffic" in deployment
     assert not any("env" in arg or "service-account" in arg or "iam" in arg for arg in deployment)
     assert commands[1][0:4] == ["gcloud", "run", "services", "update-traffic"]
     assert "--to-revisions=rev-2=100" in commands[1]
