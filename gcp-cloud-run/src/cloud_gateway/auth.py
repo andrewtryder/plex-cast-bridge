@@ -26,20 +26,29 @@ except ImportError:
 
 _firestore_client = None
 _firestore_checked = False
+_FIRESTORE_CLIENT_LOCK = threading.Lock()
 _LOCAL_EXCHANGE_ORDER = 0
 _LOCAL_EXCHANGE_ORDER_LOCK = threading.Lock()
 
 def get_firestore_client():
     global _firestore_client, _firestore_checked
     if not _firestore_checked:
-        _firestore_checked = True
-        try:
-            from google.cloud import firestore
-            _firestore_client = firestore.Client()
-            log.info("Initialized Google Cloud Firestore for distributed OAuth JTI tracking.")
-        except Exception as exc:
-            log.debug("Firestore unavailable for OAuth JTI store (%s); using process-local fallback.", exc)
-            _firestore_client = None
+        with _FIRESTORE_CLIENT_LOCK:
+            if not _firestore_checked:
+                try:
+                    from google.cloud import firestore
+                    _firestore_client = firestore.Client()
+                    _firestore_checked = True
+                    log.info("Initialized Google Cloud Firestore for distributed OAuth JTI tracking.")
+                except Exception as exc:
+                    # Do not permanently cache a transient startup/network failure.
+                    # Production callers still fail closed; a later request can
+                    # retry once Firestore or ADC becomes available.
+                    _firestore_client = None
+                    log.warning(
+                        "Firestore client initialization failed (%s); OAuth operations will retry on the next request.",
+                        type(exc).__name__,
+                    )
     return _firestore_client
 
 def _check_local_jti(jti: str, exp: int | None, refresh_token_hash: str | None = None) -> bool:
