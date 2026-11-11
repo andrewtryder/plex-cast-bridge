@@ -47,9 +47,21 @@ def service_fingerprint(
             ref = row.get("valueSource", {}).get("secretKeyRef") or row.get("valueFrom", {}).get("secretKeyRef") or {}
             if not ref:
                 raise ValueError(f"Cloud Run configuration {key} has an unsupported secret reference")
-            env_fingerprints[key] = _sha(
-                f"{ref.get('secret', ref.get('name', ''))}:{ref.get('version', 'latest')}", fingerprint_key
+            secret_name = ref.get("secret") or ref.get("name")
+            # Cloud Run v2 uses `version`; the older v1 representation calls
+            # this field `key`. `latest` and aliases can change their resolved
+            # value without changing the service template, so they cannot be
+            # safely fingerprinted without reading secret material. Fail closed
+            # rather than claiming an upgrade preflight protects such a value.
+            secret_version = ref.get("version") or ref.get("key")
+            if not secret_name or not isinstance(secret_version, str) or not secret_version.isdecimal():
+                raise ValueError(
+                    f"Cloud Run secret reference for {key} must use a numeric, immutable version"
+                )
+            reference = json.dumps(
+                {"secret": secret_name, "version": secret_version}, sort_keys=True, separators=(",", ":")
             )
+            env_fingerprints[key] = _sha(reference, fingerprint_key)
 
     project_value = env.get("GCP_PROJECT_ID", {}).get("value")
     if project_value != project:
