@@ -16,12 +16,18 @@ TEST_LINK_STATE = {
     "link_epoch": 4,
     "agent_user_id": "plex-personal-user",
     "catalog_version": 11,
+    "catalog_digest": "a" * 64,
 }
 
 
 def _link_fingerprint(state=TEST_LINK_STATE):
     canonical = json.dumps(state, sort_keys=True, separators=(",", ":"))
     return upgrade._sha(canonical, TEST_KEY)
+
+
+def test_link_state_fingerprint_covers_catalog_device_identity():
+    changed_catalog = {**TEST_LINK_STATE, "catalog_digest": "b" * 64}
+    assert _link_fingerprint(changed_catalog) != _link_fingerprint()
 
 
 def _service(secret="never-print-this"):
