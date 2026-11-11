@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import threading
 import urllib.parse
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Callable
@@ -25,6 +26,8 @@ except ImportError:
 
 _firestore_client = None
 _firestore_checked = False
+_LOCAL_EXCHANGE_ORDER = 0
+_LOCAL_EXCHANGE_ORDER_LOCK = threading.Lock()
 
 def get_firestore_client():
     global _firestore_client, _firestore_checked
@@ -76,6 +79,68 @@ def _cleanup_expired_jtis():
         _REDEEMED_JTIS.pop(jti, None)
 
 
+def _wall_clock_exchange_order() -> int:
+    now = datetime.now(UTC)
+    return int(now.timestamp()) * 1_000_000 + now.microsecond
+
+
+def _allocate_exchange_order(settings: Settings) -> int:
+    """Allocate a durable monotonic order for authorization exchanges.
+
+    Wall-clock timestamps alone can move backwards between Cloud Run instances.
+    The Firestore transaction serializes code issuance and also seeds its counter
+    above any timestamp-order value written by an older revision.
+    """
+    global _LOCAL_EXCHANGE_ORDER
+    db = get_firestore_client()
+    is_dev = getattr(settings, "environment", "production").lower() in {
+        "development", "dev", "local", "test", "testing"
+    }
+    if db is None:
+        if not is_dev:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Distributed authorization-code order is unavailable",
+            )
+        with _LOCAL_EXCHANGE_ORDER_LOCK:
+            _LOCAL_EXCHANGE_ORDER = max(_LOCAL_EXCHANGE_ORDER + 1, _wall_clock_exchange_order())
+            return _LOCAL_EXCHANGE_ORDER
+
+    try:
+        from google.cloud import firestore
+
+        sequence_ref = db.collection("oauth_exchange_state").document("authorization_sequence")
+        refresh_ref = db.collection("plex_cast_bridge").document("oauth_refresh_state")
+
+        @firestore.transactional
+        def allocate(transaction):
+            sequence_snapshot = sequence_ref.get(transaction=transaction)
+            refresh_snapshot = refresh_ref.get(transaction=transaction)
+            sequence_state = sequence_snapshot.to_dict() if sequence_snapshot.exists else {}
+            refresh_state = refresh_snapshot.to_dict() if refresh_snapshot.exists else {}
+            previous = max(
+                int(sequence_state.get("last_order") or 0),
+                int(refresh_state.get("exchange_order") or 0),
+                int(refresh_state.get("exchange_issued_at_us") or 0),
+            )
+            order = max(previous + 1, _wall_clock_exchange_order())
+            transaction.set(sequence_ref, {"last_order": order})
+            return order
+
+        return int(allocate(db.transaction()))
+    except Exception as exc:
+        if not is_dev:
+            log.error("Could not allocate distributed OAuth exchange order (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Distributed authorization-code order is temporarily unavailable",
+            ) from exc
+        log.warning("Firestore exchange-order allocation failed (%s); using local test order", exc)
+        with _LOCAL_EXCHANGE_ORDER_LOCK:
+            _LOCAL_EXCHANGE_ORDER = max(_LOCAL_EXCHANGE_ORDER + 1, _wall_clock_exchange_order())
+            return _LOCAL_EXCHANGE_ORDER
+
+
 def validate_redirect_uri(redirect_uri: str, allow_local: bool = False):
     """
     Ensure OAuth redirect URI belongs strictly to approved Google OAuth destinations.
@@ -108,6 +173,7 @@ def create_authorization_code(
     scope: str = "smart-home",
 ) -> str:
     now = datetime.now(UTC)
+    exchange_order = _allocate_exchange_order(settings)
     exp = int((now + timedelta(minutes=settings.auth_code_expire_minutes)).timestamp())
     payload = {
         "sub": "admin",
@@ -116,7 +182,7 @@ def create_authorization_code(
         "redirect_uri": redirect_uri,
         "scope": scope,
         "iat": int(now.timestamp()),
-        "exchange_issued_at_us": int(now.timestamp()) * 1_000_000 + now.microsecond,
+        "exchange_order": exchange_order,
         "exp": exp,
         "jti": secrets.token_hex(16),
     }
