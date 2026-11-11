@@ -66,14 +66,33 @@ class PubSubWorker:
                 log.exception("Discarding invalid Pub/Sub message %s", msg_id)
                 message.ack()
                 return
+            action = data["action"]
+            speaker = data.get("speaker")
+            device_id = data.get("device_id")
+            # Keep voice searches out of logs: play payloads can contain private
+            # artist or track names. The action and selected destination are
+            # enough to trace routing through the local worker.
+            log.info(
+                "Google Home command received action=%s speaker=%r device_id=%r",
+                action,
+                speaker,
+                device_id,
+            )
             future = asyncio.run_coroutine_threadsafe(dispatch(data), loop)
-            activity.record("Google Home", f"{data['action']} received", data.get("speaker"))
+            activity.record("Google Home", f"{action} received", speaker)
 
             def complete(result):
                 try:
                     result.result()
                 except Exception as exc:
-                    activity.record("Google Home", f"{data['action']} failed", data.get("speaker"))
+                    activity.record("Google Home", f"{action} failed", speaker)
+                    log.error(
+                        "Google Home command failed action=%s speaker=%r device_id=%r error=%s",
+                        action,
+                        speaker,
+                        device_id,
+                        exc,
+                    )
                     native_attempt = getattr(message, "delivery_attempt", None)
                     if native_attempt is not None:
                         # GCP Pub/Sub subscription dead-letter policy handles durable retry & routing to DLQ
@@ -92,7 +111,7 @@ class PubSubWorker:
                             log.error(
                                 "Pub/Sub message %s ('%s') failed %d times (%s). Retaining in %s before acknowledging.",
                                 msg_id,
-                                data.get("action"),
+                                action,
                                 attempts,
                                 exc,
                                 DEAD_LETTER_LOG,
@@ -110,7 +129,13 @@ class PubSubWorker:
                             )
                             message.nack()
                 else:
-                    activity.record("Google Home", f"{data['action']} completed", data.get("speaker"))
+                    activity.record("Google Home", f"{action} completed", speaker)
+                    log.info(
+                        "Google Home command completed action=%s speaker=%r device_id=%r",
+                        action,
+                        speaker,
+                        device_id,
+                    )
                     self.attempts.pop(msg_id, None)
                     message.ack()
 

@@ -122,8 +122,12 @@ export function initGoogleHome({ $, api, announce, copyText, loadSpeakers }) {
     const s = ghSetupCache || {};
     const progress = s.provision_progress || {};
     if (step.id === 'welcome') {
-      box.innerHTML = `<p class="conn-meta">Uses the Plex card above and speakers from Player. This checklist is only for Google Home setup readiness.</p>`;
+      box.innerHTML = `<p class="conn-meta">Uses the Plex card above and speakers from Player. This checklist is only for Google Home setup readiness.</p>${s.installation_detected ? `<p class="conn-meta">Existing Google Home gateway configuration detected (${s.recommended_operation || 'recovery'}). This installation will not create a project or mint credentials.</p>` : ''}`;
     } else if (step.id === 'cloud_auth') {
+      if (s.installation_detected) {
+        box.innerHTML = `<p class="conn-meta">An existing Google Home gateway is configured. First-time provisioning and credential generation are disabled. Use Connection test for recovery checks, or the image-only upgrade procedure for code updates.</p>`;
+        return;
+      }
       const mode = s.mode === 'attach_existing' ? 'attach_existing' : 'create_new_project';
       box.innerHTML = `
         <fieldset class="gh-field-grid" style="border:0;padding:0;margin:0">
@@ -385,6 +389,12 @@ export function initGoogleHome({ $, api, announce, copyText, loadSpeakers }) {
     const progress = ghSetupCache.provision_progress || {};
     const billingOk = Boolean(ghSetupCache.billing_confirmed) || progress.confirm_billing === 'ok';
     const billingNeedsLink = step.id === 'prepare_services' && !billingOk;
+
+    if (ghSetupCache.installation_detected && ['cloud_auth', 'prepare_services', 'subscriber_auth', 'deploy_gateway'].includes(step.id)) {
+      doBtn.disabled = true;
+      doBtn.textContent = 'Existing installation — provisioning disabled';
+      return;
+    }
 
     if (step.id === 'cloud_auth') {
       ghDoMode = 'create_or_attach';

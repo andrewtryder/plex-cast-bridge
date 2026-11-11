@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Image-only Cloud Run upgrade with OAuth/config identity preflight."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import json
+import secrets
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gcp-cloud-run/src"))
+from cloud_gateway.catalog_sync import AGENT_USER_ID
+
+
+def _sha(value: str, key: bytes) -> str:
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def service_fingerprint(
+    service: dict[str, Any], project: str, name: str, region: str, fingerprint_key: bytes
+) -> dict[str, Any]:
+    """Return identity and hashes only; never return plaintext environment values."""
+    spec = service.get("spec", {})
+    template = spec.get("template", service.get("template", {}))
+    template_spec = template.get("spec", template)
+    containers = template_spec.get("containers", [])
+    if not containers:
+        raise ValueError("Cloud Run service has no container configuration")
+    container = containers[0]
+    env = {row.get("name"): row for row in container.get("env", []) if row.get("name")}
+    required_env = {"GCP_PROJECT_ID", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "OAUTH_SIGNING_SECRET"}
+    missing = required_env - env.keys()
+    if missing:
+        raise ValueError(f"Cloud Run is missing protected configuration: {', '.join(sorted(missing))}")
+    env_fingerprints: dict[str, str] = {}
+    for key, row in env.items():
+        if "value" in row:
+            env_fingerprints[key] = _sha(str(row["value"]), fingerprint_key)
+        else:
+            ref = row.get("valueSource", {}).get("secretKeyRef") or row.get("valueFrom", {}).get("secretKeyRef") or {}
+            if not ref:
+                raise ValueError(f"Cloud Run configuration {key} has an unsupported secret reference")
+            env_fingerprints[key] = _sha(
+                f"{ref.get('secret', ref.get('name', ''))}:{ref.get('version', 'latest')}", fingerprint_key
+            )
+
+    project_value = env.get("GCP_PROJECT_ID", {}).get("value")
+    if project_value != project:
+        raise ValueError("Runtime GCP_PROJECT_ID differs from the selected project")
+    service_account = template_spec.get("serviceAccountName") or template_spec.get("serviceAccount")
+    if not service_account:
+        raise ValueError("Cloud Run execution service account is missing")
+    uri = service.get("status", {}).get("url") or service.get("uri")
+    if not uri:
+        raise ValueError("Cloud Run service URL is missing")
+
+    identity = {
+        "project": project,
+        "region": region,
+        "service": name,
+        "url": uri,
+        "execution_service_account": service_account,
+        "agent_user_id": AGENT_USER_ID,
+        "oauth_authorize_url": f"{uri.rstrip('/')}/oauth/authorize",
+        "oauth_token_url": f"{uri.rstrip('/')}/oauth/token",
+        "fulfillment_url": f"{uri.rstrip('/')}/fulfillment",
+        "env_fingerprints": env_fingerprints,
+        "catalog_bucket": env.get("CATALOG_BUCKET", {}).get("value") or f"{project}-catalog",
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        **identity,
+        "configuration_fingerprint": _sha(canonical, fingerprint_key),
+        "image": container.get("image"),
+        "ready_revision": service.get("status", {}).get("latestReadyRevisionName"),
+    }
+
+
+def _gcloud_json(args: list[str]) -> dict[str, Any]:
+    proc = subprocess.run(["gcloud", *args, "--format=json"], capture_output=True, text=True, check=False)
+    if proc.returncode:
+        raise RuntimeError((proc.stderr or proc.stdout or "gcloud command failed").strip()[:500])
+    return json.loads(proc.stdout or "{}")
+
+
+def _describe(project: str, region: str, service: str) -> dict[str, Any]:
+    return _gcloud_json([
+        "run", "services", "describe", service,
+        f"--project={project}", f"--region={region}",
+    ])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--region", default="us-central1")
+    parser.add_argument("--service", default="plex-google-home-fulfillment")
+    parser.add_argument("--image", required=True, help="Immutable image reference containing @sha256:")
+    parser.add_argument("--apply", action="store_true", help="Deploy image only after a passing preflight")
+    args = parser.parse_args()
+    if "@sha256:" not in args.image:
+        parser.error("--image must be pinned to an immutable sha256 digest")
+    try:
+        fingerprint_key = secrets.token_bytes(32)
+        before = service_fingerprint(
+            _describe(args.project, args.region, args.service), args.project, args.service, args.region,
+            fingerprint_key,
+        )
+        print(json.dumps({
+            "mode": "apply" if args.apply else "preflight-only",
+            "project": before["project"], "region": before["region"], "service": before["service"],
+            "url": before["url"], "execution_service_account": before["execution_service_account"],
+            "agent_user_id": before["agent_user_id"], "ready_revision": before["ready_revision"],
+            "configuration_fingerprint": before["configuration_fingerprint"],
+            "protected_environment_fingerprints": before["env_fingerprints"],
+            "current_image": before["image"], "target_image": args.image,
+        }, indent=2, sort_keys=True))
+        if not args.apply:
+            return 0
+
+        update = subprocess.run([
+            "gcloud", "run", "services", "update", args.service,
+            f"--project={args.project}", f"--region={args.region}", f"--image={args.image}",
+        ], capture_output=True, text=True, check=False)
+        if update.returncode:
+            raise RuntimeError((update.stderr or update.stdout or "Cloud Run image update failed").strip()[:500])
+
+        after = service_fingerprint(
+            _describe(args.project, args.region, args.service), args.project, args.service, args.region,
+            fingerprint_key,
+        )
+        if before["configuration_fingerprint"] != after["configuration_fingerprint"]:
+            raise RuntimeError("Post-upgrade configuration fingerprint changed; inspect the service before further rollout")
+        if after["image"] != args.image:
+            raise RuntimeError("Post-upgrade service image does not match the requested immutable digest")
+        if before["image"] != args.image and after["ready_revision"] == before["ready_revision"]:
+            raise RuntimeError("Cloud Run did not report a new ready revision for the requested image")
+        print(json.dumps({
+            "status": "upgraded",
+            "ready_revision": after["ready_revision"],
+            "configuration_fingerprint": after["configuration_fingerprint"],
+            "image": after["image"],
+        }, indent=2, sort_keys=True))
+        return 0
+    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

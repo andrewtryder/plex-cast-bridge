@@ -334,7 +334,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     }
   }
 
-  function applyPlayback(playback) {
+  function applyPlayback(playback, { keepOutputSelection = false } = {}) {
     lastPlayback = playback || null;
     const track = playback?.current_track;
     const state = playback?.state || 'IDLE';
@@ -352,13 +352,15 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
     if (playback?.speaker) {
       const match = speakers.find((s) => s.name === playback.speaker);
       if (match?.enabled) {
-        selected = match.name;
-        localStorage.setItem(SPEAKER_KEY, selected);
-        if ($('outputSelect').value !== selected && enabledSpeakers().some((s) => s.name === selected)) {
-          $('outputSelect').value = selected;
+        if (!keepOutputSelection) {
+          selected = match.name;
+          localStorage.setItem(SPEAKER_KEY, selected);
+          if ($('outputSelect').value !== selected && enabledSpeakers().some((s) => s.name === selected)) {
+            $('outputSelect').value = selected;
+          }
         }
         $('playingRoom').textContent = roomLabel(match);
-        $('djTargetName').textContent = roomLabel(match);
+        $('djTargetName').textContent = roomLabel(currentDevice());
       } else {
         $('playingRoom').textContent = playback.speaker;
       }
@@ -730,7 +732,9 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       } else if (keys.length) {
         playback = sessions[keys[0]];
       }
-      applyPlayback(playback);
+      // Polling may fall back to another active session when the chosen output
+      // is idle. Show that session's status without changing the user's output.
+      applyPlayback(playback, { keepOutputSelection: true });
     } catch (err) {
       setConnection(false, 'Bridge unreachable');
     } finally {

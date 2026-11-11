@@ -13,14 +13,14 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .auth import (
+    create_access_token,
     create_authorization_code,
-    create_token_pair,
     validate_redirect_uri,
     verify_authorization_code,
-    verify_refresh_token,
 )
 from .config import Settings
 from .rate_limit import check_rate_limit, clear_attempts, record_failed_attempt
+from .refresh_tokens import validate_refresh_token
 
 log = logging.getLogger("fulfillment")
 
@@ -259,13 +259,27 @@ async def oauth_token(
                 content={"error": "invalid_grant", "error_description": str(exc.detail)},
             )
         catalog_store = getattr(request.app.state, "catalog_store", None)
+        token_store = getattr(request.app.state, "oauth_token_store", None)
+        if token_store is None:
+            return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
         if catalog_store is not None:
             try:
                 catalog_store.set_linked(True)
             except Exception:
                 log.exception("Could not persist account link")
                 return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
-        token_data = create_token_pair(settings)
+        try:
+            durable_refresh_token = token_store.issue()
+        except Exception:
+            log.exception("Could not persist Google Home refresh token")
+            return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
+        access_token, expires_in = create_access_token(settings)
+        token_data = {
+            "token_type": "Bearer",
+            "access_token": access_token,
+            "refresh_token": durable_refresh_token,
+            "expires_in": expires_in,
+        }
         return JSONResponse(
             content=token_data,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
@@ -277,8 +291,30 @@ async def oauth_token(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"error": "invalid_request", "error_description": "Missing refresh_token"},
             )
-        verify_refresh_token(refresh_token, settings)
-        token_data = create_token_pair(settings)
+        catalog_store = getattr(request.app.state, "catalog_store", None)
+        token_store = getattr(request.app.state, "oauth_token_store", None)
+        if token_store is None or (catalog_store is not None and not catalog_store.is_linked()):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_grant", "error_description": "Account is unlinked"},
+            )
+        try:
+            validate_refresh_token(refresh_token, settings, token_store)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_grant", "error_description": str(exc.detail)},
+            )
+        except Exception:
+            log.exception("Could not validate durable Google Home refresh token")
+            return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
+        access_token, expires_in = create_access_token(settings)
+        token_data = {
+            "token_type": "Bearer",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": expires_in,
+        }
         return JSONResponse(
             content=token_data,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},

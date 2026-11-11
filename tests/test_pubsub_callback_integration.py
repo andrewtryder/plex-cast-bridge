@@ -44,17 +44,27 @@ def message(payload):
     return result, done
 
 
-def test_callback_dispatches_device_id_and_acknowledges(subscriber):
+def test_callback_dispatches_device_id_and_acknowledges(subscriber, caplog):
     observed = []
 
     async def dispatch(payload):
         observed.append(payload)
 
     worker = subscriber(dispatch)
-    msg, done = message({"action": "next", "speaker": "Twin", "device_id": "plex-jukebox:b"})
+    msg, done = message({
+        "action": "play",
+        "query": "Private Artist Query",
+        "speaker": "Twin",
+        "device_id": "plex-jukebox:b",
+    })
     worker._callback(msg)
     assert done.wait(2)
     assert observed[0]["device_id"] == "plex-jukebox:b"
+    assert "Google Home command received action=play" in caplog.text
+    assert "Google Home command completed action=play" in caplog.text
+    assert "speaker='Twin'" in caplog.text
+    assert "device_id='plex-jukebox:b'" in caplog.text
+    assert "Private Artist Query" not in caplog.text
     msg.ack.assert_called_once()
     msg.nack.assert_not_called()
 

@@ -77,11 +77,16 @@ def test_password_free_pairing_requires_matching_authenticated_approval(client, 
     assert done.status_code == 302
     query = parse_qs(urlsplit(done.headers['location']).query)
     assert query['state'] == ['pair-state']
+    previous_refresh = client.app.state.oauth_token_store.issue()
+    client.app.state.catalog_store.set_linked(True)
     token = client.post('/oauth/token', data={
         'grant_type': 'authorization_code', 'code': query['code'][0], 'redirect_uri': params['redirect_uri'],
         'client_id': test_settings.google_client_id, 'client_secret': test_settings.google_client_secret.get_secret_value(),
     })
     assert token.status_code == 200
+    assert token.json()["refresh_token"].startswith("pcb1.")
+    assert client.app.state.oauth_token_store.is_active(token.json()["refresh_token"], "opaque-v1")
+    assert not client.app.state.oauth_token_store.is_active(previous_refresh, "opaque-v1")
     assert client.post('/oauth/pairing/complete', data={'ticket': pending['ticket']}).status_code == 400
     assert client.post('/internal/oauth/approve', headers={'X-API-Key': 'test-catalog-key'}, json=pending).status_code == 409
 
@@ -104,21 +109,35 @@ def test_pairing_expires_and_new_request_supersedes_old(client, test_settings, m
 
 
 def test_refresh_token_survives_gateway_settings_reload(client, test_settings):
-    """A code-only revision retains Google authorization when secrets are preserved."""
-    from cloud_gateway.auth import create_token_pair
+    """A legacy JWT migrates once and remains valid across simulated revisions."""
+    from cloud_gateway.auth import create_legacy_token_pair
+    from cloud_gateway.refresh_tokens import MemoryRefreshTokenStore
 
-    original_tokens = create_token_pair(test_settings)
+    original_tokens = create_legacy_token_pair(test_settings)
+    client.app.state.catalog_store.set_linked(True)
+    shared_state = client.app.state.oauth_token_store.state
     reloaded_settings = test_settings.model_copy(deep=True)
     client.app.state.settings = reloaded_settings
-    response = client.post(
-        "/oauth/token",
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": original_tokens["refresh_token"],
-            "client_id": reloaded_settings.google_client_id,
-            "client_secret": reloaded_settings.google_client_secret.get_secret_value(),
-        },
-    )
+    client.app.state.oauth_token_store = MemoryRefreshTokenStore(shared_state)
+
+    def refresh():
+        return client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": original_tokens["refresh_token"],
+                "client_id": reloaded_settings.google_client_id,
+                "client_secret": reloaded_settings.google_client_secret.get_secret_value(),
+            },
+        )
+
+    response = refresh()
+    assert response.status_code == 200
+    assert response.json()["refresh_token"] == original_tokens["refresh_token"]
+    assert "token_hash" in shared_state and original_tokens["refresh_token"] not in str(shared_state)
+    # A second store object represents another Cloud Run revision using Firestore.
+    client.app.state.oauth_token_store = MemoryRefreshTokenStore(shared_state)
+    response = refresh()
     assert response.status_code == 200
     headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
     sync = client.post(
@@ -128,3 +147,122 @@ def test_refresh_token_survives_gateway_settings_reload(client, test_settings):
     )
     assert sync.status_code == 200
     assert sync.json()["payload"]["agentUserId"] == "plex-personal-user"
+
+
+def test_revoked_and_unlinked_refresh_tokens_fail(client, test_settings):
+    from cloud_gateway.auth import create_legacy_token_pair
+
+    client.app.state.catalog_store.set_linked(True)
+    refresh = create_legacy_token_pair(test_settings)["refresh_token"]
+    store = client.app.state.oauth_token_store
+    assert store.migrate_legacy(refresh)
+    store.revoke_current()
+    response = client.post("/oauth/token", data={
+        "grant_type": "refresh_token", "refresh_token": refresh,
+        "client_id": test_settings.google_client_id,
+        "client_secret": test_settings.google_client_secret.get_secret_value(),
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+    forged = client.post("/oauth/token", data={
+        "grant_type": "refresh_token", "refresh_token": "not-a-signed-token",
+        "client_id": test_settings.google_client_id,
+        "client_secret": test_settings.google_client_secret.get_secret_value(),
+    })
+    assert forged.status_code == 400
+    assert forged.json()["error"] == "invalid_grant"
+
+
+def test_expired_legacy_token_only_works_after_persisted_migration(client, test_settings):
+    from datetime import UTC, datetime, timedelta
+
+    import jwt
+
+    secret = test_settings.oauth_signing_secret.get_secret_value()
+    payload = {
+        "sub": "admin", "type": "refresh", "iat": int((datetime.now(UTC) - timedelta(days=90)).timestamp()),
+        "exp": int((datetime.now(UTC) - timedelta(days=30)).timestamp()), "jti": "old-valid-jti",
+    }
+    expired = jwt.encode(payload, secret, algorithm="HS256")
+    client.app.state.catalog_store.set_linked(True)
+    data = {
+        "grant_type": "refresh_token", "refresh_token": expired,
+        "client_id": test_settings.google_client_id,
+        "client_secret": test_settings.google_client_secret.get_secret_value(),
+    }
+    rejected = client.post("/oauth/token", data=data)
+    assert rejected.status_code == 400
+    client.app.state.oauth_token_store.activate(expired, "legacy-jwt")
+    accepted = client.post("/oauth/token", data=data)
+    assert accepted.status_code == 200
+    assert accepted.json()["refresh_token"] == expired
+
+
+def test_access_token_expiry_remains_enforced(client, test_settings):
+    import jwt
+    from datetime import UTC, datetime, timedelta
+
+    token = jwt.encode({
+        "sub": "admin", "type": "access", "iat": int((datetime.now(UTC) - timedelta(days=2)).timestamp()),
+        "exp": int((datetime.now(UTC) - timedelta(days=1)).timestamp()), "jti": "expired-access",
+    }, test_settings.oauth_signing_secret.get_secret_value(), algorithm="HS256")
+    response = client.post("/fulfillment", headers={"Authorization": f"Bearer {token}"}, json={
+        "requestId": "expired-access", "inputs": [{"intent": "action.devices.SYNC"}],
+    })
+    assert response.status_code == 401
+
+
+def test_firestore_refresh_state_survives_store_recreation_and_revokes():
+    from cloud_gateway.refresh_tokens import FirestoreRefreshTokenStore
+    from google.api_core.exceptions import AlreadyExists
+
+    class Snapshot:
+        def __init__(self, data):
+            self._data = data
+            self.exists = data is not None
+
+        def to_dict(self):
+            return self._data
+
+    class Document:
+        def __init__(self, state):
+            self.state = state
+
+        def get(self):
+            return Snapshot(dict(self.state) if self.state else None)
+
+        def set(self, value):
+            self.state.clear()
+            self.state.update(value)
+
+        def create(self, value):
+            if self.state:
+                raise AlreadyExists("exists")
+            self.state.update(value)
+
+        def update(self, value):
+            self.state.update(value)
+
+    class Collection:
+        def __init__(self, doc):
+            self.doc = doc
+
+        def document(self, _name):
+            return self.doc
+
+    class Client:
+        def __init__(self):
+            self.doc = Document({})
+
+        def collection(self, _name):
+            return Collection(self.doc)
+
+    firestore = Client()
+    first_revision = FirestoreRefreshTokenStore(firestore)
+    token = first_revision.issue()
+    second_revision = FirestoreRefreshTokenStore(firestore)
+    assert second_revision.is_active(token, "opaque-v1")
+    assert token not in str(firestore.doc.state)
+    first_revision.revoke_current()
+    assert not second_revision.is_active(token, "opaque-v1")
