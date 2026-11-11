@@ -46,11 +46,17 @@ def _tags(item: Any, name: str) -> str:
     return json.dumps(values, ensure_ascii=False, separators=(',', ':'))
 
 
-def _record(track: Any, server_id: str, library_id: str) -> tuple:
+def _record(track: Any, server_id: str, library_id: str) -> tuple | None:
     key = _text(getattr(track, 'ratingKey', None))
     title = _text(getattr(track, 'title', None))
-    if not key or not title:
-        raise ValueError('Plex returned a track without a stable ID or title')
+    if not key:
+        raise ValueError('Plex returned a track without a stable ID')
+    # Plex can return library items with stable rating keys but no title (for
+    # example, incomplete media metadata). Such rows cannot participate in
+    # search or mix generation. Preserve an older indexed row when available;
+    # otherwise omit it and continue indexing the rest of the library.
+    if not title:
+        return None
     year = getattr(track, 'year', None)
     duration = getattr(track, 'duration', None)
     updated = getattr(track, 'updatedAt', None)
@@ -144,20 +150,35 @@ def _run(plex: Any, lock_file) -> None:
             db.execute('DELETE FROM scan_tracks')
             db.commit()
         offset = 0
+        untitled = 0
         while True:
             if _is_cancelled():
                 raise InterruptedError('Scan cancelled')
             page = plex.library.search(libtype='track', container_start=offset,
                                        container_size=_BATCH_SIZE, maxresults=_BATCH_SIZE)
-            records = [_record(track, server_id, library_id) for track in page]
+            records = []
+            for track in page:
+                record = _record(track, server_id, library_id)
+                if record is None:
+                    untitled += 1
+                    key = _text(getattr(track, 'ratingKey', None))
+                    with music_index.connect() as db:
+                        previous_track = db.execute(
+                            'SELECT * FROM tracks WHERE server_id=? AND library_id=? AND rating_key=?',
+                            (server_id, library_id, key),
+                        ).fetchone()
+                    if previous_track is not None:
+                        records.append(tuple(previous_track))
+                    continue
+                records.append(record)
             if _is_cancelled():
                 raise InterruptedError('Scan cancelled')
             with music_index.connect() as db:
                 db.executemany('INSERT INTO scan_tracks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', records)
-                db.execute('UPDATE scan_state SET scanned=? WHERE id=1', (offset + len(records),))
+                db.execute('UPDATE scan_state SET scanned=? WHERE id=1', (offset + len(page),))
                 db.commit()
-            offset += len(records)
-            if len(records) < _BATCH_SIZE:
+            offset += len(page)
+            if len(page) < _BATCH_SIZE:
                 break
         if _is_cancelled():
             raise InterruptedError('Scan cancelled')
@@ -203,6 +224,9 @@ def _run(plex: Any, lock_file) -> None:
             db.execute('UPDATE scan_state SET source_updated_at=?, last_full_scan_at=? WHERE id=1',
                        (revision, music_index.utcnow()))
             db.commit()
+        if untitled:
+            log.warning('Skipped %d Plex tracks with stable IDs but no titles; retained prior indexed rows where available',
+                        untitled)
     except Exception as exc:
         log.warning('Music library scan stopped: %s', exc)
         with music_index.connect() as db:
