@@ -9,12 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from plex_cast_bridge import catalog_sync
+from plex_cast_bridge import catalog_sync, wizard_verify
 from plex_cast_bridge import google_home_setup as setup
-from plex_cast_bridge import wizard_verify
+from plex_cast_bridge.config import Settings
 from plex_cast_bridge.gcp_provision.ops import build_provision_plan, run_provision_step
 from plex_cast_bridge.main import app
-from plex_cast_bridge.config import Settings
 
 
 @pytest.fixture
@@ -107,6 +106,116 @@ def test_prepare_services_blocks_until_provisioned(wizard_env):
         },
     )
     assert ready["ok"] is True
+
+
+def test_existing_gateway_detection_survives_missing_or_reset_wizard_state(wizard_env):
+    from plex_cast_bridge import catalog_sync
+
+    catalog_sync.save_sync_state({
+        "version": 4,
+        "cloud_gateway_url": "https://existing.example.run.app",
+        "catalog_write_key": "test-key-only",
+    })
+    setup_path = setup._path()
+    setup_path.unlink()
+    status = setup.public_status()
+    assert status["installation_detected"] is True
+    assert status["recommended_operation"] == "application_upgrade"
+    assert status["link_confirmed"] is None
+    assert status["mode"] == "application_upgrade"
+
+    reset = setup.save_setup(setup.default_state())
+    assert reset["mode"] == "application_upgrade"
+    assert reset["link_confirmed"] is None
+
+
+def test_existing_gateway_blocks_provision_preview_and_execution(wizard_env):
+    from plex_cast_bridge import catalog_sync
+
+    catalog_sync.save_sync_state({"cloud_gateway_url": "https://existing.example.run.app"})
+    response = TestClient(app).post("/api/google-home/provision/preview", json={"project_id": "existing"})
+    assert response.status_code == 409
+    response = TestClient(app).post("/api/google-home/provision/execute", json={
+        "project_id": "existing", "execute_step": "mint_local_secrets", "confirm_billable": True,
+    })
+    assert response.status_code == 409
+
+
+def test_mint_local_secrets_refuses_repeat_without_changing_existing_env(wizard_env, monkeypatch, tmp_path):
+    from subprocess import CompletedProcess
+    from plex_cast_bridge.gcp_provision import ops
+
+    env_file = tmp_path / "cloud.env"
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", env_file)
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV_EXAMPLE", None)
+    monkeypatch.setattr(ops, "_gcloud", lambda _args: CompletedProcess([], 1, "", "NOT_FOUND"))
+    plan = build_provision_plan(project_id="new-install-project")
+    first = ops.run_provision_step(plan, "mint_local_secrets", dry_run=False)
+    assert first["status"] == "ok"
+    before = env_file.read_bytes()
+    second = ops.run_provision_step(plan, "mint_local_secrets", dry_run=False)
+    assert second["status"] == "failed"
+    assert "refusing to overwrite" in second["detail"]
+    assert env_file.read_bytes() == before
+
+
+def test_deploy_cloud_run_refuses_existing_service_before_env_changes(wizard_env, monkeypatch, tmp_path):
+    from subprocess import CompletedProcess
+
+    from plex_cast_bridge.gcp_provision import ops
+
+    env_file = tmp_path / "cloud.env"
+    env_file.write_text("\n".join([
+        "GCP_PROJECT_ID=existing-project", "GOOGLE_CLIENT_ID=existing-client",
+        "GOOGLE_CLIENT_SECRET=existing-secret", "ADMIN_PASSPHRASE=existing-pass",
+        "OAUTH_SIGNING_SECRET=existing-signing-key", "CATALOG_WRITE_KEY=existing-catalog-key",
+        "CATALOG_BUCKET=custom-catalog-bucket", "",
+    ]))
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", env_file)
+    monkeypatch.setattr(ops, "DEPLOY_SCRIPT", tmp_path / "deploy.sh")
+    ops.DEPLOY_SCRIPT.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(ops, "_gcloud", lambda _args: CompletedProcess([], 0, "https://existing.example.run.app", ""))
+    before = env_file.read_bytes()
+    result = ops.run_provision_step(build_provision_plan(project_id="existing-project"), "deploy_cloud_run", dry_run=False)
+    assert result["status"] == "failed"
+    assert "image-only upgrade" in result["detail"]
+    assert env_file.read_bytes() == before
+
+
+def test_deploy_cloud_run_refuses_project_change_and_keeps_custom_bucket(wizard_env, monkeypatch, tmp_path):
+    from plex_cast_bridge.gcp_provision import ops
+
+    env_file = tmp_path / "cloud.env"
+    env_file.write_text(
+        "GCP_PROJECT_ID=original-project\nGOOGLE_CLIENT_ID=existing-client\n"
+        "GOOGLE_CLIENT_SECRET=existing-secret\nADMIN_PASSPHRASE=existing-pass\n"
+        "OAUTH_SIGNING_SECRET=existing-signing-key\nCATALOG_WRITE_KEY=existing-catalog-key\n"
+        "CATALOG_BUCKET=custom-catalog-bucket\n"
+    )
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", env_file)
+    monkeypatch.setattr(ops, "DEPLOY_SCRIPT", tmp_path / "deploy.sh")
+    ops.DEPLOY_SCRIPT.write_text("#!/bin/sh\nexit 0\n")
+    before = env_file.read_bytes()
+    result = ops.run_provision_step(
+        build_provision_plan(project_id="different-project"), "deploy_cloud_run", dry_run=False
+    )
+    assert result["status"] == "failed"
+    assert "refusing identity changes" in result["detail"]
+    assert env_file.read_bytes() == before
+
+
+def test_mint_secrets_refuses_when_cloud_run_exists_even_if_local_env_is_missing(wizard_env, monkeypatch, tmp_path):
+    from subprocess import CompletedProcess
+    from plex_cast_bridge.gcp_provision import ops
+
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", tmp_path / "missing.env")
+    monkeypatch.setattr(ops, "_gcloud", lambda _args: CompletedProcess([], 0, "https://existing.run.app", ""))
+    result = ops.run_provision_step(
+        build_provision_plan(project_id="existing-project"), "mint_local_secrets", dry_run=False
+    )
+    assert result["status"] == "failed"
+    assert "refusing to mint replacement" in result["detail"]
+    assert not (tmp_path / "missing.env").exists()
 
 
 def test_deploy_gateway_health_check(wizard_env, monkeypatch):

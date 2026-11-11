@@ -193,7 +193,7 @@ def verify_authorization_code(
     return payload
 
 
-def create_token_pair(settings: Settings) -> dict[str, Any]:
+def create_access_token(settings: Settings) -> tuple[str, int]:
     now = datetime.now(UTC)
     access_expires_seconds = settings.token_expire_days * 86400
     access_payload = {
@@ -203,6 +203,15 @@ def create_token_pair(settings: Settings) -> dict[str, Any]:
         "exp": int((now + timedelta(days=settings.token_expire_days)).timestamp()),
         "jti": secrets.token_hex(8),
     }
+    secret = settings.oauth_signing_secret.get_secret_value()
+    access_token = jwt.encode(access_payload, secret, algorithm="HS256")
+    return access_token, access_expires_seconds
+
+
+def create_legacy_token_pair(settings: Settings) -> dict[str, Any]:
+    """Create the old expiring JWT pair for migration tests only."""
+    now = datetime.now(UTC)
+    access_token, access_expires_seconds = create_access_token(settings)
     refresh_payload = {
         "sub": "admin",
         "type": "refresh",
@@ -211,7 +220,6 @@ def create_token_pair(settings: Settings) -> dict[str, Any]:
         "jti": secrets.token_hex(8),
     }
     secret = settings.oauth_signing_secret.get_secret_value()
-    access_token = jwt.encode(access_payload, secret, algorithm="HS256")
     refresh_token = jwt.encode(refresh_payload, secret, algorithm="HS256")
     return {
         "token_type": "Bearer",
@@ -219,27 +227,6 @@ def create_token_pair(settings: Settings) -> dict[str, Any]:
         "refresh_token": refresh_token,
         "expires_in": access_expires_seconds,
     }
-
-
-def verify_refresh_token(refresh_token: str, settings: Settings) -> dict[str, Any]:
-    try:
-        payload = jwt.decode(
-            refresh_token,
-            settings.oauth_signing_secret.get_secret_value(),
-            algorithms=["HS256"],
-        )
-    except jwt.PyJWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid refresh token: {exc}",
-        ) from exc
-
-    if payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token is not a refresh token",
-        )
-    return payload
 
 
 async def verify_bearer_token(

@@ -75,6 +75,7 @@ def test_sync_uses_cloud_catalog_after_put(client, auth_headers, test_settings):
 def test_disconnect_stops_request_sync(client, auth_headers):
     store: CatalogCloudStore = client.app.state.catalog_store
     store.set_linked(True)
+    refresh_token = client.app.state.oauth_token_store.issue()
     client.post(
         "/fulfillment",
         headers=auth_headers,
@@ -84,6 +85,7 @@ def test_disconnect_stops_request_sync(client, auth_headers):
         },
     )
     assert store.is_linked() is False
+    assert not client.app.state.oauth_token_store.is_active(refresh_token, "opaque-v1")
     result = store.request_sync(force=True)
     assert result["state"] == "skipped"
 
@@ -96,6 +98,29 @@ def test_request_sync_accepts_only_current_generation(client):
     assert store.get_meta().pending_sync is False
     assert store.get_meta().accepted_generation == store.get_meta().sync_generation
     assert store.request_sync()["state"] == "idle"
+
+
+def test_request_sync_and_virtual_device_ids_remain_stable_across_revision(client, auth_headers):
+    """A code-only restart preserves the subscriber, accepted sync and exact IDs."""
+    store = client.app.state.catalog_store
+    store.set_linked(True)
+    assert store.request_sync(force=True)["state"] == "accepted"
+    first = client.post("/fulfillment", headers=auth_headers, json={
+        "requestId": "stable-devices-before", "inputs": [{"intent": "action.devices.SYNC"}],
+    })
+    assert first.status_code == 200
+    ids_before = [d["id"] for d in first.json()["payload"]["devices"]]
+    replacement = CatalogCloudStore(project_id="test-project", mock=True)
+    # Simulate a replacement revision restoring the same persistent catalog/link document.
+    replacement._meta = CatalogCloudStore._meta_from_dict(store._meta.to_dict())
+    assert replacement.is_linked()
+    assert replacement.request_sync()["state"] == "idle"
+    second = client.post("/fulfillment", headers=auth_headers, json={
+        "requestId": "stable-devices-after", "inputs": [{"intent": "action.devices.SYNC"}],
+    })
+    assert second.status_code == 200
+    assert [d["id"] for d in second.json()["payload"]["devices"]] == ids_before
+    assert second.json()["payload"]["agentUserId"] == "plex-personal-user"
 
 
 def test_production_init_does_not_silently_mock(monkeypatch):

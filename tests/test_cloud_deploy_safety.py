@@ -22,6 +22,54 @@ def test_provisioning_requires_explicit_env_before_running_gcloud(tmp_path):
     assert not (tmp_path / ".env").exists()
 
 
+def test_first_install_deploy_refuses_existing_cloud_run_service(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "gcp-cloud-run" / "deploy.sh"
+    copied = tmp_path / "deploy.sh"
+    shutil.copyfile(script, copied)
+    (tmp_path / ".env").write_text("GCP_PROJECT_ID=existing-project\n")
+    marker = tmp_path / "provisioning-started"
+    fake = tmp_path / "gcloud"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *'auth list'*) echo user@example.com; exit 0;;\n"
+        "  *'run services describe'*) echo https://existing.run.app; exit 0;;\n"
+        f"  *) touch '{marker}'; exit 0;;\n"
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GCP_PROJECT_ID": "existing-project",
+    }
+    result = subprocess.run(
+        ["bash", str(copied), "existing-project", "us-central1", "plex-commands",
+         "plex-commands-local-worker", "plex-google-home-fulfillment", "plex-fulfillment-sa",
+         "--first-install-confirmed"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "first-install provisioning only" in result.stderr
+    assert not marker.exists()
+
+
+def test_first_install_deploy_requires_explicit_confirmation_before_gcloud(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "gcp-cloud-run" / "deploy.sh"
+    copied = tmp_path / "deploy.sh"
+    shutil.copyfile(script, copied)
+    (tmp_path / ".env").write_text("GCP_PROJECT_ID=new-project\n")
+    marker = tmp_path / "gcloud-called"
+    fake = tmp_path / "gcloud"
+    fake.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 0\n")
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GCP_PROJECT_ID": "new-project"}
+    result = subprocess.run(["bash", str(copied), "new-project"], env=env, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "--first-install-confirmed" in result.stderr
+    assert not marker.exists()
+
+
 def test_local_state_survives_process_restart_and_ignores_new_seed(tmp_path):
     import sys
 

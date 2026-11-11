@@ -12,11 +12,12 @@ os.environ.setdefault("SPEAKER_DISCOVERY_INTERVAL_SEC", "0")
 os.environ["PLEX_TOKEN"] = ""
 os.environ.setdefault("PCB_PLEX_STARTUP_ATTEMPTS", "1")
 
-from cloud_gateway.auth import create_token_pair
+from cloud_gateway.auth import create_access_token
 from cloud_gateway.catalog_sync import CatalogCloudStore
 from cloud_gateway.config import Settings
 from cloud_gateway.main import app
 from cloud_gateway.pubsub_service import PubSubService
+from cloud_gateway.refresh_tokens import MemoryRefreshTokenStore
 
 
 @pytest.fixture
@@ -88,11 +89,12 @@ def client(test_settings):
         mock=True,
         allow_memory_fallback=True,
     )
+    app.state.oauth_token_store = MemoryRefreshTokenStore()
     with TestClient(app) as test_client:
         yield test_client
 
 
 @pytest.fixture
 def auth_headers(test_settings):
-    tokens = create_token_pair(test_settings)
-    return {"Authorization": f"Bearer {tokens['access_token']}"}
+    access_token, _expires_in = create_access_token(test_settings)
+    return {"Authorization": f"Bearer {access_token}"}

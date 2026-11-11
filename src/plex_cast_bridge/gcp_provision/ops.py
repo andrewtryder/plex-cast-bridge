@@ -65,6 +65,13 @@ def _read_env_value(path: Path, key: str) -> str | None:
             return v.strip().strip('"').strip("'")
     return None
 
+
+def _is_unset_or_example(value: str | None) -> bool:
+    normalized = (value or "").strip().strip('"').strip("'")
+    return not normalized or normalized.startswith("change-me") or normalized in {
+        "plex-google-home-client-id", "plex-cast-bridge-home", "your-project-id", "your-catalog-bucket"
+    }
+
 REQUIRED_APIS = [
     "run.googleapis.com",
     "pubsub.googleapis.com",
@@ -277,6 +284,20 @@ def _gcloud(args: list[str], check: bool = False) -> subprocess.CompletedProcess
 
 def _err_text(proc: subprocess.CompletedProcess[str]) -> str:
     return (proc.stderr or proc.stdout or "").strip()[:500]
+
+
+def _probe_existing_cloud_run(plan: ProvisionPlan) -> tuple[bool, str | None]:
+    proc = _gcloud([
+        "run", "services", "describe", plan.service_name,
+        f"--project={plan.project_id}", f"--region={plan.region}",
+        "--format=value(status.url)",
+    ])
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        return True, (proc.stdout or "").strip()
+    error_text = _err_text(proc).lower()
+    if any(marker in error_text for marker in ("not found", "not_found", "does not exist")):
+        return False, None
+    raise RuntimeError("Could not determine whether the Cloud Run service already exists; refusing first-install action")
 
 
 def run_provision_step(plan: ProvisionPlan, step: str, dry_run: bool = True) -> dict[str, Any]:
@@ -537,7 +558,7 @@ def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
                 return {"step": step, "status": "failed", "detail": _err_text(bind), "email": email}
         return {"step": step, "status": "ok" if created.returncode == 0 else "exists", "email": email}
     if step == "ensure_catalog_bucket":
-        bucket = f"{plan.project_id}-catalog"
+        bucket = _read_env_value(CLOUD_RUN_ENV, "CATALOG_BUCKET") or f"{plan.project_id}-catalog"
         created = _gcloud(
             [
                 "storage",
@@ -577,21 +598,26 @@ def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
                 "status": "failed",
                 "detail": f"Mint secrets first; missing in gcp-cloud-run/.env: {', '.join(missing)}",
             }
-        # Keep project id aligned with the attached wizard project.
-        _upsert_env_file(
-            CLOUD_RUN_ENV,
-            {
-                "GCP_PROJECT_ID": plan.project_id,
-                "GCP_PUBSUB_TOPIC_ID": plan.topic_id,
-                "USE_CLOUD_CATALOG": "true",
-                "CATALOG_BUCKET": f"{plan.project_id}-catalog",
-                "ENVIRONMENT": "production",
-                "MOCK_PUBSUB": "false",
-            },
-            example=CLOUD_RUN_ENV_EXAMPLE,
-        )
+        configured_project = _read_env_value(CLOUD_RUN_ENV, "GCP_PROJECT_ID")
+        if configured_project != plan.project_id:
+            return {
+                "step": step, "status": "failed",
+                "detail": "Configured GCP_PROJECT_ID differs from the selected project; refusing identity changes.",
+            }
+        # An already-running service is an installation, not a first-install target.
+        existing_found, existing_url = _probe_existing_cloud_run(plan)
+        if existing_found:
+            return {
+                "step": step, "status": "failed",
+                "detail": "Cloud Run service already exists. Use the image-only upgrade procedure; first-install provisioning is blocked.",
+                "cloud_run_url": existing_url,
+            }
         proc = subprocess.run(
-            ["bash", str(DEPLOY_SCRIPT), plan.project_id, plan.region],
+            [
+                "bash", str(DEPLOY_SCRIPT), plan.project_id, plan.region,
+                plan.topic_id, plan.subscription_id, plan.service_name,
+                plan.service_account, "--first-install-confirmed",
+            ],
             cwd=str(CLOUD_RUN_DIR),
             capture_output=True,
             text=True,
@@ -629,6 +655,37 @@ def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
             "detail": f"Deployed {plan.service_name}",
         }
     if step == "mint_local_secrets":
+        try:
+            existing_found, _ = _probe_existing_cloud_run(plan)
+        except Exception as exc:
+            return {"step": step, "status": "failed", "detail": str(exc)}
+        if existing_found:
+            return {
+                "step": step, "status": "failed",
+                "detail": "Cloud Run service already exists; refusing to mint replacement OAuth credentials for an existing installation.",
+            }
+        existing_project = _read_env_value(CLOUD_RUN_ENV, "GCP_PROJECT_ID")
+        if existing_project and existing_project not in {plan.project_id, "plex-cast-bridge-home"}:
+            return {
+                "step": step, "status": "failed",
+                "detail": "Existing GCP_PROJECT_ID differs from the selected project; refusing to overwrite it.",
+            }
+        existing_secrets = {
+            key: _read_env_value(CLOUD_RUN_ENV, key)
+            for key in (
+                "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_PASSPHRASE",
+                "OAUTH_SIGNING_SECRET", "CATALOG_WRITE_KEY", "WEBHOOK_API_KEY",
+            )
+        }
+        configured = [key for key, value in existing_secrets.items() if not _is_unset_or_example(value)]
+        if configured:
+            return {
+                "step": step, "status": "failed",
+                "detail": (
+                    "Existing OAuth credentials or signing keys were found; refusing to overwrite them. "
+                    "Credential rotation requires a separate, explicitly planned operation."
+                ),
+            }
         generated = {
             "GOOGLE_CLIENT_ID": f"plex-gh-{secrets.token_hex(4)}",
             "GOOGLE_CLIENT_SECRET": secrets.token_urlsafe(32),
@@ -637,15 +694,19 @@ def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
             "CATALOG_WRITE_KEY": secrets.token_urlsafe(32),
             "WEBHOOK_API_KEY": secrets.token_urlsafe(24),
         }
-        env_updates = {
-            **generated,
-            "GCP_PROJECT_ID": plan.project_id,
+        env_updates = {**generated}
+        # Only fill first-install identity fields when absent/example values are present.
+        if _is_unset_or_example(existing_project):
+            env_updates["GCP_PROJECT_ID"] = plan.project_id
+        for key, value in {
             "GCP_PUBSUB_TOPIC_ID": plan.topic_id,
             "USE_CLOUD_CATALOG": "true",
             "CATALOG_BUCKET": f"{plan.project_id}-catalog",
             "ENVIRONMENT": "production",
             "MOCK_PUBSUB": "false",
-        }
+        }.items():
+            if _is_unset_or_example(_read_env_value(CLOUD_RUN_ENV, key)):
+                env_updates[key] = value
         _upsert_env_file(CLOUD_RUN_ENV, env_updates, example=CLOUD_RUN_ENV_EXAMPLE)
         return {
             "step": step,

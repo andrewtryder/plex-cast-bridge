@@ -408,6 +408,7 @@ async def handle_smart_home_request(
     settings: Settings,
     pubsub_service: PubSubService,
     catalog_store: Any | None = None,
+    refresh_token_store: Any | None = None,
 ) -> dict[str, Any]:
     request_id = body.get("requestId", "")
     inputs = body.get("inputs", [])
@@ -572,6 +573,11 @@ async def handle_smart_home_request(
         # Google sends DISCONNECT when the user unlinks the integration.
         # Stop Request Sync until the account is linked again.
         log.info("Google Home DISCONNECT for requestId=%s; acknowledging unlink", request_id)
+        if refresh_token_store is not None:
+            try:
+                refresh_token_store.revoke_current()
+            except Exception as exc:
+                log.warning("Could not revoke Google Home refresh token: %s", exc)
         if catalog_store is not None:
             try:
                 catalog_store.set_linked(False)

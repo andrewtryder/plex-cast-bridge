@@ -48,11 +48,35 @@ def _utcnow() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def detect_installation_operation() -> str:
+    """Detect installation state from persistent config, never from wizard-file presence."""
+    try:
+        from . import catalog_sync
+
+        state = catalog_sync.load_sync_state()
+        if not (state.get("cloud_gateway_url") or "").strip():
+            return "first_time_installation"
+        if state.get("last_push_status") == "failed" or state.get("last_error"):
+            return "existing_installation_recovery"
+        return "application_upgrade"
+    except Exception:
+        log.exception("Could not inspect persistent Google Home gateway configuration")
+        # A failed detection must not enable first-install provisioning.
+        return "existing_installation_recovery"
+
+
+def existing_installation_detected() -> bool:
+    return detect_installation_operation() != "first_time_installation"
+
+
 def default_state() -> dict[str, Any]:
+    operation = detect_installation_operation()
+    existing = operation != "first_time_installation"
     return {
         "schema_version": 1,
-        "mode": "create_new_project",  # or attach_existing / recreate_canonical
-        "current_step": "welcome",
+        "mode": operation,
+        "installation_detected": existing,
+        "current_step": "connection_test" if existing else "welcome",
         "completed_steps": [],
         "canonical": dict(CANONICAL),
         "project_id": None,
@@ -66,7 +90,8 @@ def default_state() -> dict[str, Any]:
         },
         "provision_preview": None,
         "provision_result": None,
-        "link_confirmed": False,
+        # Local wizard state is not evidence that the remote Google Home account is unlinked.
+        "link_confirmed": None if existing else False,
         "last_test": None,
         "updated_at": None,
         "errors": {},
@@ -81,15 +106,30 @@ def load_setup() -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
         base = default_state()
         base.update(data)
-        return base
+        data = base
     except Exception as exc:
         log.warning("Could not read google home setup state: %s", exc)
-        return default_state()
+        data = default_state()
+    if existing_installation_detected():
+        data["mode"] = detect_installation_operation()
+        data["installation_detected"] = True
+        if not data.get("completed_steps"):
+            data["current_step"] = "connection_test"
+        if data.get("link_confirmed") is not True:
+            data["link_confirmed"] = None
+    else:
+        data["installation_detected"] = False
+    return data
 
 
 def save_setup(patch: dict[str, Any]) -> dict[str, Any]:
     data = load_setup()
     data.update(patch)
+    if existing_installation_detected():
+        data["mode"] = detect_installation_operation()
+        data["installation_detected"] = True
+        if data.get("link_confirmed") is not True:
+            data["link_confirmed"] = None
     data["updated_at"] = _utcnow()
     # Never persist secrets if a caller accidentally includes them.
     for key in ("client_secret", "admin_passphrase", "oauth_signing_secret", "catalog_write_key"):
@@ -120,6 +160,10 @@ def mark_step_complete(step: str) -> dict[str, Any]:
 def public_status() -> dict[str, Any]:
     data = load_setup()
     verified = {step: bool(data.get(f"verified_{step}")) for step in STEPS}
+    canonical = dict(data.get("canonical") or CANONICAL)
+    if data.get("installation_detected") and not data.get("project_id"):
+        # Avoid presenting the example project as the installed project's identity.
+        canonical["project_id"] = None
     return {
         "current_step": data.get("current_step"),
         "completed_steps": data.get("completed_steps") or [],
@@ -133,7 +177,9 @@ def public_status() -> dict[str, Any]:
             "fulfillment_url": (data.get("oauth") or {}).get("fulfillment_url"),
             "client_secret_set": False,
         },
-        "link_confirmed": bool(data.get("link_confirmed")),
+        "link_confirmed": data.get("link_confirmed"),
+        "installation_detected": bool(data.get("installation_detected")),
+        "recommended_operation": data.get("mode"),
         "billing_confirmed": bool(data.get("billing_confirmed")),
         "billing_url": data.get("billing_url"),
         "developer_console_done": bool(data.get("developer_console_done")),
@@ -142,7 +188,7 @@ def public_status() -> dict[str, Any]:
         "verified": verified,
         "last_verify": data.get("last_verify"),
         "last_test": data.get("last_test"),
-        "canonical": data.get("canonical") or CANONICAL,
+        "canonical": canonical,
         "updated_at": data.get("updated_at"),
         "errors": data.get("errors") or {},
         "steps": STEPS,

@@ -38,6 +38,7 @@ TOPIC_ID="${3:-$DEFAULT_TOPIC}"
 SUBSCRIPTION_ID="${4:-$DEFAULT_SUBSCRIPTION}"
 SERVICE_NAME="${5:-$DEFAULT_SERVICE}"
 SA_NAME="${6:-$DEFAULT_SA}"
+FIRST_INSTALL_CONFIRM="${7:-}"
 
 echo "Configuration:"
 echo "  GCP Project ID:       $PROJECT_ID"
@@ -48,6 +49,12 @@ echo "  Cloud Run Service:    $SERVICE_NAME"
 echo "  Service Account:      $SA_NAME"
 echo "------------------------------------------------------------"
 
+if [[ "$FIRST_INSTALL_CONFIRM" != "--first-install-confirmed" ]]; then
+    echo "ERROR: this script provisions a new installation. Pass --first-install-confirmed only for a verified first-time setup." >&2
+    echo "Existing services must use the image-only upgrade helper." >&2
+    exit 2
+fi
+
 # 1. Verify gcloud authentication
 echo "[1/8] Verifying gcloud authentication..."
 ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)")
@@ -57,8 +64,17 @@ if [ -z "$ACTIVE_ACCOUNT" ]; then
 fi
 echo "  Authenticated as: $ACTIVE_ACCOUNT"
 
-# Set project in gcloud
-gcloud config set project "$PROJECT_ID" >/dev/null
+# First-install deployment only. Existing services must use the image-only upgrade path.
+ENV_PROJECT="$(awk -F= '$1 == "GCP_PROJECT_ID" { sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); gsub(/[\"\047]/, "", $2); print $2; exit }' "$ENV_FILE")"
+if [[ -n "$ENV_PROJECT" && "$ENV_PROJECT" != "$PROJECT_ID" ]]; then
+    echo "ERROR: GCP_PROJECT_ID in .env does not match the requested project; refusing project identity changes." >&2
+    exit 2
+fi
+if gcloud run services describe "$SERVICE_NAME" --project "$PROJECT_ID" --region "$REGION" >/dev/null 2>&1; then
+    echo "ERROR: Cloud Run service '$SERVICE_NAME' already exists in $PROJECT_ID/$REGION." >&2
+    echo "Routine upgrades must use the image-only procedure in gcp-cloud-run/README.md; this script is first-install provisioning only." >&2
+    exit 2
+fi
 
 # 2. Enable necessary APIs and verify Firestore Native Database
 echo "[2/8] Enabling required GCP APIs (Cloud Run, Pub/Sub, Cloud Build, Firestore)..."

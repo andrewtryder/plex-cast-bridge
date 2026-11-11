@@ -276,13 +276,14 @@ Verify that:
    ```bash
    sed -i 's/ENABLE_PUBSUB_LISTENER=false/ENABLE_PUBSUB_LISTENER=true/' ~/plex-cast-bridge/.env
    ```
-3. Recreate the container to apply the updated environment variables (note: `restart` does not reload `.env`):
+3. Recreate once to apply the initial listener setting (note: `restart` does not reload `.env`):
    ```bash
    docker compose -f deploy/docker-compose.yml up -d --force-recreate
    ```
-4. Speak to your Google Home / Nest device:
+4. For future application image upgrades, use `scripts/proxmox_upgrade.sh`. It backs up `data/`, `.env`, Compose, and the separate Google credential file, then verifies their protected configuration fingerprint after replacement. Do not edit or regenerate OAuth or project credentials during an upgrade.
+5. Speak to your Google Home / Nest device:
    > *"Hey Google, play Pink Floyd on Plex in the Kitchen"*
-5. Confirm the playback starts immediately!
+6. Confirm the playback starts immediately!
 
 ---
 

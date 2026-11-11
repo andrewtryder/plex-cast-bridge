@@ -73,18 +73,29 @@ uv run uvicorn cloud_gateway.main:app --host 127.0.0.1 --port 8080 --reload
 
 ## Deploying to GCP Cloud Run
 
-For an existing service, deploy a tested image to the **same** Cloud Run service without replacing environment variables or changing IAM. Record the current revision first and keep it available for rollback:
+For an existing service, use the image-only helper. It snapshots hashes of protected settings, verifies the project/service identity, requires an immutable image digest, updates only the image, and compares the protected configuration fingerprints afterward. It never sets environment variables or IAM:
 
 ```bash
-gcloud run services describe <service> --project <project> --region <region> \
-  --format='value(status.latestReadyRevisionName)'
-gcloud run services update <service> --project <project> --region <region> \
-  --image <tested-image-by-digest>
+python scripts/cloud_run_upgrade.py \
+  --project <existing-project-id> \
+  --region <existing-region> \
+  --service <existing-service> \
+  --image <tested-image@sha256:digest>       # read-only preflight
+
+# After review and approval, repeat the exact command with --apply.
 ```
 
-See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. The local catalog and Plex connection require the existing `data/` mount. Normal code updates should not require relinking; Google may still require a new link after expiry, revocation, or an unrelated integration problem. Verify linking and Request Sync separately after an upgrade.
+See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. Cloud Run stores only a hash of the active refresh token in Firestore; new refresh tokens are opaque and revocable. Existing signed tokens are migrated on their first valid refresh and kept active by their hash without globally disabling JWT expiration checks. Keep the gateway linked state and stable `agentUserId` unchanged. Normal code and image updates should not require relinking.
 
-For first-time provisioning only, `./gcp-cloud-run/deploy.sh` requires an explicitly prepared `.env` and performs infrastructure changes. It automatically:
+`./gcp-cloud-run/deploy.sh` is a **first-time provisioning tool only**. It refuses to deploy when the Cloud Run service already exists and verifies `.env` project identity before enabling APIs, creating resources, IAM changes, or setting environment variables. Never use it for an upgrade or existing-installation recovery. The wizard likewise disables provisioning and secret minting when persistent gateway configuration is detected.
+
+For a genuinely new installation, after configuring a new `.env`, pass the explicit first-install flag. The dashboard adds it only after local state detection and the service-existence check pass:
+
+```bash
+./gcp-cloud-run/deploy.sh <project> us-central1 plex-commands plex-commands-local-worker plex-google-home-fulfillment plex-fulfillment-sa --first-install-confirmed
+```
+
+The script performs infrastructure changes. It automatically:
 1. Copies the canonical root `catalog.json` into `gcp-cloud-run/catalog.json` for the Docker build context.
 2. Enables required GCP APIs (`run.googleapis.com`, `pubsub.googleapis.com`, `cloudbuild.googleapis.com`).
 3. Ensures the Pub/Sub topic (`plex-commands`) and subscription (`plex-commands-local-worker`) exist.

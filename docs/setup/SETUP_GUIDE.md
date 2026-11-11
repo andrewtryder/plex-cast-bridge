@@ -41,7 +41,9 @@ uv run python scripts/sync_plex_catalog.py
 
 ---
 
-## 3. Google Cloud provisioning
+## 3. Google Cloud provisioning (first-time installation only)
+
+Do not follow this section to upgrade or recover an existing installation. Existing installations keep their Google Home Developer Console project, Cloud Run service, service account, Firestore state, OAuth values, catalog bucket, and virtual-device IDs. Use the image-only process in [persistent state and upgrades](../persistent-state.md). If the dashboard finds saved gateway configuration, it disables this provisioning flow; a missing wizard file does not mean the account is unlinked.
 
 1. Create a GCP project and enable billing.
 2. Enable **Cloud Run**, **Cloud Pub/Sub**, **Cloud Build**, and **HomeGraph** APIs.
@@ -50,7 +52,7 @@ uv run python scripts/sync_plex_catalog.py
 ```bash
 cp gcp-cloud-run/.env.example gcp-cloud-run/.env
 # Set OAUTH_SIGNING_SECRET, ADMIN_PASSPHRASE, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
-./gcp-cloud-run/deploy.sh
+./gcp-cloud-run/deploy.sh <project> us-central1 plex-commands plex-commands-local-worker plex-google-home-fulfillment plex-fulfillment-sa --first-install-confirmed
 ```
 
 Note the Cloud Run URL, for example `https://plex-google-home-fulfillment-….run.app`.

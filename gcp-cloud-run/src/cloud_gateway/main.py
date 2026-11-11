@@ -7,12 +7,13 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .auth import verify_bearer_token, verify_webhook_api_key
 from .approval_store import ApprovalStore
+from .auth import verify_bearer_token, verify_webhook_api_key
 from .catalog_sync import CatalogCloudStore
 from .config import Settings
 from .oauth_routes import router as oauth_router
 from .pubsub_service import PubSubService
+from .refresh_tokens import FirestoreRefreshTokenStore, MemoryRefreshTokenStore
 from .smart_home import handle_smart_home_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -51,6 +52,13 @@ async def lifespan(app: FastAPI):
     app.state.approval_store = ApprovalStore(
         app.state.catalog_store._fs, mock=app.state.catalog_store.mock
     )
+    if not hasattr(app.state, "oauth_token_store") or app.state.oauth_token_store is None:
+        if app.state.catalog_store.mock:
+            app.state.oauth_token_store = MemoryRefreshTokenStore()
+        elif app.state.catalog_store._fs is not None:
+            app.state.oauth_token_store = FirestoreRefreshTokenStore(app.state.catalog_store._fs)
+        else:
+            app.state.oauth_token_store = None
     log.info(
         f"Started Plex Google Home Fulfillment service (Project: {app.state.settings.gcp_project_id}, Topic: {app.state.settings.gcp_pubsub_topic_id})"
     )
@@ -172,7 +180,8 @@ async def fulfillment(
 ):
     try:
         response_data = await handle_smart_home_request(
-            body, settings, pubsub_service, catalog_store=catalog_store
+            body, settings, pubsub_service, catalog_store=catalog_store,
+            refresh_token_store=getattr(request.app.state, "oauth_token_store", None),
         )
         return response_data
     except Exception as exc:

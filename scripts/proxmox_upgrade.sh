@@ -13,6 +13,7 @@ DIAG_URL="${DIAG_URL:-http://127.0.0.1:8000/api/diagnostics}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP"
 VERIFY_ROLLBACK="${VERIFY_ROLLBACK:-1}"
+CONFIG_HMAC_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
 ACTION="${1:-upgrade}"
 
@@ -33,6 +34,42 @@ resolve_google_creds() {
   elif [[ -f "$APP_DIR/gcp-credentials.json" ]]; then
     echo "$APP_DIR/gcp-credentials.json"
   fi
+}
+
+protected_config_fingerprint() {
+  PROTECTED_CONFIG_HMAC_KEY="$CONFIG_HMAC_KEY" python3 - "$APP_DIR" "$COMPOSE_FILE" "${1:-}" <<'PY'
+import hashlib, hmac, json, os, pathlib, sys
+app_dir, compose_file, credential_file = map(pathlib.Path, sys.argv[1:])
+items = {}
+for label, path in (("env", app_dir / ".env"), ("compose", compose_file), ("google_credentials", credential_file)):
+    if str(path) and path.is_file():
+        items[label] = hashlib.sha256(path.read_bytes()).hexdigest()
+    else:
+        items[label] = None
+sync_file = app_dir / "data" / "google_home_sync.json"
+try:
+    sync = json.loads(sync_file.read_text(encoding="utf-8"))
+    gateway = (sync.get("cloud_gateway_url") or "").strip()
+    catalog_key = sync.get("catalog_write_key") or ""
+except Exception:
+    gateway = ""
+    catalog_key = ""
+key = bytes.fromhex(os.environ["PROTECTED_CONFIG_HMAC_KEY"])
+items["gateway_url_fingerprint"] = hashlib.sha256(gateway.encode()).hexdigest() if gateway else None
+items["catalog_write_key_fingerprint"] = hmac.new(key, catalog_key.encode(), hashlib.sha256).hexdigest() if catalog_key else None
+try:
+    catalog = json.loads((app_dir / "data" / "catalog.json").read_text(encoding="utf-8"))
+    device_ids = sorted(
+        s.get("google_home_device_id") or s.get("id") or ""
+        for s in catalog.get("speakers", []) if isinstance(s, dict)
+    )
+except Exception:
+    device_ids = []
+items["virtual_device_ids_fingerprint"] = hmac.new(
+    key, json.dumps(device_ids, separators=(",", ":")).encode(), hashlib.sha256
+).hexdigest()
+print(hmac.new(key, json.dumps(items, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest())
+PY
 }
 
 verify_rollback() {
@@ -221,6 +258,11 @@ if [[ -n "$GCP_CREDS" && -f "$GCP_CREDS" ]]; then
   echo "Backed up Google credentials ($GCP_CREDS) -> $BACKUP_DIR/gcp-credentials.json"
 fi
 
+# Capture non-secret fingerprints for all configuration that an image upgrade must preserve.
+CONFIG_FINGERPRINT_BEFORE="$(protected_config_fingerprint "$GCP_CREDS")"
+printf '%s\n' "$CONFIG_FINGERPRINT_BEFORE" >"$BACKUP_DIR/protected_config_fingerprint.txt"
+echo "Protected configuration fingerprint recorded (keyed, non-reversible)."
+
 # Verify rollback before relying on it
 if [[ "$VERIFY_ROLLBACK" == "1" ]]; then
   verify_rollback "$BACKUP_DIR"
@@ -272,6 +314,20 @@ if [[ "$ok" -ne 1 ]]; then
   echo "FATAL: service did not recover after rollback." >&2
   exit 2
 fi
+
+CONFIG_FINGERPRINT_AFTER="$(protected_config_fingerprint "$GCP_CREDS")"
+if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
+  echo "ERROR: protected configuration fingerprint changed during upgrade; rolling back." >&2
+  rollback "$BACKUP_DIR"
+  CONFIG_FINGERPRINT_ROLLED_BACK="$(protected_config_fingerprint "$GCP_CREDS")"
+  if [[ "$CONFIG_FINGERPRINT_ROLLED_BACK" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
+    echo "FATAL: protected configuration fingerprint did not return to its backed-up value." >&2
+    exit 3
+  fi
+  echo "Protected configuration fingerprint verified after rollback." >&2
+  exit 2
+fi
+echo "Protected configuration fingerprint verified after upgrade."
 
 echo "Layered check: diagnostics (non-secret)…"
 diag_ok=1

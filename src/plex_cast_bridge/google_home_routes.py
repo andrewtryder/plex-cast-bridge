@@ -9,9 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import catalog_sync
+from . import catalog_sync, wizard_verify
 from . import google_home_setup as setup
-from . import wizard_verify
 from .gcp_provision import build_provision_plan, describe_cost_notes, run_provision_step
 
 log = logging.getLogger(__name__)
@@ -114,6 +113,11 @@ async def wizard_advance(body: WizardAdvance):
 
 @router.post("/provision/preview")
 async def provision_preview(body: ProvisionRequest):
+    if setup.existing_installation_detected():
+        raise HTTPException(
+            status_code=409,
+            detail="An existing gateway is configured. Use connection checks and the image-only upgrade procedure; first-install provisioning is disabled.",
+        )
     state = setup.load_setup()
     recreate = body.recreate_canonical or state.get("mode") == "recreate_canonical"
     project_id = body.project_id or state.get("project_id") or (
@@ -139,6 +143,11 @@ async def provision_preview(body: ProvisionRequest):
 
 @router.post("/provision/execute")
 async def provision_execute(body: ProvisionRequest):
+    if setup.existing_installation_detected():
+        raise HTTPException(
+            status_code=409,
+            detail="An existing gateway is configured. Provisioning and credential minting are disabled for existing installations.",
+        )
     if not body.confirm_billable:
         raise HTTPException(
             status_code=400,
