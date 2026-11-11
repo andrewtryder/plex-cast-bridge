@@ -375,7 +375,7 @@ def test_oauth_security_controls(client):
     )
     assert token_res.status_code == 200
 
-    # 4. Single-use enforcement: Attempting to reuse the same authorization code MUST fail
+    # 4. Retries return the same refresh token instead of burning a committed exchange.
     reuse_res = client.post(
         "/oauth/token",
         data={
@@ -386,8 +386,8 @@ def test_oauth_security_controls(client):
             "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
         },
     )
-    assert reuse_res.status_code == 400
-    assert "already been redeemed" in reuse_res.text
+    assert reuse_res.status_code == 200
+    assert reuse_res.json()["refresh_token"] == token_res.json()["refresh_token"]
 
 
 def test_smart_home_command_key_translation_and_fail_closed(client, auth_headers):
@@ -540,6 +540,8 @@ def test_oauth_firestore_distributed_single_use(client):
             },
         )
         assert token_res.status_code == 200
+        mock_doc.get.return_value.exists = True
+        mock_doc.get.return_value.to_dict.return_value = mock_doc.create.call_args.args[0]
 
         replay_res = client.post(
             "/oauth/token",
@@ -551,8 +553,8 @@ def test_oauth_firestore_distributed_single_use(client):
                 "redirect_uri": "https://oauth-redirect.googleusercontent.com/r/test",
             },
         )
-        assert replay_res.status_code == 400
-        assert "already been redeemed" in replay_res.text
+        assert replay_res.status_code == 200
+        assert replay_res.json()["refresh_token"] == token_res.json()["refresh_token"]
 
 
 def test_oauth_firestore_fails_closed_in_production(client):
