@@ -560,8 +560,6 @@ def test_oauth_firestore_distributed_single_use(client):
 def test_oauth_firestore_fails_closed_in_production(client):
     from unittest.mock import MagicMock, patch
 
-    client.app.state.settings.environment = "production"
-
     res = client.post(
         "/oauth/authorize",
         data={
@@ -574,6 +572,10 @@ def test_oauth_firestore_fails_closed_in_production(client):
         follow_redirects=False,
     )
     auth_code = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(res.headers["location"]).query))["code"]
+    # Authorization-code issuance now requires Firestore in production to
+    # allocate a cross-revision monotonic exchange order. Create the fixture
+    # code in test mode, then exercise the production token-exchange failure.
+    client.app.state.settings.environment = "production"
 
     with patch("cloud_gateway.auth.get_firestore_client", return_value=None):
         token_res = client.post(
