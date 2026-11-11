@@ -73,7 +73,7 @@ uv run uvicorn cloud_gateway.main:app --host 127.0.0.1 --port 8080 --reload
 
 ## Deploying to GCP Cloud Run
 
-For an existing service, use the image-only helper. It requires an immutable image digest and a private preflight manifest. The first command records the reviewed project, service, current image, keyed fingerprints of protected settings, Firestore link identity (`linked`, link epoch, `agentUserId`, and catalog version), and traffic routing. The apply command uses that same manifest and refuses to deploy if any of those values changed since review. It updates only the image, waits for the new revision to become ready, then routes 100% of traffic and existing tags to it. It refuses split or canary traffic because it cannot infer the intended rollout plan. It never sets environment variables or IAM:
+For an existing service, use the image-only helper. It requires an immutable image digest and a private preflight manifest. The first command records the reviewed project, service, current image, keyed fingerprints of protected settings, Firestore link identity (`linked`, link epoch, `agentUserId`, catalog version, and catalog content digest), and traffic routing. The apply command uses that same manifest and refuses to deploy if any of those values changed since review. It creates the candidate revision with no traffic, waits for it to become ready, rechecks configuration and link state, then routes 100% of traffic and existing tags to it. It refuses split or canary traffic because it cannot infer the intended rollout plan. It never sets environment variables or IAM:
 
 ```bash
 uv run python scripts/cloud_run_upgrade.py \
