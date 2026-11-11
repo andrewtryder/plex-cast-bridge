@@ -87,20 +87,20 @@ class PubSubWorker:
                 except Exception as exc:
                     activity.record("Google Home", f"{action} failed", speaker)
                     log.error(
-                        "Google Home command failed action=%s speaker=%r device_id=%r error=%s",
+                        "Google Home command failed action=%s speaker=%r device_id=%r error_type=%s",
                         action,
                         speaker,
                         device_id,
-                        exc,
+                        type(exc).__name__,
                     )
                     native_attempt = getattr(message, "delivery_attempt", None)
                     if native_attempt is not None:
                         # GCP Pub/Sub subscription dead-letter policy handles durable retry & routing to DLQ
                         log.warning(
-                            "Pub/Sub message %s failed (native attempt %d, error: %s). Requesting redelivery via subscription DLQ policy.",
+                            "Pub/Sub message %s failed (native attempt %d, error_type=%s). Requesting redelivery via subscription DLQ policy.",
                             msg_id,
                             native_attempt,
-                            exc,
+                            type(exc).__name__,
                         )
                         message.nack()
                     else:
@@ -109,11 +109,11 @@ class PubSubWorker:
                         attempts = self.attempts[msg_id]
                         if attempts >= MAX_MESSAGE_RETRIES:
                             log.error(
-                                "Pub/Sub message %s ('%s') failed %d times (%s). Retaining in %s before acknowledging.",
+                                "Pub/Sub message %s ('%s') failed %d times (error_type=%s). Retaining in %s before acknowledging.",
                                 msg_id,
                                 action,
                                 attempts,
-                                exc,
+                                type(exc).__name__,
                                 DEAD_LETTER_LOG,
                             )
                             _record_dead_letter(msg_id, data, exc)
@@ -121,11 +121,11 @@ class PubSubWorker:
                             message.ack()
                         else:
                             log.warning(
-                                "Pub/Sub message %s failed (attempt %d/%d: %s); requesting redelivery.",
+                                "Pub/Sub message %s failed (attempt %d/%d, error_type=%s); requesting redelivery.",
                                 msg_id,
                                 attempts,
                                 MAX_MESSAGE_RETRIES,
-                                exc,
+                                type(exc).__name__,
                             )
                             message.nack()
                 else:
