@@ -33,6 +33,9 @@ device IDs, Google Home link and catalog-sync state, Plex library selection,
 index counts and scan state, saved-mix IDs and retrieval results, database
 integrity, protected configuration fingerprints, Cloud Run's ready revision and
 traffic, active revision images/service accounts, and Docker image/mount data.
+Speaker online/offline availability is recorded for reference but excluded from
+the identity comparison; Cast UUIDs, virtual IDs, names, enabled state, and
+Google Home visibility remain fail-closed identity checks.
 
 If `gcloud` is available only on the workstation, capture Cloud Run separately
 there; this writes a sanitized private snapshot with a stable local HMAC key:

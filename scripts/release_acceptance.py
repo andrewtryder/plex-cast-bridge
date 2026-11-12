@@ -190,6 +190,13 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
                 ) if key in speaker
             })
     results["speakers"] = speakers
+    results["speaker_identity"] = [
+        {key: speaker[key] for key in (
+            "id", "google_home_device_id", "uuid", "name", "speaker_name", "room",
+            "kind", "enabled", "google_home_visible", "is_group",
+        ) if key in speaker}
+        for speaker in speakers
+    ]
 
     gh = bodies.get("/api/google-home/status", {})
     if isinstance(gh, dict):
@@ -594,7 +601,7 @@ LOCAL_IDENTITY_PATHS = (
     "local.backup.rollback_ready",
     "api.google_home.cloud_linked",
     "api.google_home.virtual_devices",
-    "api.speakers",
+    "api.speaker_identity",
     "api.saved_mix_ids",
     "api.plex.linked",
     "api.plex.section",
@@ -619,11 +626,31 @@ def _at(obj: dict[str, Any], dotted: str) -> Any:
     return value
 
 
+def _speaker_identity(report: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Project stable fields from new or legacy speaker snapshots."""
+    identity = _at(report, "api.speaker_identity")
+    if isinstance(identity, list):
+        return identity
+    speakers = _at(report, "api.speakers")
+    if not isinstance(speakers, list):
+        return None
+    fields = (
+        "id", "google_home_device_id", "uuid", "name", "speaker_name", "room",
+        "kind", "enabled", "google_home_visible", "is_group",
+    )
+    return [
+        {key: speaker[key] for key in fields if key in speaker}
+        for speaker in speakers if isinstance(speaker, dict)
+    ]
+
+
 def _missing_scope_evidence(report: dict[str, Any], scope: str) -> list[str]:
     missing: list[str] = []
     if scope == "local":
         if not isinstance(report.get("local"), dict) or not isinstance(report.get("api"), dict):
             return ["local/API baseline sections missing"]
+        if _speaker_identity(report) is None:
+            missing.append("speaker identity snapshot missing")
         for dotted in (
             "local.docker.image_id", "local.docker.running", "local.docker.mounts",
             "local.protected_config_fingerprints",
@@ -715,7 +742,10 @@ def compare(before_path: Path, after_path: Path, scope: str = "all") -> tuple[bo
     if "cloud" in scopes:
         selected_paths.extend(CLOUD_IDENTITY_PATHS)
     for path in selected_paths:
-        left, right = _at(before, path), _at(after, path)
+        if path == "api.speaker_identity":
+            left, right = _speaker_identity(before), _speaker_identity(after)
+        else:
+            left, right = _at(before, path), _at(after, path)
         if left != right:
             differences.append({"scope": "identity", "path": path, "before": left, "after": right})
     return not differences, differences

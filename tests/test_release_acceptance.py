@@ -18,7 +18,8 @@ def _valid_report():
             {"google_home_device_id": f"virtual-{i}", "name": f"Speaker {i}", "enabled": True,
              "google_home_visible": True} for i in range(4)
         ], "catalog_sync": {"version": 1, "status": "succeeded"}},
-        "speakers": [{"uuid": f"cast-{i}", "enabled": True, "google_home_visible": True} for i in range(4)],
+        "speakers": [{"uuid": f"cast-{i}", "enabled": True, "google_home_visible": True,
+                      "availability": "online"} for i in range(4)],
         "saved_mix_ids": [1], "plex": {"linked": True, "section": "Music"},
         "speaker_config": {"default_cast_volume": 0.4, "max_cast_volume": 0.85},
         "music_index": {"track_count": 10, "artist_count": 3, "album_count": 4},
@@ -70,12 +71,26 @@ def test_compare_ignores_mutable_scan_and_catalog_timestamps(tmp_path: Path):
     after["cloud_run"]["latest_ready_revision"] = "rev2"
     after["cloud_run"]["image"] = "image2"
     after["api"]["music_index"]["track_count"] = 11
+    after["api"]["speakers"][0]["availability"] = "offline"
     left, right = tmp_path / "before.json", tmp_path / "after.json"
     left.write_text(json.dumps(base))
     right.write_text(json.dumps(after))
     safe, differences = acceptance.compare(left, right)
     assert safe
     assert differences == []
+
+
+def test_compare_detects_cast_uuid_change_but_ignores_availability(tmp_path: Path):
+    before, after = _valid_report(), _valid_report()
+    after["api"]["speakers"][0]["availability"] = "offline"
+    after["api"]["speakers"][0]["uuid"] = "replacement-cast"
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+
+    safe, differences = acceptance.compare(left, right, scope="local")
+    assert not safe
+    assert any(item["path"] == "api.speaker_identity" for item in differences)
 
 
 def test_compare_fails_closed_on_identity_change(tmp_path: Path):
@@ -155,6 +170,8 @@ def test_api_capture_records_get_status_and_mix_retrieval(monkeypatch):
     assert result["plex"]["section"] == "Music"
     assert result["playback"]["Master Bedroom"]["state"] == "PLAYING"
     assert result["playback"]["Master Bedroom"]["current_track_present"] is True
+    assert result["speaker_identity"][0]["uuid"] == "cast-1"
+    assert "availability" not in result["speaker_identity"][0]
     assert "private track" not in encoded
     assert "private query" not in encoded
     assert "private detail" not in encoded
