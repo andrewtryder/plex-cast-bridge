@@ -34,6 +34,7 @@ class LocalSpeaker:
         self.state = "IDLE"
         self.generation = 0
         self.volume = 0.25  # default 25% safe volume
+        self._volume_before_mute: float | None = None
         self.enable_playback = enable_playback and (sys.platform == "darwin") and bool(shutil.which("afplay"))
         self._proc = None
         self._watcher_thread = None
@@ -203,7 +204,18 @@ class LocalSpeaker:
     def set_volume(self, volume: float):
         with self.lock:
             self.volume = max(0.0, min(1.0, float(volume)))
+            if self.volume > 0:
+                self._volume_before_mute = self.volume
             log.info("Emulated Speaker volume set to %.0f%%", self.volume * 100)
+
+    def mute(self, muted: bool):
+        with self.lock:
+            if muted:
+                if self.volume > 0:
+                    self._volume_before_mute = self.volume
+                self.volume = 0.0
+            elif self.volume == 0.0:
+                self.volume = self._volume_before_mute or 0.25
 
     def adjust_volume(self, delta: float):
         with self.lock:

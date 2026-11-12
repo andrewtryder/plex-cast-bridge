@@ -86,6 +86,8 @@ class SpeakerQueue(MediaStatusListener):
         self._closed = False
         self._watchdogs: set[threading.Timer] = set()
         self._saved_volume: float | None = None
+        self._mute_volume: float | None = None
+        self._is_muted = False
         self._receiver_app_seen = False
         self._last_observed_state: str | None = None
         self._native_revision = 0
@@ -608,9 +610,47 @@ class SpeakerQueue(MediaStatusListener):
             self.cast.set_volume(clamped)
         except Exception as exc:
             log.warning("Set volume error on '%s': %s", self.cast.name, exc)
+            raise
+
+        with self.lock:
+            if clamped > 0:
+                self._mute_volume = clamped
+                self._is_muted = False
+            else:
+                self._is_muted = True
+
+    def mute(self, muted: bool):
+        """Mute a Cast destination and remember its last nonzero volume for restore."""
+        muted = bool(muted)
+        with self.lock:
+            if muted:
+                if self._is_muted:
+                    return
+                current = getattr(getattr(self.cast, "status", None), "volume_level", None)
+                if isinstance(current, (int, float)) and 0 < current <= 1:
+                    restore_volume = float(current)
+                elif self._mute_volume is None:
+                    fallback = self.default_volume
+                    restore_volume = float(fallback) if isinstance(fallback, (int, float)) and fallback > 0 else 0.2
+                else:
+                    restore_volume = self._mute_volume
+                # Update remembered mute state only after Cast accepts zero volume.
+                self.set_volume(0.0)
+                self._mute_volume = restore_volume
+            else:
+                current = getattr(getattr(self.cast, "status", None), "volume_level", None)
+                if not self._is_muted and current != 0:
+                    return
+                restore_volume = self._mute_volume
+                if restore_volume is None or restore_volume <= 0:
+                    fallback = self.default_volume
+                    restore_volume = float(fallback) if isinstance(fallback, (int, float)) and fallback > 0 else 0.2
+                self.set_volume(restore_volume)
 
     def adjust_volume(self, delta: float):
-        current = getattr(getattr(self.cast, "status", None), "volume_level", self.default_volume or 0.20)
+        current = self._mute_volume if self._is_muted else None
+        if current is None:
+            current = getattr(getattr(self.cast, "status", None), "volume_level", self.default_volume or 0.20)
         if current is None:
             current = self.default_volume or 0.20
         self.set_volume(float(current) + float(delta))

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections import Counter
@@ -51,7 +52,7 @@ if not log.handlers and not logging.getLogger().handlers:
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     log.addHandler(handler)
 
-VALID_ACTIONS = {"play", "pause", "resume", "next", "previous", "stop", "volume"}
+VALID_ACTIONS = {"play", "pause", "resume", "next", "previous", "stop", "volume", "mute"}
 MAX_MESSAGE_RETRIES = 3
 
 
@@ -67,10 +68,31 @@ class PubSubWorker:
             msg_id = message.message_id
             try:
                 data = json.loads(message.data.decode("utf-8"))
-                if not isinstance(data, dict) or data.get("action") not in VALID_ACTIONS:
-                    raise ValueError(f"Invalid Pub/Sub action: {data.get('action') if isinstance(data, dict) else data}")
-                if data["action"] == "play" and not isinstance(data.get("query"), str):
+                action = data.get("action") if isinstance(data, dict) else None
+                if not isinstance(data, dict) or not isinstance(action, str) or action not in VALID_ACTIONS:
+                    raise ValueError(f"Invalid Pub/Sub action: {action if isinstance(data, dict) else data}")
+                if action == "play" and not isinstance(data.get("query"), str):
                     raise ValueError("Play requires a query")
+                if action == "mute" and not isinstance(data.get("mute"), bool):
+                    raise ValueError("Mute requires a boolean mute value")
+                if action == "mute" and any(field in data for field in ("volume", "relative_volume")):
+                    raise ValueError("Mute cannot include volume values")
+                if action == "volume":
+                    has_absolute = "volume" in data
+                    has_relative = "relative_volume" in data
+                    if has_absolute == has_relative or "mute" in data:
+                        raise ValueError("Volume requires exactly one volume value")
+                    field = "volume" if has_absolute else "relative_volume"
+                    value = data[field]
+                    minimum, maximum = (0, 1) if has_absolute else (-1, 1)
+                    if (isinstance(value, bool) or not isinstance(value, (int, float))
+                            or isinstance(value, float) and not math.isfinite(value)
+                            or not minimum <= value <= maximum):
+                        raise ValueError(f"Invalid {field} value")
+                elif action != "mute" and any(field in data for field in ("volume", "relative_volume")):
+                    raise ValueError("Volume values require the volume action")
+                if action != "mute" and "mute" in data:
+                    raise ValueError("Mute values require the mute action")
             except (ValueError, UnicodeError):
                 log.exception("Discarding invalid Pub/Sub message %s", msg_id)
                 message.ack()

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,15 @@ class UnsupportedCommandError(ValueError):
     def __init__(self, command: str):
         self.command = command
         super().__init__(f"Unsupported Smart Home command: {command}")
+
+
+class InvalidCommandParameters(ValueError):
+    """Raised when a recognized Smart Home command has invalid parameters."""
+
+    def __init__(self, command: str, error_code: str = "hardError"):
+        self.command = command
+        self.error_code = error_code
+        super().__init__(f"Invalid parameters for Smart Home command: {command}")
 
 
 def slugify(text: str) -> str:
@@ -372,14 +382,38 @@ def parse_execute_command(
         payload = {"action": "resume" if is_on else "pause"}
 
     elif cmd_lower == "action.devices.commands.setvolume":
-        vol = params.get("volumeLevel", 20)
-        vol_float = round(max(0.0, min(100.0, float(vol))) / 100.0, 2)
+        vol = params.get("volumeLevel")
+        if isinstance(vol, bool) or not isinstance(vol, int):
+            raise InvalidCommandParameters(command)
+        if not 0 <= vol <= 100:
+            raise InvalidCommandParameters(command, "valueOutOfRange")
+        vol_float = round(vol / 100.0, 2)
         payload = {"action": "volume", "volume": vol_float}
 
     elif cmd_lower == "action.devices.commands.volumerelative":
-        rel = params.get("volumeRelativeLevel", 5)
-        rel_float = round(float(rel) / 100.0, 2)
+        if "relativeSteps" in params:
+            rel = params.get("relativeSteps")
+            if isinstance(rel, bool) or not isinstance(rel, int):
+                raise InvalidCommandParameters(command)
+            rel_float = max(-100, min(100, rel * 5)) / 100.0
+        elif "volumeRelativeLevel" in params:
+            # Accept the previous bridge parameter during transition, but use
+            # Google's documented relativeSteps parameter for new requests.
+            rel = params.get("volumeRelativeLevel")
+            if (isinstance(rel, bool) or not isinstance(rel, (int, float))
+                    or isinstance(rel, float) and not math.isfinite(rel)):
+                raise InvalidCommandParameters(command)
+            rel_float = max(-100, min(100, rel)) / 100.0
+        else:
+            raise InvalidCommandParameters(command)
+        rel_float = round(max(-1.0, min(1.0, rel_float)), 2)
         payload = {"action": "volume", "relative_volume": rel_float}
+
+    elif cmd_lower == "action.devices.commands.mute":
+        muted = params.get("mute")
+        if not isinstance(muted, bool):
+            raise InvalidCommandParameters(command)
+        payload = {"action": "mute", "mute": muted}
 
     else:
         log.warning(f"Unrecognized Google Smart Home command: {command}")
@@ -495,9 +529,19 @@ async def handle_smart_home_request(
 
                 parsed_payloads: list[dict[str, Any]] = []
                 unsupported_command: str | None = None
+                invalid_parameters: InvalidCommandParameters | None = None
                 for exec_item in executions:
+                    if not isinstance(exec_item, dict):
+                        invalid_parameters = InvalidCommandParameters("<malformed>")
+                        break
                     cmd_name = exec_item.get("command", "")
                     params = exec_item.get("params", {})
+                    if not isinstance(cmd_name, str):
+                        invalid_parameters = InvalidCommandParameters("<malformed>")
+                        break
+                    if not isinstance(params, dict):
+                        invalid_parameters = InvalidCommandParameters(str(cmd_name))
+                        break
                     try:
                         parsed_payloads.append(
                             parse_execute_command(
@@ -509,6 +553,9 @@ async def handle_smart_home_request(
                         )
                     except UnsupportedCommandError:
                         unsupported_command = cmd_name
+                        break
+                    except InvalidCommandParameters as exc:
+                        invalid_parameters = exc
                         break
 
                 if unsupported_command is not None:
@@ -522,6 +569,19 @@ async def handle_smart_home_request(
                         "ids": [dev_id],
                         "status": "ERROR",
                         "errorCode": "notSupported",
+                    })
+                    continue
+
+                if invalid_parameters is not None:
+                    log.warning(
+                        "Rejecting Google Smart Home command with invalid parameters '%s' for device '%s'",
+                        invalid_parameters.command,
+                        dev_id,
+                    )
+                    error_commands.append({
+                        "ids": [dev_id],
+                        "status": "ERROR",
+                        "errorCode": invalid_parameters.error_code,
                     })
                     continue
 

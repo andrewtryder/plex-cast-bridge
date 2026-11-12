@@ -56,6 +56,80 @@ def test_volume_clamped_to_max():
     assert args[0] <= 0.4 + 1e-9
 
 
+def test_mute_restores_previous_volume_and_repeated_commands_are_safe():
+    cast = SimpleNamespace(
+        media_controller=MagicMock(), name="Room", set_volume=MagicMock(),
+        status=SimpleNamespace(volume_level=0.63),
+    )
+    q = SpeakerQueue(cast, default_volume=0.2)
+    q.mute(True)
+    q.mute(True)
+    q.mute(False)
+    q.mute(False)
+    assert [call.args[0] for call in cast.set_volume.call_args_list] == [0.0, 0.63]
+    q.close()
+
+
+def test_mute_restore_obeys_configured_volume_limit():
+    cast = SimpleNamespace(
+        media_controller=MagicMock(), name="Room", set_volume=MagicMock(),
+        status=SimpleNamespace(volume_level=0.9),
+    )
+    q = SpeakerQueue(cast, default_volume=0.2, max_volume=0.4)
+    q.mute(True)
+    q.mute(False)
+    assert [call.args[0] for call in cast.set_volume.call_args_list] == [0.0, 0.4]
+    q.close()
+
+
+def test_unmute_after_receiver_reconnect_uses_safe_default_when_saved_level_is_lost():
+    cast = SimpleNamespace(
+        media_controller=MagicMock(), name="Room", set_volume=MagicMock(),
+        status=SimpleNamespace(volume_level=0.0),
+    )
+    q = SpeakerQueue(cast, default_volume=0.35)
+    q.mute(False)
+    cast.set_volume.assert_called_once_with(0.35)
+    q.close()
+
+
+def test_failed_mute_does_not_change_remembered_state():
+    cast = SimpleNamespace(
+        media_controller=MagicMock(), name="Room",
+        set_volume=MagicMock(side_effect=RuntimeError("Cast unavailable")),
+        status=SimpleNamespace(volume_level=0.63),
+    )
+    q = SpeakerQueue(cast, default_volume=0.2)
+    with pytest.raises(RuntimeError, match="Cast unavailable"):
+        q.mute(True)
+    assert q._is_muted is False
+    assert q._mute_volume is None
+    q.close()
+
+
+def test_failed_unmute_keeps_muted_state_and_saved_volume():
+    status = SimpleNamespace(volume_level=0.63)
+
+    def set_volume(level):
+        status.volume_level = level
+
+    cast = SimpleNamespace(
+        media_controller=MagicMock(), name="Room", set_volume=MagicMock(side_effect=set_volume),
+        status=status,
+    )
+    q = SpeakerQueue(cast, default_volume=0.2)
+    q.mute(True)
+    assert q._is_muted is True
+    assert q._mute_volume == 0.63
+
+    cast.set_volume.side_effect = RuntimeError("Cast unavailable")
+    with pytest.raises(RuntimeError, match="Cast unavailable"):
+        q.mute(False)
+    assert q._is_muted is True
+    assert q._mute_volume == 0.63
+    q.close()
+
+
 def test_playback_volume_restored_on_stop_and_not_between_tracks():
     cast = SimpleNamespace(
         media_controller=MagicMock(), name="Room", set_volume=MagicMock(), quit_app=MagicMock(),
