@@ -319,17 +319,19 @@ def test_cloud_execute_helper_requires_disruptive_flag_and_test_subscription():
     assert "private query" not in proc.stdout + proc.stderr
 
 
-def test_live_cast_helper_routes_dashboard_commands_and_restores_volume():
+def test_live_cast_helper_uses_physical_confirmation_for_unknown_idle_receiver():
     from types import SimpleNamespace
 
-    from scripts.test_live_cast import run_device_test
+    import pytest
+
+    from scripts.test_live_cast import AcceptanceFailure, run_device_test
 
     class Cast:
         def __init__(self):
             self.status = SimpleNamespace(volume_level=0.4)
             self.socket_client = SimpleNamespace(is_connected=True)
             self.media_controller = SimpleNamespace(
-                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+                status=SimpleNamespace(player_state="UNKNOWN"), update_status=lambda: None
             )
 
         def set_volume(self, value):
@@ -337,6 +339,14 @@ def test_live_cast_helper_routes_dashboard_commands_and_restores_volume():
 
     speaker = SimpleNamespace(cast=Cast(), max_volume=0.85, is_group=False)
     requests = []
+
+    with pytest.raises(AcceptanceFailure, match="not confirmed idle"):
+        run_device_test(
+            speaker=speaker, device_id="plex-jukebox:bedroom", query="private query",
+            base_url="http://bridge", max_volume=0.18,
+            request=lambda *_args: pytest.fail("unknown receiver must require operator confirmation"),
+            sleep=lambda _delay: None,
+        )
 
     def request(_url, path, body):
         requests.append((path, body.copy()))
@@ -354,11 +364,11 @@ def test_live_cast_helper_routes_dashboard_commands_and_restores_volume():
 
     result = run_device_test(
         speaker=speaker, device_id="plex-jukebox:bedroom", query="private query",
-        base_url="http://bridge", max_volume=0.18, request=request,
+        base_url="http://bridge", max_volume=0.18, physical_idle_confirmed=True, request=request,
         sleep=lambda _delay: None,
     )
     assert [item[0] for item in result] == [
-        "baseline", "safe_volume", "play", "pause", "resume", "volume_up",
+        "baseline", "physical_idle_confirmation", "safe_volume", "play", "pause", "resume", "volume_up",
         "volume_down", "stop", "restore_volume",
     ]
     assert requests[0] == (

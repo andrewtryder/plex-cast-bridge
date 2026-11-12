@@ -9,7 +9,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from plex_cast_bridge.cast_manager import CastManager
+import pychromecast
+
 from plex_cast_bridge.catalog_store import list_speaker_records
 from plex_cast_bridge.config import Settings
 
@@ -99,6 +100,7 @@ def run_device_test(
     query: str,
     base_url: str,
     max_volume: float,
+    physical_idle_confirmed: bool = False,
     request=dashboard_request,
     sleep=time.sleep,
     wait=wait_for_state,
@@ -109,7 +111,9 @@ def run_device_test(
     initial_state = receiver_state(speaker)
     if not getattr(client, "is_connected", False) or original_volume is None:
         raise AcceptanceFailure("Exact receiver connection or initial volume is unreadable")
-    if initial_state not in {"IDLE", "STOPPED"}:
+    if initial_state not in {"IDLE", "STOPPED"} and not (
+        initial_state == "UNKNOWN" and physical_idle_confirmed
+    ):
         raise AcceptanceFailure(f"Receiver is not confirmed idle (state={initial_state})")
     if getattr(speaker, "is_group", False):
         raise AcceptanceFailure("Cast Groups are excluded from this individual-speaker test")
@@ -119,6 +123,8 @@ def run_device_test(
     raised = min(safe + 0.05, cap)
     lowered = max(0.0, safe - 0.05)
     results = [("baseline", initial_state, round(float(original_volume), 3))]
+    if initial_state == "UNKNOWN":
+        results.append(("physical_idle_confirmation", True))
     play_requested = False
     stopped = False
     failure = None
@@ -221,6 +227,11 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--base-url", default="http://127.0.0.1:8000", help="local dashboard API URL"
     )
+    parser.add_argument(
+        "--confirm-physical-idle",
+        action="store_true",
+        help="confirm in person that an UNKNOWN receiver is silent before playback starts",
+    )
     args = parser.parse_args(argv)
     if not args.allow_disruptive:
         parser.error("physical playback requires --allow-disruptive")
@@ -241,15 +252,31 @@ def main(argv=None) -> int:
         log.error("Refusing Cast Group; this helper only targets individual speakers")
         return 1
 
-    cm = CastManager(default_volume=0.15, default_speaker_host=settings.default_speaker_host)
+    info = (
+        record.get("host"),
+        record.get("port", 8009),
+        record.get("cast_uuid") or record.get("uuid"),
+        record.get("model") or "Google Cast",
+        record.get("speaker_name") or record.get("name") or "Cast speaker",
+    )
+    cast = None
     try:
-        speaker = cm.get_device(device_id)
+        if not info[0] or not info[2]:
+            raise AcceptanceFailure("Configured Cast endpoint or UUID is missing")
+        cast = pychromecast.get_chromecast_from_host(info)
+        cast.wait(timeout=8)
+        if str(cast.uuid).casefold() != str(info[2]).casefold():
+            raise AcceptanceFailure("Configured endpoint returned a different Cast UUID")
+        from types import SimpleNamespace
+
+        speaker = SimpleNamespace(cast=cast, max_volume=settings.max_cast_volume, is_group=False)
         outcome = run_device_test(
             speaker=speaker,
             device_id=device_id,
             query=args.query,
             base_url=args.base_url,
             max_volume=settings.max_cast_volume,
+            physical_idle_confirmed=args.confirm_physical_idle,
         )
         print(json.dumps(outcome))
         return 0
@@ -262,7 +289,11 @@ def main(argv=None) -> int:
         log.error("Live Cast acceptance failed (%s)", type(exc).__name__)
         return 1
     finally:
-        cm.close()
+        if cast is not None:
+            try:
+                cast.disconnect()
+            except Exception as exc:  # noqa: BLE001 - disconnect errors do not change the test result.
+                log.debug("Cast observer disconnect failed (%s)", type(exc).__name__)
 
 
 if __name__ == "__main__":
