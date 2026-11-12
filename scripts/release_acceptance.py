@@ -747,7 +747,15 @@ def _missing_scope_evidence(report: dict[str, Any], scope: str) -> list[str]:
         ):
             if _at(report, dotted) is None:
                 missing.append(dotted)
-        if not cloud.get("traffic") or not any(t.get("percent", 0) > 0 for t in cloud["traffic"]):
+        traffic = cloud.get("traffic") or []
+        has_routed_traffic = any(
+            isinstance(target, dict)
+            and isinstance(target.get("percent"), (int, float))
+            and not isinstance(target.get("percent"), bool)
+            and target["percent"] > 0
+            for target in traffic
+        )
+        if not has_routed_traffic:
             missing.append("Cloud Run has no verified traffic revision")
         cloud_fingerprints = cloud.get("protected_config_fingerprints") or {}
         for name in ("GCP_PROJECT_ID", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",

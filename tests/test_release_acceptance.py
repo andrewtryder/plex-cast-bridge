@@ -80,6 +80,24 @@ def test_compare_ignores_mutable_scan_and_catalog_timestamps(tmp_path: Path):
     assert differences == []
 
 
+def test_compare_accepts_tagged_cloud_revision_without_traffic_percent(tmp_path: Path):
+    before, after = _valid_report(), _valid_report()
+    after["cloud_run"]["latest_ready_revision"] = "rev2"
+    after["cloud_run"]["image"] = "image2"
+    after["cloud_run"]["traffic"] = [
+        {"revision": "rev1", "percent": None},
+        {"revision": "rev2", "percent": 100},
+    ]
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+
+    safe, differences = acceptance.compare(left, right, scope="cloud")
+
+    assert safe
+    assert differences == []
+
+
 def test_compare_detects_cast_uuid_change_but_ignores_availability(tmp_path: Path):
     before, after = _valid_report(), _valid_report()
     after["api"]["speakers"][0]["availability"] = "offline"
