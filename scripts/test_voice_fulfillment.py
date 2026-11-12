@@ -6,6 +6,7 @@ Cloud Run /fulfillment endpoint, verifies <1s SUCCESS response, and confirms
 delivery via GCP Cloud Pub/Sub.
 """
 
+import argparse
 import base64
 import hashlib
 import hmac
@@ -16,6 +17,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
 from google.cloud import pubsub_v1
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -63,20 +65,32 @@ def resolve_cloud_run_url(project_id: str, region: str = "us-central1", service:
         url = res.stdout.strip()
         if url:
             return f"{url.rstrip('/')}/fulfillment"
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         log.debug("Could not resolve Cloud Run URL via gcloud: %s", exc)
     raise RuntimeError("Could not determine Cloud Run URL. Set CLOUD_RUN_URL in gcp-cloud-run/.env or authenticate gcloud.")
 
 
 def main():
-    artist_query = sys.argv[1] if len(sys.argv) > 1 else "DJ Shadow"
-    speaker = sys.argv[2] if len(sys.argv) > 2 else "Master Bedroom"
+    parser = argparse.ArgumentParser(description="Send a simulated EXECUTE command to Cloud Run")
+    parser.add_argument("--allow-disruptive", action="store_true",
+                        help="explicitly authorize a live command and Pub/Sub pull/ack")
+    parser.add_argument("--project", required=True, help="explicit Google Cloud project ID")
+    parser.add_argument("--subscription", required=True,
+                        help="isolated test subscription; this command pulls and acknowledges one message")
+    parser.add_argument("--device-id", required=True, help="stable virtual device ID, e.g. plex-jukebox:Master Bedroom")
+    parser.add_argument("--query", required=True, help="known query (not printed or logged)")
+    args = parser.parse_args()
+    if not args.allow_disruptive:
+        parser.error("a live Cloud Run command requires --allow-disruptive")
+    if not args.subscription.startswith("test-"):
+        parser.error("refusing to pull from a non-test subscription; use an isolated subscription prefixed test-")
+    artist_query = args.query
 
     print("\n" + "=" * 65)
     print(" Google Assistant Voice Fulfillment Test")
     print("=" * 65)
-    print(f"Simulated Voice Query:   'Hey Google, play {artist_query} on Plex'")
-    print(f"Target Physical Speaker: {speaker}")
+    print("Simulated voice query: provided (redacted)")
+    print(f"Target virtual device: {args.device_id}")
     print("-" * 65)
 
     env_path = PROJECT_ROOT / "gcp-cloud-run" / ".env"
@@ -90,8 +104,8 @@ def main():
         log.error("OAUTH_SIGNING_SECRET is missing in %s", env_path)
         return 1
 
-    project_id = env.get("GCP_PROJECT_ID", "plex-cast-bridge-home")
-    sub_id = env.get("GCP_PUBSUB_SUBSCRIPTION_ID", "plex-commands-local-worker")
+    project_id = args.project
+    sub_id = args.subscription
     cloud_run_url = env.get("CLOUD_RUN_URL")
     if cloud_run_url:
         cloud_run_url = f"{cloud_run_url.rstrip('/')}/fulfillment"
@@ -112,7 +126,7 @@ def main():
                 "payload": {
                     "commands": [
                         {
-                            "devices": [{"id": f"plex-jukebox:{speaker}"}],
+                            "devices": [{"id": args.device_id}],
                             "execution": [
                                 {
                                     "command": "action.devices.commands.selectChannel",
@@ -149,8 +163,8 @@ def main():
             cmd_status = res_data.get("payload", {}).get("commands", [{}])[0].get("status")
             print(f"      Execution Status: {cmd_status}")
             assert cmd_status == "SUCCESS", f"Unexpected execution status: {cmd_status}"
-    except Exception as exc:
-        log.error("Cloud Run request failed: %s", exc)
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        log.error("Cloud Run request failed (%s)", type(exc).__name__)
         return 1
 
     print("\n[2/3] Verifying message on GCP Pub/Sub queue...")
@@ -171,14 +185,12 @@ def main():
     ack_id = received.ack_id
 
     print(f"      Pub/Sub Message ID: {received.message.message_id}")
-    print(f"      Published Payload:  {json.dumps(msg_data)}")
     subscriber.acknowledge(request={"subscription": sub_path, "ack_ids": [ack_id]})
     print("      Message acknowledged successfully.")
 
     print("\n[3/3] Intent Validation:")
     print(f"      Action:  {msg_data.get('action')}")
-    print(f"      Query:   {msg_data.get('query')}")
-    print(f"      Speaker: {msg_data.get('speaker', speaker)}")
+    print(f"      Speaker: {msg_data.get('speaker', args.device_id)}")
 
     print("\n" + "=" * 65)
     print(" VERIFICATION SUCCESSFUL!")
