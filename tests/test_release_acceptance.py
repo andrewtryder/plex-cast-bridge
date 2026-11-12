@@ -18,8 +18,8 @@ def _valid_report():
             {"google_home_device_id": f"virtual-{i}", "name": f"Speaker {i}", "enabled": True,
              "google_home_visible": True} for i in range(4)
         ], "catalog_sync": {"version": 1, "status": "succeeded"}},
-        "speakers": [{"uuid": f"cast-{i}", "enabled": True, "google_home_visible": True,
-                      "availability": "online"} for i in range(4)],
+        "speakers": [{"id": f"virtual-{i}", "uuid": f"cast-{i}", "enabled": True,
+                      "google_home_visible": True, "availability": "online"} for i in range(4)],
         "saved_mix_ids": [1], "plex": {"linked": True, "section": "Music"},
         "speaker_config": {"default_cast_volume": 0.4, "max_cast_volume": 0.85},
         "music_index": {"track_count": 10, "artist_count": 3, "album_count": 4},
@@ -91,6 +91,18 @@ def test_compare_detects_cast_uuid_change_but_ignores_availability(tmp_path: Pat
     safe, differences = acceptance.compare(left, right, scope="local")
     assert not safe
     assert any(item["path"] == "api.speaker_identity" for item in differences)
+
+
+def test_compare_fails_closed_when_cast_uuid_mapping_is_missing(tmp_path: Path):
+    before, after = _valid_report(), _valid_report()
+    after["api"]["speakers"][0].pop("uuid")
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+
+    safe, differences = acceptance.compare(left, right, scope="local")
+    assert not safe
+    assert any("four Cast UUID-to-device mappings" in item.get("reason", "") for item in differences)
 
 
 def test_compare_fails_closed_on_identity_change(tmp_path: Path):

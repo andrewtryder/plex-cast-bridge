@@ -696,6 +696,17 @@ def _missing_scope_evidence(report: dict[str, Any], scope: str) -> list[str]:
         devices = _at(report, "api.google_home.virtual_devices")
         if not isinstance(devices, list) or len(devices) != 4 or any(not d.get("google_home_device_id") for d in devices):
             missing.append("four stable Google Home device IDs are not verified")
+        speaker_identity = _speaker_identity(report)
+        if (
+            not isinstance(speaker_identity, list)
+            or len(speaker_identity) != 4
+            or any(
+                not item.get("uuid")
+                or not (item.get("google_home_device_id") or item.get("id"))
+                for item in speaker_identity
+            )
+        ):
+            missing.append("four Cast UUID-to-device mappings are not verified")
         if _at(report, "api.plex.linked") is not True:
             missing.append("Plex link is not verified")
         for endpoint in API_PATHS:
