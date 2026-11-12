@@ -100,3 +100,49 @@ assert catalog_sync.load_sync_state()['version'] == 7
 assert (Path(os.environ["DATA_DIR"]) / "dashboard_sessions.sqlite3").read_bytes() == b"preserve legacy file"
 """
     subprocess.run([sys.executable, "-c", restarted], env={**env, "TEST_SEED_DIR": str(seed)}, check=True)
+
+
+def test_repeated_mint_local_secrets_refuses_existing_oauth_and_preserves_file(tmp_path, monkeypatch):
+    from plex_cast_bridge.gcp_provision import ops
+
+    env_file = tmp_path / ".env"
+    original = (
+        "GCP_PROJECT_ID=existing-project\n"
+        "GOOGLE_CLIENT_ID=client-id-existing\n"
+        "GOOGLE_CLIENT_SECRET=secret-existing\n"
+        "OAUTH_SIGNING_SECRET=signing-existing\n"
+        "CATALOG_WRITE_KEY=catalog-existing\n"
+    )
+    env_file.write_text(original)
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", env_file)
+    monkeypatch.setattr(ops, "_probe_existing_cloud_run", lambda plan: (False, None))
+    plan = ops.build_provision_plan(project_id="existing-project")
+
+    first = ops.run_provision_step(plan, "mint_local_secrets", dry_run=False)
+    after_first = env_file.read_text()
+    second = ops.run_provision_step(plan, "mint_local_secrets", dry_run=False)
+
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    assert "refusing to overwrite" in first["detail"]
+    assert after_first == original
+    assert env_file.read_text() == original
+
+
+def test_mint_local_secrets_fails_closed_when_cloud_run_probe_is_uncertain(tmp_path, monkeypatch):
+    from plex_cast_bridge.gcp_provision import ops
+
+    env_file = tmp_path / ".env"
+    original = "GOOGLE_CLIENT_ID=client-id-existing\nOAUTH_SIGNING_SECRET=signing-existing\n"
+    env_file.write_text(original)
+    monkeypatch.setattr(ops, "CLOUD_RUN_ENV", env_file)
+
+    def uncertain(_plan):
+        raise RuntimeError("probe unavailable")
+
+    monkeypatch.setattr(ops, "_probe_existing_cloud_run", uncertain)
+    plan = ops.build_provision_plan(project_id="existing-project")
+    result = ops.run_provision_step(plan, "mint_local_secrets", dry_run=False)
+
+    assert result["status"] == "failed"
+    assert env_file.read_text() == original
