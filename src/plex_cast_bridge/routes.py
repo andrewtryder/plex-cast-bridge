@@ -104,7 +104,9 @@ async def command_endpoint(request: Request, command: Command):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        log.exception("Command failed for query=%r speaker=%r", command.query, command.speaker)
+        # Smart DJ prompts can contain private listening intent. Keep the
+        # failure context useful without logging a traceback that may echo it.
+        log.error("Command failed for speaker=%r error_type=%s", command.speaker, type(exc).__name__)
         raise HTTPException(status_code=500, detail=f"Playback failed: {exc}") from exc
 
 

@@ -266,3 +266,134 @@ def test_cloud_execute_helper_requires_disruptive_flag_and_test_subscription():
     assert proc.returncode == 2
     assert "a live Cloud Run command requires --allow-disruptive" in proc.stderr
     assert "private query" not in proc.stdout + proc.stderr
+
+
+def test_live_cast_helper_routes_dashboard_commands_and_restores_volume():
+    from types import SimpleNamespace
+
+    from scripts.test_live_cast import run_device_test
+
+    class Cast:
+        def __init__(self):
+            self.status = SimpleNamespace(volume_level=0.4)
+            self.socket_client = SimpleNamespace(is_connected=True)
+            self.media_controller = SimpleNamespace(
+                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+            )
+
+        def set_volume(self, value):
+            self.status.volume_level = value
+
+    speaker = SimpleNamespace(cast=Cast(), max_volume=0.85, is_group=False)
+    requests = []
+
+    def request(_url, path, body):
+        requests.append((path, body.copy()))
+        if path == "/api/command":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "pause":
+            speaker.cast.media_controller.status.player_state = "PAUSED"
+        elif body["action"] == "resume":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "volume":
+            speaker.cast.status.volume_level = body["volume"]
+        elif body["action"] == "stop":
+            speaker.cast.media_controller.status.player_state = "IDLE"
+        return 200
+
+    result = run_device_test(
+        speaker=speaker, device_id="plex-jukebox:bedroom", query="private query",
+        base_url="http://bridge", max_volume=0.18, request=request,
+        sleep=lambda _delay: None,
+    )
+    assert [item[0] for item in result] == [
+        "baseline", "safe_volume", "play", "pause", "resume", "volume_up",
+        "volume_down", "stop", "restore_volume",
+    ]
+    assert requests[0] == (
+        "/api/command", {"query": "private query", "device_id": "plex-jukebox:bedroom"}
+    )
+    assert [body.get("action") for path, body in requests if path == "/api/transport"] == [
+        "pause", "resume", "volume", "volume", "stop"
+    ]
+    assert requests[3][1]["volume"] == 0.18
+    assert abs(speaker.cast.status.volume_level - 0.4) <= 0.001
+    assert result[-1][1] is True
+
+
+def test_live_cast_helper_retries_stop_and_skips_volume_raise_if_unconfirmed():
+    from types import SimpleNamespace
+
+    from scripts.test_live_cast import AcceptanceFailure, run_device_test
+
+    class Cast:
+        def __init__(self):
+            self.status = SimpleNamespace(volume_level=0.4)
+            self.socket_client = SimpleNamespace(is_connected=True)
+            self.media_controller = SimpleNamespace(
+                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+            )
+
+        def set_volume(self, value):
+            self.status.volume_level = value
+
+    speaker = SimpleNamespace(cast=Cast(), max_volume=0.85, is_group=False)
+    requests = []
+
+    def request(_url, path, body):
+        requests.append((path, body.copy()))
+        if path == "/api/command":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "pause":
+            speaker.cast.media_controller.status.player_state = "PAUSED"
+        elif body["action"] == "resume":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "volume":
+            speaker.cast.status.volume_level = body["volume"]
+        return 200
+
+    def wait(_speaker, _expected, **_kwargs):
+        return speaker.cast.media_controller.status.player_state
+
+    try:
+        run_device_test(
+            speaker=speaker, device_id="plex-jukebox:bedroom", query="private query",
+            base_url="http://bridge", max_volume=0.85, request=request, wait=wait,
+            sleep=lambda _delay: None,
+        )
+    except AcceptanceFailure as exc:
+        result = exc.results
+    else:
+        raise AssertionError("unconfirmed stop must fail acceptance")
+
+    stops = [body for path, body in requests if path == "/api/transport" and body["action"] == "stop"]
+    assert len(stops) == 2
+    assert ("cleanup_stop", 200, "PLAYING") in result
+    assert result[-1][1] == "skipped_stop_not_confirmed"
+    assert abs(speaker.cast.status.volume_level - 0.1) <= 0.001
+
+
+def test_dashboard_command_failure_log_does_not_include_private_query(monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from plex_cast_bridge import routes
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace()
+    app.state.cast = SimpleNamespace()
+    app.state.dj = SimpleNamespace()
+    app.include_router(routes.router)
+    monkeypatch.setattr(routes, "_require_plex", lambda _request: object())
+
+    def fail(**_kwargs):
+        raise RuntimeError("playback failed")
+
+    monkeypatch.setattr(routes, "play", fail)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/command", json={"query": "private listening query"})
+
+    assert response.status_code == 500
+    assert "private listening query" not in caplog.text

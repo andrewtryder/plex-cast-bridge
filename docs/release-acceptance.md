@@ -108,16 +108,32 @@ record the existing browser regression results and mark live browser acceptance
 
 The release collector is read-only. `scripts/test_live_cast.py` is the separate
 physical-device helper and refuses to run without `--allow-disruptive`, an exact
-Cast UUID, and a private known query. It also refuses to begin unless receiver
-state and volume are readable and playback is idle. It lowers volume only and
-tries to restore the original volume only while the same connection is
-reporting state. This helper performs a short playback/pause check; it does not
-test every transport or mute operation. Physical-device testing requires a
-person able to observe the receiver. Do not run against an active household
-session or a Cast Group. Record receiver state and volume before and after each
-operation; HTTP 200 alone is not evidence that the receiver changed state. Do
-not restore volume after a disconnect until the receiver has reconnected and
-reported its current state.
+Cast UUID, a private known query, and the base URL for the actual local
+dashboard API. It refuses to begin unless the exact receiver connection,
+initial volume, and idle state are readable; Cast Groups are excluded. It
+starts playback through `/api/command`, then uses `/api/transport` for pause,
+resume, bounded volume up/down, and stop. It checks receiver state after each
+request, retries stop during cleanup when the receiver does not confirm idle,
+and restores the original volume only after stop is receiver-confirmed and the
+same Cast connection still reports a readable volume. If stop remains
+unconfirmed, it leaves the safe test volume in place and reports that fact.
+Query text is not printed by the helper, and
+dashboard command failures no longer log the query. Mute/unmute is deliberately
+not exercised unless the deployed application and worker both support it.
+Physical-device testing requires a person able to observe the receiver. Do not
+run against an active household session or a Cast Group. HTTP 200 alone is not
+evidence that the receiver changed state. Do not restore volume after a
+disconnect until the receiver has reconnected and reported its current state.
+
+Example (only after confirming the receiver is idle and authorizing the
+disruptive test):
+
+```sh
+python3 scripts/test_live_cast.py --allow-disruptive \
+  --base-url http://127.0.0.1:8000 \
+  --device-uuid CAST_UUID_FROM_PRIVATE_BASELINE \
+  --query 'private known library query'
+```
 
 `scripts/test_voice_fulfillment.py` is a simulated Cloud Run EXECUTE request,
 not a Google Assistant voice-recognition test. It requires `--allow-disruptive`,
