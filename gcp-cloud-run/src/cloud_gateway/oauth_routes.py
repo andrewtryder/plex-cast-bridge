@@ -15,12 +15,13 @@ from starlette.concurrency import run_in_threadpool
 from .auth import (
     create_access_token,
     create_authorization_code,
+    create_exchange_refresh_token,
     validate_redirect_uri,
     verify_authorization_code,
 )
 from .config import Settings
 from .rate_limit import check_rate_limit, clear_attempts, record_failed_attempt
-from .refresh_tokens import validate_refresh_token
+from .refresh_tokens import RefreshTokenConflict, validate_refresh_token
 
 log = logging.getLogger("fulfillment")
 
@@ -252,7 +253,13 @@ async def oauth_token(
                 content={"error": "invalid_request", "error_description": "Missing authorization code"},
             )
         try:
-            verify_authorization_code(code, expected_cid, settings, redirect_uri)
+            authorization = verify_authorization_code(
+                code,
+                expected_cid,
+                settings,
+                redirect_uri,
+                refresh_token_factory=lambda jti: create_exchange_refresh_token(settings, jti),
+            )
         except HTTPException as exc:
             return JSONResponse(
                 status_code=exc.status_code,
@@ -262,17 +269,31 @@ async def oauth_token(
         token_store = getattr(request.app.state, "oauth_token_store", None)
         if token_store is None:
             return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
+        try:
+            durable_refresh_token = authorization["_exchange_refresh_token"]
+            if not durable_refresh_token:
+                raise RuntimeError("Authorization exchange did not produce a refresh token")
+            token_store.issue_for_code(
+                durable_refresh_token,
+                authorization["jti"],
+                authorization.get("exchange_order", authorization.get("exchange_issued_at_us", 0)),
+                allow_replace=not authorization["_exchange_replay"],
+            )
+        except RefreshTokenConflict as exc:
+            log.warning("Rejected stale OAuth authorization-code retry: %s", exc)
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_grant", "error_description": "Authorization code exchange is no longer active"},
+            )
+        except Exception:
+            log.exception("Could not persist Google Home refresh token")
+            return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
         if catalog_store is not None:
             try:
                 catalog_store.set_linked(True)
             except Exception:
                 log.exception("Could not persist account link")
                 return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
-        try:
-            durable_refresh_token = token_store.issue()
-        except Exception:
-            log.exception("Could not persist Google Home refresh token")
-            return JSONResponse(status_code=503, content={"error": "temporarily_unavailable"})
         access_token, expires_in = create_access_token(settings)
         token_data = {
             "token_type": "Bearer",

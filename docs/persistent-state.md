@@ -1,8 +1,31 @@
 # Persistent state and upgrades
 
-A routine code or container upgrade should not require a new Google Home link. Preserve the existing local `data/` directory, `.env`, and Google subscriber credential file, and keep the existing Cloud Run service configuration, OAuth signing secret and client credentials, Firestore data, and catalog bucket. Deploy an image to the existing service without replacing its environment. Do not rerun first-install provisioning as an upgrade. New refresh tokens have no fixed expiry and are revocable through persistent Firestore state. A valid legacy JWT is migrated by hash on first use; that exact token can then remain valid past its embedded expiry. Access-token expiry validation remains enabled. Relinking should only be needed for an explicit unlink/revocation, credential change, or unrelated Google Home account problem.
+A routine code or container upgrade should not require a new Google Home link. Preserve the existing local `data/` directory, `.env`, and Google subscriber credential file, and keep the existing Cloud Run service configuration, OAuth signing secret and client credentials, Firestore data, and catalog bucket. Deploy an image to the existing service without replacing its environment. Do not rerun first-install provisioning as an upgrade. New refresh tokens have no fixed expiry and are revocable through persistent Firestore state. A valid legacy JWT is migrated by hash on first use; that exact token can then remain valid past its embedded expiry. Access-token expiry validation remains enabled. Authorization-code exchanges are retry-safe for the same signed code during its short validity window: if a response is lost after persistence, retrying returns the same opaque token, while an older code cannot replace a newer exchange. A transactionally allocated Firestore order prevents Cloud Run instance clock skew from reversing authorization-code order. Firestore stores only a hash of the active refresh token. Relinking should only be needed for an explicit unlink/revocation, credential change, or unrelated Google Home account problem.
 
-For Cloud Run code releases, use `python scripts/cloud_run_upgrade.py` with the existing project, region, service, and a digest-pinned image. Run it once without `--apply` to inspect the identity and protected-setting fingerprints; after review, repeat with `--apply`. The helper changes only the image and verifies the same configuration fingerprint afterward. For LXC, use `scripts/proxmox_upgrade.sh`; it backs up state and checks a protected configuration fingerprint after replacement. Keep the previous digest and backup until health and Request Sync are confirmed.
+### Confirm the first live refresh migration
+
+Do not relink or exchange a new authorization code just to test this migration. Google performs refreshes when needed; the bridge cannot safely force one without the refresh token held by Google. After a natural refresh, inspect only the Firestore metadata (never print or copy the token hash):
+
+```bash
+PROJECT_ID=your-existing-gcp-project-id uv run python - <<'PY'
+import os
+from google.cloud import firestore
+
+doc = firestore.Client(project=os.environ["PROJECT_ID"]).collection("plex_cast_bridge").document("oauth_refresh_state").get()
+state = doc.to_dict() if doc.exists else {}
+active = bool(state.get("token_hash")) and not state.get("revoked_at")
+print({
+    "record_exists": doc.exists,
+    "active": active,
+    "token_format": state.get("token_format"),
+    "created_at": state.get("created_at"),
+})
+PY
+```
+
+If the document is absent, no successful refresh migration has been recorded; keep the existing Home link and check again after Google next refreshes. An active `legacy-jwt` record with a hash confirms the old token was migrated. An active `opaque-v1` record confirms a newer authorization-code exchange instead, so it does not by itself prove legacy-token migration. Do not share the full Firestore document or token hash.
+
+For Cloud Run code releases, use `uv run python scripts/cloud_run_upgrade.py` with the existing project, region, service, a digest-pinned image, and a new private `--preflight-file` path. Review the preflight output, then pass the same manifest path to a later `--apply` command. The apply refuses to deploy if the project, service, target image, current image, protected configuration, traffic assignment, or Firestore link identity changed after review. It checks the link flag, epoch, `agentUserId`, catalog version, and catalog content digest before and after the image update and traffic switch. The candidate revision is created with no traffic; only after it is ready and the configuration and link state still match does the helper route 100% of traffic and existing tags to it. Split/canary traffic fails closed for a manual rollout decision. The file contains a local HMAC key and hashes, not plaintext environment values; keep it private and remove it after validation. For LXC, use `scripts/proxmox_upgrade.sh`; it backs up state and checks a protected configuration fingerprint after replacement. Keep the previous digest and backup until health and Request Sync are confirmed.
 
 There is no automatic OAuth credential-rotation operation. If rotation is ever required, treat it as a separately reviewed migration: preserve the current signing and Google client credentials until a replacement link/token is confirmed, then explicitly revoke the old credential. Never rotate credentials as a side effect of provisioning or an image upgrade.
 

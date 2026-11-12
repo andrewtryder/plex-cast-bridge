@@ -129,6 +129,21 @@ def test_existing_gateway_detection_survives_missing_or_reset_wizard_state(wizar
     assert reset["link_confirmed"] is None
 
 
+def test_partial_gateway_state_without_url_fails_into_recovery(wizard_env):
+    from plex_cast_bridge import catalog_sync
+
+    # The local URL can be lost independently of the remote Home link. A key or
+    # prior sync version is enough to keep first-time provisioning disabled.
+    catalog_sync.save_sync_state({
+        "version": 4,
+        "cloud_gateway_url": None,
+        "catalog_write_key": "test-key-only",
+        "last_push_status": "idle",
+    })
+    assert setup.detect_installation_operation() == "existing_installation_recovery"
+    assert setup.public_status()["installation_detected"] is True
+
+
 def test_existing_gateway_blocks_provision_preview_and_execution(wizard_env):
     from plex_cast_bridge import catalog_sync
 

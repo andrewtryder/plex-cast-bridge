@@ -73,19 +73,23 @@ uv run uvicorn cloud_gateway.main:app --host 127.0.0.1 --port 8080 --reload
 
 ## Deploying to GCP Cloud Run
 
-For an existing service, use the image-only helper. It snapshots hashes of protected settings, verifies the project/service identity, requires an immutable image digest, updates only the image, and compares the protected configuration fingerprints afterward. It never sets environment variables or IAM:
+For an existing service, use the image-only helper. It requires an immutable image digest and a private preflight manifest. The first command records the reviewed project, service, current image, keyed fingerprints of protected settings, Firestore link identity (`linked`, link epoch, `agentUserId`, catalog version, and catalog content digest), and traffic routing. The apply command uses that same manifest and refuses to deploy if any of those values changed since review. It creates the candidate revision with no traffic, waits for it to become ready, rechecks configuration and link state, then routes 100% of traffic and existing tags to it. It refuses split or canary traffic because it cannot infer the intended rollout plan. It never sets environment variables or IAM:
 
 ```bash
-python scripts/cloud_run_upgrade.py \
+uv run python scripts/cloud_run_upgrade.py \
   --project <existing-project-id> \
   --region <existing-region> \
   --service <existing-service> \
-  --image <tested-image@sha256:digest>       # read-only preflight
+  --image <tested-image@sha256:digest> \
+  --preflight-file /private/path/cloud-run-preflight.json # read-only preflight
 
-# After review and approval, repeat the exact command with --apply.
+# Review the printed identity/fingerprints, then repeat with the same arguments plus:
+#   --apply
 ```
 
-See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. Cloud Run stores only a hash of the active refresh token in Firestore; new refresh tokens are opaque and revocable. Existing signed tokens are migrated on their first valid refresh and kept active by their hash without globally disabling JWT expiration checks. Keep the gateway linked state and stable `agentUserId` unchanged. Normal code and image updates should not require relinking.
+The preflight file is created with mode `0600`; it contains a local HMAC key and fingerprints, not plaintext environment values. Do not commit or share it. Keep it through deployment validation, then remove it. Retain the previous image digest and revision until health and Request Sync are confirmed. For rollback, restore the old image and route traffic (including tags) back to the recorded ready revision, then verify health and link state.
+
+See [persistent state and upgrades](../docs/persistent-state.md) for the local and cloud storage paths. Keep the existing `OAUTH_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, project, service, Firestore and catalog bucket. Changing these can invalidate the link or its tokens. Cloud Run stores only a hash of the active refresh token in Firestore; new refresh tokens are opaque and revocable. Authorization-code exchange retries return the same token after an ambiguous persistence response, and stale codes cannot replace a newer token. Exchange order is allocated transactionally in Firestore so skewed instance clocks cannot reverse it. Existing signed tokens are migrated on their first valid refresh and kept active by their hash without globally disabling JWT expiration checks. Keep the gateway linked state and stable `agentUserId` unchanged. Normal code and image updates should not require relinking.
 
 `./gcp-cloud-run/deploy.sh` is a **first-time provisioning tool only**. It refuses to deploy when the Cloud Run service already exists and verifies `.env` project identity before enabling APIs, creating resources, IAM changes, or setting environment variables. Never use it for an upgrade or existing-installation recovery. The wizard likewise disables provisioning and secret minting when persistent gateway configuration is detected.
 
