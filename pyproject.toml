@@ -1,6 +1,6 @@
 [project]
 name = "plex-cast-bridge"
-version = "0.2.2"
+version = "0.2.3"
 description = "Personal Google Home Cloud-to-Cloud Integration, Gemini-Powered Smart DJ, and Continuous Plex Radio for Google Cast"
 requires-python = ">=3.12"
 dependencies = [
