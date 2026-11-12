@@ -229,13 +229,35 @@ def test_backup_inventory_requires_all_files_archive_and_cached_image(tmp_path: 
 
     class Completed:
         returncode = 0
+        stdout = ""
 
-    monkeypatch.setattr(acceptance.subprocess, "run", lambda *a, **kw: Completed())
+    archive_members = ["data/", "data/google_home_sync.json"]
+
+    def fake_run(argv, **_kwargs):
+        result = Completed()
+        if argv[0] == "tar":
+            result.stdout = "\n".join(archive_members)
+        return result
+
+    monkeypatch.setattr(acceptance.subprocess, "run", fake_run)
     result = acceptance._backup_capture(tmp_path / "backups")
     assert result["rollback_ready"] is True
     assert result["data_archive_valid"] is True
+    assert result["data_archive_contains_data"] is True
     assert result["previous_image_cached"] is True
 
+    archive_members[:] = ["unrelated/file"]
+    result = acceptance._backup_capture(tmp_path / "backups")
+    assert result["data_archive_valid"] is True
+    assert result["data_archive_contains_data"] is False
+    assert result["rollback_ready"] is False
+
+    archive_members[:] = ["data/", "data/google_home_sync.json"]
+    (backup / ".env").write_text("")
+    result = acceptance._backup_capture(tmp_path / "backups")
+    assert result["rollback_ready"] is False
+
+    (backup / ".env").write_text("placeholder")
     (backup / "gcp-credentials.json").unlink()
     result = acceptance._backup_capture(tmp_path / "backups")
     assert result["rollback_ready"] is False

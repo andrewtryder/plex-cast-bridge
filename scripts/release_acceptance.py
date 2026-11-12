@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -510,22 +510,42 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
     except (OSError, subprocess.TimeoutExpired):
         image_cached = False
     archive_valid = False
+    archive_contains_data = False
     if present["data.tgz"]:
         try:
-            archive_valid = subprocess.run(
-                ["tar", "-tzf", str(latest / "data.tgz")], capture_output=True, check=False, timeout=60
-            ).returncode == 0
+            archive_result = subprocess.run(
+                ["tar", "-tzf", str(latest / "data.tgz")],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            archive_valid = archive_result.returncode == 0
+            archive_contains_data = archive_valid and any(
+                PurePosixPath(member).parts[:1] == ("data",)
+                for member in archive_result.stdout.splitlines()
+            )
         except (OSError, subprocess.TimeoutExpired):
             archive_valid = False
-    required_present = all(present[name] for name in ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json"))
+    required_names = ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json", "previous_image_digest.txt")
+    required_nonempty = {
+        name: bool(present.get(name) and (latest / name).stat().st_size > 0)
+        for name in required_names
+    }
+    required_present = all(present[name] for name in required_names)
     return {
         "configured": True,
         "available": True,
         "backup_directory": str(latest),
         "files": present,
+        "required_nonempty_files": required_nonempty,
         "data_archive_valid": archive_valid,
+        "data_archive_contains_data": archive_contains_data,
         "previous_image_cached": image_cached,
-        "rollback_ready": required_present and archive_valid and image_cached,
+        "rollback_ready": (
+            required_present and all(required_nonempty.values())
+            and archive_valid and archive_contains_data and image_cached
+        ),
     }
 
 

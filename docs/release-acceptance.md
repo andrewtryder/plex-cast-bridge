@@ -56,7 +56,10 @@ Before replacing an image, independently verify that the existing backup contain
 `data/`, `.env`, Compose configuration, and the separate Google subscriber
 credential file. Record the previous image digest and perform the documented
 rollback procedure in a disposable validation window. A file count alone is not
-proof that a backup is restorable.
+proof that a backup is restorable. The collector marks rollback preflight ready
+only when the data archive is readable and contains a `data/` entry, required
+config and credential files are nonempty, and the previous image is cached.
+This still does not prove that an actual restore succeeds.
 
 ## After an image upgrade
 
