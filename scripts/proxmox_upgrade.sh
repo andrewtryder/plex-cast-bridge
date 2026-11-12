@@ -8,6 +8,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-$APP_DIR/deploy/docker-compose.yml}"
 BACKUP_ROOT="${BACKUP_ROOT:-$APP_DIR/backups}"
 SERVICE_NAME="${SERVICE_NAME:-plex-cast-bridge}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
+PULL_TARGET_IMAGE="${PULL_TARGET_IMAGE:-1}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 DIAG_URL="${DIAG_URL:-http://127.0.0.1:8000/api/diagnostics}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -278,8 +279,23 @@ if [[ -z "$INTENDED_IMAGE" ]]; then
   INTENDED_IMAGE="ghcr.io/andrewtryder/plex-cast-bridge:latest"
 fi
 
-echo "Explicitly pulling intended published image: $INTENDED_IMAGE…"
-docker pull "$INTENDED_IMAGE"
+case "$PULL_TARGET_IMAGE" in
+  1)
+    echo "Explicitly pulling intended published image: $INTENDED_IMAGE…"
+    docker pull "$INTENDED_IMAGE"
+    ;;
+  0)
+    echo "Using explicitly selected local test image: $INTENDED_IMAGE"
+    docker image inspect "$INTENDED_IMAGE" >/dev/null || {
+      echo "ERROR: selected local image is not available: $INTENDED_IMAGE" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "ERROR: PULL_TARGET_IMAGE must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
 
 # If an explicit tag was supplied that differs from compose image, tag it to match
 if [[ -n "$COMPOSE_IMAGE" && "$INTENDED_IMAGE" != "$COMPOSE_IMAGE" ]]; then
