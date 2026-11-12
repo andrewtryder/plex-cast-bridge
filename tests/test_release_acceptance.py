@@ -373,6 +373,90 @@ def test_live_cast_helper_retries_stop_and_skips_volume_raise_if_unconfirmed():
     assert abs(speaker.cast.status.volume_level - 0.1) <= 0.001
 
 
+def test_live_cast_helper_refuses_groups_before_sending_commands():
+    from types import SimpleNamespace
+
+    from scripts.test_live_cast import AcceptanceFailure, run_device_test
+
+    speaker = SimpleNamespace(
+        cast=SimpleNamespace(
+            status=SimpleNamespace(volume_level=0.4),
+            socket_client=SimpleNamespace(is_connected=True),
+            media_controller=SimpleNamespace(
+                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+            ),
+        ),
+        max_volume=0.85,
+        is_group=True,
+    )
+    requests = []
+    try:
+        run_device_test(
+            speaker=speaker, device_id="plex-jukebox:Home", query="private query",
+            base_url="http://bridge", max_volume=0.85,
+            request=lambda *args: requests.append(args),
+        )
+    except AcceptanceFailure as exc:
+        assert "Cast Groups" in str(exc)
+    else:
+        raise AssertionError("Cast Group must be refused")
+    assert requests == []
+
+
+def test_live_cast_helper_never_restores_volume_after_disconnect():
+    from types import SimpleNamespace
+
+    from scripts.test_live_cast import AcceptanceFailure, run_device_test
+
+    class Cast:
+        def __init__(self):
+            self.status = SimpleNamespace(volume_level=0.4)
+            self.socket_client = SimpleNamespace(is_connected=True)
+            self.media_controller = SimpleNamespace(
+                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+            )
+
+        def set_volume(self, value):
+            self.status.volume_level = value
+
+    speaker = SimpleNamespace(cast=Cast(), max_volume=0.85, is_group=False)
+    requests = []
+
+    def request(_url, path, body):
+        requests.append((path, body.copy()))
+        if path == "/api/command":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "pause":
+            speaker.cast.media_controller.status.player_state = "PAUSED"
+        elif body["action"] == "resume":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "volume":
+            speaker.cast.status.volume_level = body["volume"]
+        elif body["action"] == "stop":
+            speaker.cast.socket_client.is_connected = False
+        return 200
+
+    def wait(_speaker, expected, **_kwargs):
+        if not speaker.cast.socket_client.is_connected:
+            return "DISCONNECTED"
+        state = speaker.cast.media_controller.status.player_state
+        return state if state in expected else "UNKNOWN"
+
+    try:
+        run_device_test(
+            speaker=speaker, device_id="plex-jukebox:bedroom", query="private query",
+            base_url="http://bridge", max_volume=0.85, request=request, wait=wait,
+            sleep=lambda _delay: None,
+        )
+    except AcceptanceFailure as exc:
+        result = exc.results
+    else:
+        raise AssertionError("disconnected receiver must fail acceptance")
+
+    assert result[-1] == ("restore_volume", "skipped_connection_or_volume_unreadable")
+    assert abs(speaker.cast.status.volume_level - 0.1) <= 0.001
+
+
 def test_live_cast_dashboard_request_uses_optional_api_key_header(monkeypatch):
     from scripts import test_live_cast
 
