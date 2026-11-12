@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import os
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -22,10 +23,14 @@ class AcceptanceFailure(RuntimeError):
 def dashboard_request(base_url: str, path: str, body: dict, timeout: float = 90) -> int:
     """Submit a dashboard API request without logging its private body."""
     payload = json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("API_KEY")
+    if api_key:
+        headers["X-API-Key"] = api_key
     request = Request(
         f"{base_url.rstrip('/')}{path}",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

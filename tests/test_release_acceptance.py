@@ -373,6 +373,36 @@ def test_live_cast_helper_retries_stop_and_skips_volume_raise_if_unconfirmed():
     assert abs(speaker.cast.status.volume_level - 0.1) <= 0.001
 
 
+def test_live_cast_dashboard_request_uses_optional_api_key_header(monkeypatch):
+    from scripts import test_live_cast
+
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"{}"
+
+    def open_url(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setenv("API_KEY", "private-api-key")
+    monkeypatch.setattr(test_live_cast, "urlopen", open_url)
+
+    assert test_live_cast.dashboard_request("http://bridge", "/api/transport", {"action": "stop"}) == 200
+    assert captured["request"].get_header("X-api-key") == "private-api-key"
+    assert "private-api-key" not in repr(captured["request"].data)
+
+
 def test_dashboard_command_failure_log_does_not_include_private_query(monkeypatch, caplog):
     from types import SimpleNamespace
 

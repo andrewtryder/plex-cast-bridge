@@ -111,6 +111,8 @@ physical-device helper and refuses to run without `--allow-disruptive`, an exact
 Cast UUID, a private known query, and the base URL for the actual local
 dashboard API. It refuses to begin unless the exact receiver connection,
 initial volume, and idle state are readable; Cast Groups are excluded. It
+reads an optional `API_KEY` from the environment and sends it only in the
+`X-API-Key` header.
 starts playback through `/api/command`, then uses `/api/transport` for pause,
 resume, bounded volume up/down, and stop. It checks receiver state after each
 request, retries stop during cleanup when the receiver does not confirm idle,
