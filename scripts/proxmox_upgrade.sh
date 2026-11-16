@@ -16,6 +16,7 @@ VERIFY_ROLLBACK="${VERIFY_ROLLBACK:-1}"
 CONFIG_HMAC_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
 ACTION="${1:-upgrade}"
+DRIFT_MODULE="$APP_DIR/src/plex_cast_bridge/config_drift.py"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -159,6 +160,20 @@ rollback() {
   echo "Rollback attempted using $target_backup." >&2
 }
 
+# Run the candidate diagnostic in the existing container, including on older images.
+# Source arrives on stdin; the running container supplies its actual environment and /data.
+configuration_drift() {
+  [[ -r "$DRIFT_MODULE" ]] || { echo "ERROR: configuration diagnostic source unavailable: $DRIFT_MODULE" >&2; return 1; }
+  docker compose -f "$COMPOSE_FILE" exec -T "$SERVICE_NAME" python -c \
+    'import sys; __package__="plex_cast_bridge"; exec(compile(sys.stdin.read(), "config_drift.py", "exec"))' < "$DRIFT_MODULE"
+}
+
+if [[ "$ACTION" == "config-preflight" ]]; then
+  require docker
+  configuration_drift
+  exit $?
+fi
+
 if [[ "$ACTION" == "rollback" ]]; then
   require docker
   require tar
@@ -216,7 +231,19 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
   exit 1
 fi
 
+# Review before any backup, pull, or container recreation. The report contains no values.
+DRIFT_BEFORE="$(configuration_drift)" || { echo "ERROR: configuration preflight unavailable; upgrade stopped." >&2; exit 1; }
+printf '%s\n' "$DRIFT_BEFORE"
+if printf '%s' "$DRIFT_BEFORE" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["release_preflight_warnings"] else 1)'; then
+  echo "WARNING: gateway configuration conflicts require review before upgrade." >&2
+  if [[ "${ACK_CONFIG_DRIFT:-0}" != "1" ]]; then
+    echo "Review config-preflight, then set ACK_CONFIG_DRIFT=1 to acknowledge the warning." >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$BACKUP_DIR"
+printf '%s\n' "$DRIFT_BEFORE" > "$BACKUP_DIR/config_drift_before.json"
 
 echo "Capturing current image id and digest…"
 PREV_IMAGE=""
@@ -328,6 +355,13 @@ if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
   exit 2
 fi
 echo "Protected configuration fingerprint verified after upgrade."
+if configuration_drift > "$BACKUP_DIR/config_drift_after.json"; then
+  echo "Post-upgrade configuration report: $BACKUP_DIR/config_drift_after.json"
+  cat "$BACKUP_DIR/config_drift_after.json"
+else
+  rm -f "$BACKUP_DIR/config_drift_after.json"
+  echo "WARNING: post-upgrade configuration diagnostic unavailable; review manually." >&2
+fi
 
 echo "Layered check: diagnostics (non-secret)…"
 diag_ok=1

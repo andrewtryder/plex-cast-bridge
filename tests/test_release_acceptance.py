@@ -590,3 +590,23 @@ def test_dashboard_command_failure_log_does_not_include_private_query(monkeypatc
 
     assert response.status_code == 500
     assert "private listening query" not in caplog.text
+
+
+def test_configuration_drift_capture_runs_in_container_and_redacts_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"release_preflight_warnings":["catalog_write_key"]}')
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    result = acceptance._configuration_drift_capture("bridge")
+    assert result["available"] is True
+    assert result["report"]["release_preflight_warnings"] == ["catalog_write_key"]
+    assert calls[0][0][:4] == ["docker", "exec", "-i", "bridge"]
+    assert "def diagnose" in calls[0][1]["input"]
+
+    monkeypatch.setattr(acceptance.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="secret"))
+    assert acceptance._configuration_drift_capture("bridge") == {"available": False}

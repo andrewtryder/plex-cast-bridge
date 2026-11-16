@@ -283,6 +283,25 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
     return results
 
 
+def _configuration_drift_capture(container: str) -> dict[str, Any]:
+    """Run this checkout's diagnostic in the existing container, including old images."""
+    source = Path(__file__).resolve().parents[1] / "src/plex_cast_bridge/config_drift.py"
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "-i", container, "python", "-c",
+             'import sys; __package__="plex_cast_bridge"; exec(compile(sys.stdin.read(), "config_drift.py", "exec"))'],
+            input=source.read_text(encoding="utf-8"), capture_output=True, text=True, timeout=25, check=False,
+        )
+        if proc.returncode:
+            return {"available": False}
+        report = json.loads(proc.stdout)
+        if not isinstance(report, dict) or not isinstance(report.get("release_preflight_warnings"), list):
+            return {"available": False}
+        return {"available": True, "report": report}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"available": False}
+
+
 def _container_capture(container: str, key: bytes) -> dict[str, Any] | None:
     raw = _run_json(["docker", "inspect", container])
     if not raw:
@@ -570,6 +589,7 @@ def capture(args: argparse.Namespace) -> dict[str, Any]:
         "captured_at": datetime.now(UTC).isoformat(),
         "local": {
             "docker": docker,
+            "configuration_drift": _configuration_drift_capture(args.container),
             "protected_config_fingerprints": _protected_fingerprints(key, env_values),
             "compose_config_fingerprint": compose_fingerprint,
             "google_home_sync_state": sync_state,
@@ -829,6 +849,10 @@ def main(argv: list[str] | None = None) -> int:
                 path: value.get("http_status")
                 for path, value in result["report"]["api"].items()
                 if isinstance(value, dict) and "http_status" in value
+            },
+            "configuration_drift": {
+                "available": result["report"]["local"]["configuration_drift"]["available"],
+                "release_preflight_warnings": result["report"]["local"]["configuration_drift"].get("report", {}).get("release_preflight_warnings", []),
             },
             "speaker_count": len(result["report"]["api"].get("speakers", [])),
             "google_home_linked": result["report"]["api"].get("google_home", {}).get("cloud_linked"),
