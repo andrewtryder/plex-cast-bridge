@@ -345,6 +345,10 @@ fi
 python3 "$SCRIPT_DIR/upgrade_backup.py" create "$DATA_SOURCE" "$BACKUP_DIR/data.tgz" --writers-stopped
 python3 "$SCRIPT_DIR/upgrade_backup.py" verify "$BACKUP_DIR/data.tgz"
 echo "Restored and verified an isolated copy of the quiesced data backup."
+python3 "$SCRIPT_DIR/upgrade.py" check-backup --plan-file "$PCB_REVIEW_PLAN" --backup-dir "$BACKUP_DIR" --container "$cid" || {
+  echo "ERROR: quiesced backup differs from the reviewed plan; the original container will be restarted." >&2
+  exit 1
+}
 
 # Back up .env
 if [[ -f "$APP_DIR/.env" ]]; then

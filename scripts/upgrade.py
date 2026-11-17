@@ -11,13 +11,15 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from upgrade_mounts import resolve_data_mount
+from upgrade_mounts import assert_no_other_writers, resolve_data_mount
 from release_acceptance import PROTECTED_ENV_KEYS, _configuration_drift_capture, _catalog_snapshot_capture
 from upgrade_inputs import create_inputs_backup, verify_inputs_backup
-from upgrade_backup import restored_tree, verify as verify_backup
+from upgrade_backup import _files as backup_files, restored_tree, verify as verify_backup
+from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
 def docker(*args: str) -> str:
@@ -84,9 +86,59 @@ def _configuration_inputs(files: list[Path], unresolved: dict[str, Any], environ
     return _read_recorded_inputs(sorted(str(path.resolve()) for path in paths))
 
 
-def _require_backed_mounts(container: dict[str, Any], data_dir: str) -> None:
+def _container_file_matches(container_id: str, container_path: str, host_path: Path) -> bool:
+    """Catch bind-mounted files whose host pathname now names a different inode."""
+    if ":" in container_path:
+        raise ValueError("Catalog mount path requires manual review")
+    with tempfile.TemporaryDirectory(prefix="pcb-mount-check-") as temp:
+        copied = Path(temp) / "catalog"
+        docker("cp", f"{container_id}:{container_path}", str(copied))
+        return hmac.compare_digest(hashlib.sha256(copied.read_bytes()).digest(),
+                                   hashlib.sha256(host_path.read_bytes()).digest())
+
+
+def _resolve_catalog(data_dir: str, catalog_path: str | None, workdir: str,
+                     mounts: list[dict[str, Any]]) -> tuple[Path | None, Path | None, str | None]:
+    try:
+        return _catalog_relative(data_dir, catalog_path, workdir), None, None
+    except ValueError:
+        if not catalog_path:
+            raise
+        target = PurePosixPath(catalog_path)
+        if not target.is_absolute():
+            target = PurePosixPath(workdir) / target
+        if ".." in target.parts:
+            raise ValueError("Custom catalog paths containing parent traversal require manual review")
+        matches = [mount for mount in mounts if mount.get("Destination") == str(target) and mount.get("Type") == "bind"]
+        if len(matches) != 1 or not matches[0].get("Source"):
+            raise ValueError("External catalog must be an individually mounted file; manual backup is required")
+        source = Path(matches[0]["Source"]).resolve()
+        if not source.is_file():
+            raise ValueError("External catalog mount is not an accessible file")
+        return None, source, str(target)
+
+
+def _read_persistent_files(root: Path, catalog_relative: Path | None) -> dict[str, str | None]:
+    files = {}
+    for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "plex_device_private.pem", "plex_device_public.pem"):
+        if name == "catalog.json" and catalog_relative is None:
+            files[name] = None
+            continue
+        path = root / (catalog_relative if name == "catalog.json" else name)
+        try:
+            files[name] = path.read_bytes().hex()
+        except FileNotFoundError:
+            files[name] = None
+        except OSError as exc:
+            raise RuntimeError("A persistent configuration file is not readable") from exc
+    return files
+
+
+def _require_backed_mounts(container: dict[str, Any], data_dir: str, catalog_dest: str | None = None) -> None:
     writable = [mount for mount in container.get("Mounts") or [] if mount.get("RW")]
-    if len(writable) != 1 or writable[0].get("Destination") != data_dir:
+    if not any(mount.get("Destination") == data_dir for mount in writable) or any(
+        mount.get("Destination") not in (data_dir, catalog_dest) for mount in writable
+    ):
         raise ValueError("Additional or parent writable mounts need backup review before upgrading")
 
 
@@ -113,11 +165,18 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     container = json.loads(docker("inspect", ids[0]))[0]
     if not (container.get("State") or {}).get("Running"):
         raise ValueError("The bridge container is not running")
-    data_dir = docker("exec", ids[0], "python", "-c", "from plex_cast_bridge.catalog_store import DATA_DIR; print(DATA_DIR)").strip()
+    data_dir = str(PurePosixPath(docker("exec", ids[0], "python", "-c", "from plex_cast_bridge.catalog_store import DATA_DIR; print(DATA_DIR)").strip()))
     running = [cid for cid in docker("ps", "-q").split() if not container["Id"].startswith(cid)]
     others = json.loads(docker("inspect", *running)) if running else []
     data_source = resolve_data_mount(container, others, data_dir)
-    _require_backed_mounts(container, data_dir)
+    env = dict(item.split("=", 1) for item in (container.get("Config") or {}).get("Env", []) if "=" in item)
+    catalog_relative, catalog_external, catalog_dest = _resolve_catalog(
+        data_dir, env.get("CATALOG_PATH"), (container.get("Config") or {}).get("WorkingDir") or "/", container.get("Mounts") or [])
+    _require_backed_mounts(container, data_dir, catalog_dest)
+    if catalog_external:
+        assert_no_other_writers(catalog_external, others)
+        if not _container_file_matches(ids[0], catalog_dest, catalog_external):
+            raise ValueError("Container and host external catalog differ; manual review is required")
     image_info = json.loads(docker("image", "inspect", container["Image"]))[0]
     drift = _configuration_drift_capture(ids[0])
     catalog = _catalog_snapshot_capture(ids[0])
@@ -128,18 +187,13 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     identity = {name: container.get(name) for name in ("Id", "Image", "Config", "HostConfig", "Mounts")}
     # Configuration is retained only in memory and included in a keyed combined
     # comparison; no individual credential values or hashes are printed.
-    env = dict(item.split("=", 1) for item in (container.get("Config") or {}).get("Env", []) if "=" in item)
-    catalog_relative = _catalog_relative(data_dir, env.get("CATALOG_PATH"),
-                                         (container.get("Config") or {}).get("WorkingDir") or "/")
-    protected_files = {}
-    for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "plex_device_private.pem", "plex_device_public.pem"):
-        path = data_source / (catalog_relative if name == "catalog.json" else name)
-        try:
-            protected_files[name] = path.read_bytes().hex()
-        except FileNotFoundError:
-            protected_files[name] = None
-        except OSError as exc:
-            raise RuntimeError("A persistent configuration file is not readable") from exc
+    protected_files = _read_persistent_files(data_source, catalog_relative)
+    if catalog_external:
+        protected_files["catalog.json"] = catalog_external.read_bytes().hex()
+        inputs[str(catalog_external)] = protected_files["catalog.json"]
+    if protected_files["catalog.json"] is None and catalog["speakers"]:
+        raise ValueError("Existing speaker identities are in a non-persistent seed catalog; manual backup is required")
+    credential_source = None
     credentials = env.get("GOOGLE_APPLICATION_CREDENTIALS", "")
     if credentials:
         target = PurePosixPath(credentials)
@@ -150,8 +204,11 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
         chosen = max(candidates, key=lambda item: len(PurePosixPath(item["Destination"]).parts))
         path = Path(chosen["Source"]) / str(target.relative_to(PurePosixPath(chosen["Destination"])))
         try:
+            if not _container_file_matches(ids[0], str(target), path):
+                raise ValueError("Container and host subscriber credentials differ; manual review is required")
             protected_files["subscriber_credentials"] = path.read_bytes().hex()
-            inputs[str(path.resolve())] = protected_files["subscriber_credentials"]
+            credential_source = str(path.resolve())
+            inputs[credential_source] = protected_files["subscriber_credentials"]
         except OSError as exc:
             raise RuntimeError("The mounted subscriber credential file cannot be read") from exc
     return {"compose": str(files[0]), "compose_files": [str(path) for path in files], "service": service, "compose_image": image,
@@ -162,6 +219,9 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
             "mounts": [{name: mount.get(name) for name in ("Type", "Name", "Source", "Destination", "RW")}
                        for mount in container.get("Mounts") or []],
             "subscriber_credentials": "mounted" if credentials else "not configured",
+            "credential_source": credential_source, "credential_container_path": credentials or None, "catalog_relative": str(catalog_relative) if catalog_relative is not None else None,
+            "catalog_external_source": str(catalog_external) if catalog_external else None,
+            "catalog_container_path": catalog_dest,
             "configuration_input_paths": sorted(inputs),
             "music_index_present": (data_source / "music_index.sqlite3").exists(),
             "_protected": {"compose": config, "inputs": inputs, "container": identity, "files": protected_files,
@@ -232,6 +292,23 @@ def _persistent_identity(files: dict[str, str | None]) -> dict[str, Any]:
             "public_key": files.get("plex_device_public.pem"), "subscriber_credentials": files.get("subscriber_credentials")}
 
 
+def _quiesced_credentials(files: dict[str, str | None]) -> dict[str, Any]:
+    values = {}
+    for name, keys in (("plex_connection.json", ("jwt_token", "access_token")),
+                       ("google_home_sync.json", ("catalog_write_key",))):
+        raw = files.get(name)
+        try:
+            data = json.loads(bytes.fromhex(raw)) if raw is not None else None
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("A credential store is invalid") from exc
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("A credential store is invalid")
+        values[name] = None if data is None else {key: data.get(key) for key in keys}
+    for name in ("plex_device_private.pem", "plex_device_public.pem", "subscriber_credentials"):
+        values[name] = files.get(name)
+    return values
+
+
 def _mount_signature(container: dict[str, Any], key: bytes) -> str:
     mounts = [{name: mount.get(name) for name in ("Type", "Name", "Source", "Destination", "RW")}
               for mount in container.get("Mounts") or []]
@@ -253,6 +330,7 @@ def _verification_signatures(state: dict[str, Any], key: bytes) -> dict[str, str
                                                 "selected_catalog": protected.get("catalog_snapshot")}, key),
             "compose_configuration": _signature({"rendered": protected["compose"], "inputs": protected.get("inputs", {})}, key),
             "runtime_configuration": _signature(runtime, key),
+            "quiesced_credentials": _signature(_quiesced_credentials(protected["files"]), key),
             "mounts": _mount_signature(container, key)}
 
 
@@ -323,7 +401,7 @@ def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
             "actions": ["Pull the reviewed image before stopping the bridge", "Stop the bridge and verify an isolated backup restore",
                         "Replace the local image and check health", "Verify persistent state against the captured baseline"],
             "review": (["Gateway environment conflicts require review before upgrade."] if state["configuration_drift"]["warnings"] else []) + [
-                       "Other host processes must not write the data directory during backup.",
+                       "Other processes and containers must not write the data or catalog until replacement completes.",
                        "Cloud Run is separate and will not be deployed.",
                        "Apply is experimental; review all actions and keep the backup until verification completes."]}
 
@@ -359,6 +437,73 @@ def check_plan_file(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": content.get("target"), "installation": saved, "backup_dir": content.get("backup_dir")}, key))):
         raise ValueError("Reviewed plan no longer matches the installation; create a new plan")
     return content, state
+
+
+def check_quiesced_backup(plan_path: Path, backup_dir: Path, container_id: str) -> None:
+    """Check the stopped container and verified backup against the reviewed baseline."""
+    content = load_plan(plan_path)
+    saved = content["installation"]
+    if backup_dir.resolve() != Path(content["backup_dir"]).resolve():
+        raise ValueError("Backup location does not match the reviewed plan")
+    if not saved["container_id"].startswith(container_id):
+        raise ValueError("Stopped container does not match the reviewed plan")
+    container = json.loads(docker("inspect", container_id))[0]
+    if (container.get("Id") != saved["container_id"] or (container.get("State") or {}).get("Running") is not False
+            or container.get("Image") != saved["current_image_id"]):
+        raise ValueError("Reviewed container is not stopped with its original image")
+    running = [cid for cid in docker("ps", "-q").split() if not container["Id"].startswith(cid)]
+    others = json.loads(docker("inspect", *running)) if running else []
+    source = resolve_data_mount(container, others, saved["data_dir"])
+    if str(source) != saved["data_source"]:
+        raise ValueError("Persistent data mount changed since review")
+    files = saved["compose_files"]
+    prefix = ("compose", *(item for path in files for item in ("-f", path)))
+    config = json.loads(docker(*prefix, "config", "--format", "json"))
+    inputs = _read_recorded_inputs(saved["configuration_input_paths"])
+    verify_inputs_backup(inputs, backup_dir / "configuration.tgz")
+    relative = Path(saved["catalog_relative"]) if saved.get("catalog_relative") is not None else None
+    if relative is not None and (relative.is_absolute() or ".." in relative.parts):
+        raise ValueError("Reviewed catalog path is invalid")
+    external_catalog = saved.get("catalog_external_source")
+    if external_catalog:
+        assert_no_other_writers(Path(external_catalog), others)
+        if not _container_file_matches(container_id, saved["catalog_container_path"], Path(external_catalog)):
+            raise ValueError("Container and host external catalog differ; backup cannot be trusted")
+    with restored_tree(backup_dir / "data.tgz") as restored:
+        snapshot_files = _read_persistent_files(restored, relative)
+        credential_source = saved.get("credential_source")
+        if credential_source:
+            if credential_source not in inputs or inputs[credential_source] is None:
+                raise ValueError("Reviewed subscriber credentials are unavailable")
+            if not _container_file_matches(container_id, saved["credential_container_path"], Path(credential_source)):
+                raise ValueError("Container and host subscriber credentials differ; backup cannot be trusted")
+            snapshot_files["subscriber_credentials"] = inputs[credential_source]
+        if external_catalog:
+            if external_catalog not in inputs or inputs[external_catalog] is None:
+                raise ValueError("Reviewed external catalog is unavailable")
+            snapshot_files["catalog.json"] = inputs[external_catalog]
+            snapshot_path = Path(external_catalog)
+        else:
+            snapshot_path = restored / relative if relative is not None else None
+        if snapshot_files["catalog.json"] is None:
+            selected = []  # Nonempty seed identities are rejected during preflight.
+        else:
+            snapshot = catalog_snapshot(snapshot_path)
+            if not snapshot.get("available"):
+                raise ValueError("Backup catalog is invalid")
+            selected = snapshot["speakers"]
+        state = {"_protected": {"compose": config, "inputs": inputs, "container": container,
+                                 "files": snapshot_files, "catalog_snapshot": selected}}
+        actual = _verification_signatures(state, bytes.fromhex(content["key"]))
+        for name in ("persistent_identity", "compose_configuration", "runtime_configuration", "quiesced_credentials", "mounts"):
+            expected = content["verification"].get(name)
+            if not isinstance(expected, str) or not hmac.compare_digest(expected, actual[name]):
+                raise ValueError("Quiesced backup or configuration changed since review")
+    # Confirm the archived source still matches the stopped data tree. External
+    # host writers must remain stopped until replacement completes.
+    verify_backup(backup_dir / "data.tgz", backup_files(source))
+    if _read_recorded_inputs(saved["configuration_input_paths"]) != inputs:
+        raise ValueError("Configuration inputs changed while checking the quiesced backup")
 
 
 def _music_snapshot(path: Path) -> dict[str, Any] | None:
@@ -425,7 +570,7 @@ def _receipt(content: dict[str, Any], backup_dir: Path) -> dict[str, Any]:
 def apply_plan(plan_path: Path, *, confirm_exclusive: bool, acknowledge_drift: bool, health_url: str) -> int:
     content, state = check_plan_file(plan_path)
     if not confirm_exclusive:
-        raise ValueError("Confirm that all non-container writers to the data directory are stopped")
+        raise ValueError("Confirm that all other writers to the data and catalog files are stopped and will stay stopped")
     if state["configuration_drift"]["warnings"] and not acknowledge_drift:
         raise ValueError("Gateway drift warnings require explicit acknowledgement after review")
     backup_dir = Path(content["backup_dir"])
@@ -543,6 +688,8 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     running = [cid for cid in docker("ps", "-q").split() if not current["Id"].startswith(cid)]
     others = json.loads(docker("inspect", *running)) if running else []
     source = resolve_data_mount(current, others, saved["data_dir"])
+    if saved.get("catalog_external_source"):
+        assert_no_other_writers(Path(saved["catalog_external_source"]), others)
     key = bytes.fromhex(content["key"])
     if str(source) != saved["data_source"] or not hmac.compare_digest(content["verification"]["mounts"], _mount_signature(current, key)):
         raise ValueError("Persistent mounts changed; image rollback requires manual review")
@@ -581,9 +728,13 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--target", required=True)
     check.add_argument("--backup-dir", required=True, type=Path)
     check.add_argument("--config-backup", required=True, type=Path)
+    check_backup = sub.add_parser("check-backup", help=argparse.SUPPRESS)
+    check_backup.add_argument("--plan-file", required=True, type=Path)
+    check_backup.add_argument("--backup-dir", required=True, type=Path)
+    check_backup.add_argument("--container", required=True)
     apply = sub.add_parser("apply", help="Apply a reviewed private plan")
     apply.add_argument("--plan-file", required=True, type=Path)
-    apply.add_argument("--confirm-exclusive-data", action="store_true", help="Confirm non-container data writers are stopped")
+    apply.add_argument("--confirm-exclusive-data", action="store_true", help="Confirm other writers to the data and catalog files are stopped and will stay stopped")
     apply.add_argument("--acknowledge-gateway-drift", action="store_true")
     apply.add_argument("--health-url", default="http://127.0.0.1:8000/health")
     verify = sub.add_parser("verify", help="Verify a completed upgrade against its reviewed plan")
@@ -597,6 +748,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "rollback":
             return rollback_plan(args.plan_file, confirm=args.confirm_image_rollback, health_url=args.health_url)
+        if args.action == "check-backup":
+            check_quiesced_backup(args.plan_file, args.backup_dir, args.container)
+            print("Quiesced backup matches the reviewed identity and configuration.")
+            return 0
         if args.action == "verify":
             return verify_installation(args.plan_file, health_url=args.health_url)
         if args.action == "apply":

@@ -8,7 +8,7 @@ An ordinary local upgrade replaces the bridge image and keeps its persistent dat
 
 Run these commands on the Docker host: for Proxmox, that means inside the LXC that runs Docker, not on the Proxmox hypervisor. For Docker Compose, use the host where the bridge container runs. Use the upgrade scripts from a checkout or an extracted source archive for the release you are reviewing; a Compose-only installation does not need Git. Replace the example paths with your own.
 
-Stop any other programs on the host that write the bridge's data directory. The tool checks other running Docker containers, but cannot identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose files are. If you use multiple Compose files, provide `--compose-file` once for each, in order.
+Stop all other programs and containers that write the bridge's data directory or external catalog file, and prevent them from restarting until the upgrade finishes. The tool checks other running Docker containers at preflight, but cannot prevent a new writer from starting or identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose files are. If you use multiple Compose files, provide `--compose-file` once for each, in order.
 
 ## Check the installation and available release
 
@@ -37,7 +37,7 @@ python3 scripts/upgrade.py plan \
 
 Review the current and target images, persistent data path, backup location, warnings, and proposed actions. The tool records a private plan and checks the installation again before stopping the bridge. A changed installation requires a new plan. The backup is created alongside the plan, is private, and includes the quiesced data directory and reviewed Compose, environment, and mounted subscriber credential inputs.
 
-After you have stopped other host programs that write the data directory and reviewed the plan, explicitly start the upgrade:
+After you have stopped other writers and prevented them from restarting, and reviewed the plan, explicitly start the upgrade:
 
 ```sh
 python3 scripts/upgrade.py apply \
@@ -72,4 +72,4 @@ This changes the image only. It does not overwrite newer data, credentials, or C
 
 Cloud Run is optional and is not changed by a local upgrade. Existing Google Home users should keep their current cloud service, credentials, Firestore data, and linked devices. Cloud Run image updates are a separate maintainer operation described in [persistent state and upgrades](persistent-state.md); do not rerun first-install provisioning or relink merely to upgrade.
 
-The current draft stops for manual review when it cannot safely account for additional writable mounts or a catalog outside the data mount. Named Docker volumes whose source is inaccessible to the host user also need manual handling. These limitations are being addressed before the workflow is recommended for general users.
+The current draft stops for manual review when it cannot safely account for additional writable mounts. A catalog outside the data mount is supported only when it is an individually bind-mounted file. Named Docker volumes whose source is inaccessible to the host user also need manual handling. These limitations are being addressed before the workflow is recommended for general users.

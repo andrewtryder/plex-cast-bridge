@@ -27,6 +27,11 @@ def resolve_data_mount(container: dict[str, Any], others: list[dict[str, Any]], 
     source = (Path(mount["Source"]) / str(dest.relative_to(root))).resolve()
     if not source.is_dir():
         raise ValueError("data mount source is not accessible on this Docker host")
+    assert_no_other_writers(source, others)
+    return source
+
+
+def assert_no_other_writers(source: Path, others: list[dict[str, Any]]) -> None:
     for other in others:
         if not (other.get("State") or {}).get("Running"):
             continue
@@ -36,7 +41,6 @@ def resolve_data_mount(container: dict[str, Any], others: list[dict[str, Any]], 
             other_source = Path(m["Source"]).resolve()
             if os.path.commonpath((str(source), str(other_source))) in (str(source), str(other_source)):
                 raise ValueError("another running container can write the persistent data mount")
-    return source
 
 
 def main() -> None:

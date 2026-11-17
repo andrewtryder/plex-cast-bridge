@@ -11,7 +11,8 @@ import pytest
 
 
 @pytest.mark.skipif(os.getenv("PCB_TEST_UPGRADE_E2E") != "1", reason="requires local Docker and a published immutable target")
-def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path):
+@pytest.mark.parametrize("external_catalog", [False, True])
+def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, external_catalog):
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
         pytest.skip("bind mount test must run on the Docker daemon host")
     target = os.environ["PCB_TEST_UPGRADE_TARGET"]
@@ -20,7 +21,8 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path):
     data.mkdir(mode=0o777)
     data.chmod(0o777)
     (data / "plex_connection.json").write_text(json.dumps({"mode": "jwt", "jwt_token": "synthetic", "client_identifier": "id-1"}))
-    (data / "catalog.json").write_text(json.dumps({"speakers": [{"id": "virtual-1", "cast_uuid": "cast-1"}]}))
+    catalog = tmp_path / "external-catalog.json" if external_catalog else data / "catalog.json"
+    catalog.write_text(json.dumps({"speakers": [{"id": "virtual-1", "cast_uuid": "cast-1"}]}))
     db_path = data / "music_index.sqlite3"
     with sqlite3.connect(db_path) as db:
         db.executescript("CREATE TABLE tracks(server_id TEXT,library_id TEXT,rating_key TEXT);"
@@ -37,9 +39,12 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path):
               "H=type('H',(BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(200),s.end_headers()),"
               "'log_message':lambda *a:None}); HTTPServer(('0.0.0.0',8000),H).serve_forever()")
     compose = tmp_path / "compose.json"
-    compose.write_text(json.dumps({"services": {"bridge": {"image": "plex-cast-bridge-config-drift-test",
-                       "command": ["python", "-c", server], "ports": [f"127.0.0.1:{port}:8000"],
-                       "volumes": [f"{data}:/data"]}}}))
+    service = {"image": "plex-cast-bridge-config-drift-test", "command": ["python", "-c", server],
+               "ports": [f"127.0.0.1:{port}:8000"], "volumes": [f"{data}:/data"]}
+    if external_catalog:
+        service["environment"] = {"CATALOG_PATH": "/external-catalog.json"}
+        service["volumes"].append(f"{catalog}:/external-catalog.json")
+    compose.write_text(json.dumps({"services": {"bridge": service}}))
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbe2e" + os.urandom(6).hex()}
     subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", "plex-cast-bridge-config-drift-test", "."],
                    cwd=root, env=env, check=True, capture_output=True)
@@ -56,7 +61,7 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path):
         assert result.returncode == 0, result.stderr
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data", "--health-url", health)
         assert result.returncode == 0, result.stderr
-        assert json.loads((data / "catalog.json").read_text())["speakers"][0]["id"] == "virtual-1"
+        assert json.loads(catalog.read_text())["speakers"][0]["id"] == "virtual-1"
         assert json.loads((data / "plex_connection.json").read_text())["client_identifier"] == "id-1"
         result = cli("verify", "--plan-file", str(plan), "--health-url", health)
         assert result.returncode == 0, result.stderr

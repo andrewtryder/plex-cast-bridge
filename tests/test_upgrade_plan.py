@@ -172,7 +172,7 @@ def test_apply_requires_explicit_acknowledgements_before_writing(tmp_path, monke
              "_protected": {"inputs": {}}, "compose_files": [str(tmp_path / "compose.yml")], "service": "bridge"}
     content = {"backup_dir": str(tmp_path / "backup"), "target": "image@sha256:" + "a" * 64}
     monkeypatch.setattr(upgrade, "check_plan_file", lambda _: (content, state))
-    with pytest.raises(ValueError, match="non-container writers"):
+    with pytest.raises(ValueError, match="other writers"):
         upgrade.apply_plan(tmp_path / "plan.json", confirm_exclusive=False, acknowledge_drift=False, health_url="http://localhost/health")
     with pytest.raises(ValueError, match="explicit acknowledgement"):
         upgrade.apply_plan(tmp_path / "plan.json", confirm_exclusive=True, acknowledge_drift=False, health_url="http://localhost/health")
@@ -318,3 +318,143 @@ def test_rollback_recovers_when_failed_recreation_left_no_container(tmp_path, mo
     monkeypatch.setattr(upgrade.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     assert upgrade.rollback_plan(tmp_path / "plan", confirm=True, health_url="http://localhost/health") == 0
     assert (data / "sentinel").read_text() == "keep"
+
+
+def test_quiesced_backup_rejects_changes_after_review(tmp_path, monkeypatch):
+    from upgrade_backup import create as create_data_backup
+    from upgrade_inputs import create_inputs_backup
+    from release_catalog_snapshot import snapshot
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "catalog.json").write_text(json.dumps({"speakers": [{"id": "stable", "cast_uuid": "cast"}]}))
+    (data / "plex_connection.json").write_text(json.dumps({"mode": "jwt", "jwt_token": "private", "client_identifier": "client"}))
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}")
+    inputs = {str(compose): compose.read_bytes().hex()}
+    config = {"services": {}}
+    mount = {"Type": "bind", "Source": str(data), "Destination": "/data", "RW": True}
+    running = {"Id": "abcdef", "Image": "old-image", "State": {"Running": True},
+               "Config": {"Env": []}, "Mounts": [mount]}
+    stopped = {**running, "State": {"Running": False}}
+    saved = {"compose_files": [str(compose)], "service": "bridge", "container_id": "abcdef",
+             "current_image_id": "old-image", "data_dir": "/data", "data_source": str(data),
+             "catalog_relative": "catalog.json", "credential_source": None, "configuration_input_paths": [str(compose)],
+             "configuration_drift": {"status": "PASS", "warnings": []},
+             "_protected": {"compose": config, "inputs": inputs, "container": running,
+                            "files": upgrade._read_persistent_files(data, Path("catalog.json")),
+                            "catalog_snapshot": snapshot(data / "catalog.json")["speakers"]}}
+    def fake_docker(*args):
+        if args[:2] == ("inspect", "abc"):
+            return json.dumps([stopped])
+        if args == ("ps", "-q"):
+            return ""
+        if "config" in args:
+            return json.dumps(config)
+        if args[:2] == ("buildx", "imagetools"):
+            return ""
+        raise AssertionError(args)
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    monkeypatch.setattr(upgrade, "_container_file_matches", lambda *args: True)
+    plan = tmp_path / "review.json"
+    upgrade.plan(saved, "image@sha256:" + "a" * 64, plan)
+    backup = tmp_path / "review.backup"
+    backup.mkdir()
+    create_inputs_backup(inputs, backup / "configuration.tgz")
+    create_data_backup(data, backup / "data.tgz")
+    upgrade.check_quiesced_backup(plan, backup, "abc")
+    (data / "plex_connection.json").write_text('{"mode":"jwt","jwt_token":"different"}')
+    with pytest.raises(ValueError, match="restored files differ"):
+        upgrade.check_quiesced_backup(plan, backup, "abc")
+    (data / "plex_connection.json").write_bytes(bytes.fromhex(saved["_protected"]["files"]["plex_connection.json"]))
+    compose.write_text("changed")
+    with pytest.raises(ValueError, match="differs"):
+        upgrade.check_quiesced_backup(plan, backup, "abc")
+    compose.write_text("services: {}")
+    (data / "plex_connection.json").write_text(json.dumps({"mode": "jwt", "jwt_token": "new-token", "client_identifier": "client"}))
+    (backup / "data.tgz").unlink()
+    (backup / "data.tgz.sha256").unlink()
+    create_data_backup(data, backup / "data.tgz")
+    with pytest.raises(ValueError, match="changed since review"):
+        upgrade.check_quiesced_backup(plan, backup, "abc")
+    (data / "plex_connection.json").write_bytes(bytes.fromhex(saved["_protected"]["files"]["plex_connection.json"]))
+    (data / "catalog.json").write_text(json.dumps({"speakers": [{"id": "changed", "cast_uuid": "cast"}]}))
+    (backup / "data.tgz").unlink()
+    (backup / "data.tgz.sha256").unlink()
+    create_data_backup(data, backup / "data.tgz")
+    with pytest.raises(ValueError, match="changed since review"):
+        upgrade.check_quiesced_backup(plan, backup, "abc")
+
+
+def test_individually_mounted_external_catalog_is_resolved_and_protected(tmp_path):
+    from upgrade_mounts import assert_no_other_writers
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('{"speakers":[]}')
+    mount = {"Type": "bind", "Source": str(catalog), "Destination": "/custom/catalog.json", "RW": True}
+    relative, external, destination = upgrade._resolve_catalog("/data", "/custom/catalog.json", "/app", [mount])
+    assert relative is None and external == catalog.resolve() and destination == "/custom/catalog.json"
+    upgrade._require_backed_mounts({"Mounts": [{"Destination": "/data", "RW": True}, mount]}, "/data", destination)
+    with pytest.raises(ValueError, match="another running container"):
+        assert_no_other_writers(external, [{"State": {"Running": True}, "Mounts": [mount]}])
+    with pytest.raises(ValueError, match="individually mounted"):
+        upgrade._resolve_catalog("/data", "/other/catalog.json", "/app", [mount])
+
+
+def test_quiesced_external_catalog_is_in_verified_configuration_backup(tmp_path, monkeypatch):
+    from upgrade_backup import create as create_data_backup
+    from upgrade_inputs import create_inputs_backup
+    from release_catalog_snapshot import snapshot
+    data = tmp_path / "data"
+    data.mkdir()
+    catalog = tmp_path / "outside.json"
+    catalog.write_text('{"speakers":[{"id":"stable","cast_uuid":"cast"}]}')
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}")
+    inputs = {str(compose): compose.read_bytes().hex(), str(catalog): catalog.read_bytes().hex()}
+    mounts = [{"Type": "bind", "Source": str(data), "Destination": "/data", "RW": True},
+              {"Type": "bind", "Source": str(catalog), "Destination": "/outside.json", "RW": True}]
+    running = {"Id": "abcdef", "Image": "old", "State": {"Running": True}, "Config": {"Env": []}, "Mounts": mounts}
+    stopped = {**running, "State": {"Running": False}}
+    protected_files = upgrade._read_persistent_files(data, None)
+    protected_files["catalog.json"] = catalog.read_bytes().hex()
+    saved = {"compose_files": [str(compose)], "service": "bridge", "container_id": "abcdef", "current_image_id": "old",
+             "data_dir": "/data", "data_source": str(data), "catalog_relative": None,
+             "catalog_external_source": str(catalog), "catalog_container_path": "/outside.json", "credential_source": None,
+             "configuration_input_paths": sorted(inputs), "configuration_drift": {"status": "PASS", "warnings": []},
+             "_protected": {"compose": {}, "inputs": inputs, "container": running, "files": protected_files,
+                            "catalog_snapshot": snapshot(catalog)["speakers"]}}
+    def fake_docker(*args):
+        if args[:2] == ("inspect", "abc"):
+            return json.dumps([stopped])
+        if args == ("ps", "-q"):
+            return ""
+        if "config" in args:
+            return "{}"
+        if args[:2] == ("buildx", "imagetools"):
+            return ""
+        raise AssertionError(args)
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    monkeypatch.setattr(upgrade, "_container_file_matches", lambda *args: True)
+    plan = tmp_path / "review.json"
+    upgrade.plan(saved, "image@sha256:" + "a" * 64, plan)
+    backup = tmp_path / "review.backup"
+    backup.mkdir()
+    create_inputs_backup(inputs, backup / "configuration.tgz")
+    create_data_backup(data, backup / "data.tgz")
+    upgrade.check_quiesced_backup(plan, backup, "abc")
+    catalog.write_text('{"speakers":[{"id":"changed"}]}')
+    with pytest.raises(ValueError, match="differs"):
+        upgrade.check_quiesced_backup(plan, backup, "abc")
+
+
+def test_external_catalog_bind_mount_must_match_container_bytes(tmp_path, monkeypatch):
+    host = tmp_path / "catalog.json"
+    host.write_text("host-current")
+    def fake_docker(*args):
+        assert args[0] == "cp"
+        Path(args[2]).write_text("container-old-inode")
+        return ""
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    assert not upgrade._container_file_matches("id", "/catalog.json", host)
+    host.write_text("container-old-inode")
+    assert upgrade._container_file_matches("id", "/catalog.json", host)
