@@ -168,10 +168,24 @@ configuration_drift() {
     'import sys; __package__="plex_cast_bridge"; exec(compile(sys.stdin.read(), "config_drift.py", "exec"))' < "$DRIFT_MODULE"
 }
 
+validate_drift_report() {
+  python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); settings=d["settings"]; files=d["files"]; warnings=d["release_preflight_warnings"]
+ assert isinstance(settings,dict) and isinstance(files,dict) and isinstance(warnings,list)
+ names=("cloud_gateway_url", "catalog_write_key")
+ for name in names:
+  entry=settings[name]; assert isinstance(entry["conflict"],bool) and entry["classification"] in ("ok","informational","release_preflight_warning")
+ assert set(warnings)=={n for n in names if settings[n]["classification"]=="release_preflight_warning"}
+except (ValueError,KeyError,TypeError,AssertionError): sys.exit(1)'
+}
+
 if [[ "$ACTION" == "config-preflight" ]]; then
   require docker
-  configuration_drift
-  exit $?
+  report="$(configuration_drift)" || exit 1
+  printf '%s' "$report" | validate_drift_report || { echo "ERROR: invalid diagnostic report" >&2; exit 1; }
+  printf '%s\n' "$report"
+  exit 0
 fi
 
 if [[ "$ACTION" == "rollback" ]]; then
@@ -233,6 +247,7 @@ fi
 
 # Review before any backup, pull, or container recreation. The report contains no values.
 DRIFT_BEFORE="$(configuration_drift)" || { echo "ERROR: configuration preflight unavailable; upgrade stopped." >&2; exit 1; }
+printf '%s' "$DRIFT_BEFORE" | validate_drift_report || { echo "ERROR: invalid configuration preflight; upgrade stopped." >&2; exit 1; }
 printf '%s\n' "$DRIFT_BEFORE"
 if printf '%s' "$DRIFT_BEFORE" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["release_preflight_warnings"] else 1)'; then
   echo "WARNING: gateway configuration conflicts require review before upgrade." >&2
@@ -356,7 +371,7 @@ if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
 fi
 echo "Protected configuration fingerprint verified after upgrade."
 if configuration_drift > "$BACKUP_DIR/config_drift_after.json" && \
-  python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d["settings"],dict) and isinstance(d["files"],dict) and isinstance(d["release_preflight_warnings"],list)' < "$BACKUP_DIR/config_drift_after.json"; then
+  validate_drift_report < "$BACKUP_DIR/config_drift_after.json"; then
   echo "Post-upgrade configuration report: $BACKUP_DIR/config_drift_after.json"
   cat "$BACKUP_DIR/config_drift_after.json"
 else
