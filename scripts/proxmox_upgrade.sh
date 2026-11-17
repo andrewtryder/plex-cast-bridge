@@ -104,7 +104,7 @@ verify_rollback() {
   local prev_img rollback_img
   prev_img="$(cat "$dir/previous_image.txt")"
   rollback_img="$(cat "$dir/previous_image_digest.txt")"
-  rollback_img="${rollback_img:-$prev_img}"
+  rollback_img="${prev_img:-$rollback_img}"
   if [[ -z "$rollback_img" ]]; then
     echo "ERROR: backup has no previous image digest or image ID" >&2
     return 1
@@ -147,7 +147,7 @@ rollback() {
     prev_dig="$(cat "$target_backup/previous_image_digest.txt")"
   fi
 
-  local restore_image="${prev_dig:-$prev_img}"
+  local restore_image="${prev_img:-$prev_dig}"
   if [[ -z "$restore_image" ]]; then
     echo "ERROR: previous image is unavailable." >&2; return 1
   fi

@@ -133,7 +133,7 @@ def test_custom_catalog_must_be_backed_up_with_data_mount():
 
 def test_verification_rejects_incomplete_plan():
     with pytest.raises(ValueError, match="lacks valid verification evidence"):
-        upgrade.verify_plan({"schema": 5, "key": "a" * 64, "verification": {}}, {})
+        upgrade.verify_plan({"schema": 6, "key": "a" * 64, "verification": {}}, {})
 
 
 def test_compose_inputs_include_override_env_and_secret_files_without_printing(tmp_path):
@@ -458,3 +458,19 @@ def test_external_catalog_bind_mount_must_match_container_bytes(tmp_path, monkey
     assert not upgrade._container_file_matches("id", "/catalog.json", host)
     host.write_text("container-old-inode")
     assert upgrade._container_file_matches("id", "/catalog.json", host)
+
+
+def test_check_plan_accepts_new_repository_alias_for_same_image(tmp_path, monkeypatch):
+    state = {"_protected": {"files": {}, "compose": {}, "container": {}},
+             "configuration_drift": {"status": "PASS", "warnings": []},
+             "current_image_id": "sha256:same", "current_image_digests": [],
+             "compose_files": ["/synthetic/compose.yml"], "service": "bridge"}
+    monkeypatch.setattr(upgrade, "docker", lambda *args: "")
+    monkeypatch.setattr(upgrade, "inspect", lambda *args: state)
+    path = tmp_path / "plan.json"
+    upgrade.plan(state, "example@sha256:" + "a" * 64, path)
+    state["current_image_digests"] = ["example@sha256:new-alias"]
+    upgrade.check_plan_file(path)
+    state["current_image_id"] = "sha256:different"
+    with pytest.raises(ValueError, match="current_image_id"):
+        upgrade.check_plan_file(path)

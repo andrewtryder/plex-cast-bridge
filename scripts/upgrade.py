@@ -33,6 +33,11 @@ def docker(*args: str) -> str:
     return result.stdout
 
 
+def _stable_public(state: dict[str, Any]) -> dict[str, Any]:
+    # Pulling an image can add repository aliases to an unchanged image ID.
+    return {key: value for key, value in public(state).items() if key != "current_image_digests"}
+
+
 def _signature(value: Any, key: bytes) -> str:
     return hmac.new(key, json.dumps(value, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
 
@@ -136,8 +141,11 @@ def _read_persistent_files(root: Path, catalog_relative: Path | None) -> dict[st
 
 def _require_backed_mounts(container: dict[str, Any], data_dir: str, catalog_dest: str | None = None) -> None:
     writable = [mount for mount in container.get("Mounts") or [] if mount.get("RW")]
+    allowed = {data_dir}
+    if catalog_dest:
+        allowed.add(catalog_dest)
     if not any(mount.get("Destination") == data_dir for mount in writable) or any(
-        mount.get("Destination") not in (data_dir, catalog_dest) for mount in writable
+        mount.get("Destination") not in allowed for mount in writable
     ):
         raise ValueError("Additional or parent writable mounts need backup review before upgrading")
 
@@ -338,7 +346,7 @@ def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
     """Return non-secret reasons why a post-upgrade inspection is not verified."""
     try:
         key = bytes.fromhex(content["key"])
-        if content.get("schema") != 5 or len(key) != 32:
+        if content.get("schema") != 6 or len(key) != 32:
             raise ValueError
         baseline = content["verification"]
         installation = content["installation"]
@@ -363,11 +371,16 @@ def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
     return failures
 
 
-def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
+def _validate_target(target: str) -> None:
     import re
     if not re.fullmatch(r".+@sha256:[0-9a-f]{64}", target):
         raise ValueError("Target must be an immutable image reference ending in @sha256:<64 hex digits>")
-    docker("buildx", "imagetools", "inspect", target)
+
+
+def plan(state: dict[str, Any], target: str, plan_file: Path, *, inspect_registry: bool = True) -> dict[str, Any]:
+    _validate_target(target)
+    if inspect_registry:
+        docker("buildx", "imagetools", "inspect", target)
     backup_dir = plan_file.with_suffix(".backup").resolve()
     data_source = Path(state.get("data_source", "/nonexistent")).resolve()
     if backup_dir == data_source or data_source in backup_dir.parents:
@@ -380,17 +393,18 @@ def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
         try:
             content = load_plan(plan_file)
             key = bytes.fromhex(content["key"])
-            if (len(key) != 32 or content.get("schema") != 5 or content.get("target") != target
-                    or content.get("installation") != public(state) or content.get("backup_dir") != str(backup_dir)
-                    or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": target, "installation": public(state), "backup_dir": str(backup_dir)}, key))):
+            if (len(key) != 32 or content.get("schema") != 6 or content.get("target") != target
+                    or _stable_public(content.get("installation", {})) != _stable_public(state) or content.get("backup_dir") != str(backup_dir)
+                    or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": target, "installation": _stable_public(state), "backup_dir": str(backup_dir)}, key))):
                 raise ValueError("Existing plan no longer matches the installation; choose a new plan file")
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise ValueError("Existing plan file is invalid") from exc
     else:
         key = secrets.token_bytes(32)
-        content = {"schema": 5, "installation": public(state), "target": target, "backup_dir": str(backup_dir),
-                   "key": key.hex(), "protected_state": _signature({"protected": state["_protected"], "target": target, "installation": public(state), "backup_dir": str(backup_dir)}, key),
-                   "verification": _verification_signatures(state, key)}
+        content = {"schema": 6, "installation": public(state), "target": target, "backup_dir": str(backup_dir),
+                   "key": key.hex(), "protected_state": _signature({"protected": state["_protected"], "target": target, "installation": _stable_public(state), "backup_dir": str(backup_dir)}, key),
+                   "verification": _verification_signatures(state, key),
+                   "protected_components": {name: _signature(value, key) for name, value in state["_protected"].items()}}
         content["plan_auth"] = _plan_auth(content, key)
         plan_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(plan_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -407,7 +421,7 @@ def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
 
 
 def _plan_auth(content: dict[str, Any], key: bytes) -> str:
-    return _signature({name: content.get(name) for name in ("schema", "installation", "target", "backup_dir", "protected_state", "verification")}, key)
+    return _signature({name: content.get(name) for name in ("schema", "installation", "target", "backup_dir", "protected_state", "verification", "protected_components")}, key)
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -415,7 +429,7 @@ def load_plan(path: Path) -> dict[str, Any]:
         if path.stat().st_mode & 0o077:
             raise ValueError("Plan file must be private")
         content = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(content, dict) or content.get("schema") != 5:
+        if not isinstance(content, dict) or content.get("schema") != 6:
             raise ValueError("Plan file is invalid or obsolete")
         key = bytes.fromhex(content["key"])
         if len(key) != 32 or not isinstance(content.get("plan_auth"), str) or not hmac.compare_digest(content["plan_auth"], _plan_auth(content, key)):
@@ -433,9 +447,17 @@ def check_plan_file(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     saved = content["installation"]
     state = inspect([Path(value) for value in saved["compose_files"]], saved["service"])
     key = bytes.fromhex(content["key"])
-    if (public(state) != saved or not isinstance(content.get("protected_state"), str)
-            or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": content.get("target"), "installation": saved, "backup_dir": content.get("backup_dir")}, key))):
-        raise ValueError("Reviewed plan no longer matches the installation; create a new plan")
+    if (_stable_public(state) != _stable_public(saved) or not isinstance(content.get("protected_state"), str)
+            or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": content.get("target"), "installation": _stable_public(saved), "backup_dir": content.get("backup_dir")}, key))):
+        changed = sorted(name for name in _stable_public(state).keys() | _stable_public(saved).keys()
+                         if _stable_public(state).get(name) != _stable_public(saved).get(name))
+        baseline = content.get("protected_components") or {}
+        for name, value in state["_protected"].items():
+            prior = baseline.get(name)
+            if not isinstance(prior, str) or not hmac.compare_digest(prior, _signature(value, key)):
+                changed.append(name)
+        detail = ", ".join(sorted(set(changed))) if changed else "protected configuration"
+        raise ValueError(f"Reviewed plan no longer matches the installation ({detail}); create a new plan")
     return content, state
 
 
@@ -661,8 +683,7 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
         if receipt != _receipt(content, backup_dir):
             raise ValueError("Backup contents do not match the recorded upgrade")
     old_id = (backup_dir / "previous_image.txt").read_text(encoding="utf-8").strip()
-    old_digest = (backup_dir / "previous_image_digest.txt").read_text(encoding="utf-8").strip()
-    if old_id != saved["current_image_id"] or (old_digest and old_digest not in saved["current_image_digests"] + [old_id]):
+    if old_id != saved["current_image_id"]:
         raise ValueError("Backup image identity does not match the reviewed baseline")
     files = saved["compose_files"]
     prefix = ("compose", *(item for path in files for item in ("-f", path)))
@@ -766,8 +787,13 @@ def main(argv: list[str] | None = None) -> int:
             verify_inputs_backup(current["_protected"]["inputs"], args.config_backup)
             print("Reviewed installation and configuration backup match the plan.")
             return 0
+        if args.action == "plan":
+            # Registry lookup can change local image aliases. Inspect the running
+            # installation only after that lookup has completed.
+            _validate_target(args.target)
+            docker("buildx", "imagetools", "inspect", args.target)
         state = inspect(args.compose_file, args.service)
-        output = public(state) if args.action == "doctor" else plan(state, args.target, args.plan_file)
+        output = public(state) if args.action == "doctor" else plan(state, args.target, args.plan_file, inspect_registry=False)
         installation = output["installation"] if args.action == "plan" else output
         print(f"Service: {installation['service']}")
         print(f"Current version: {installation['current_version']}")
