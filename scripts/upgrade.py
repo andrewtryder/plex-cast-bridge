@@ -46,12 +46,46 @@ def _catalog_relative(data_dir: str, catalog_path: str | None, workdir: str) -> 
         raise ValueError("Custom catalog is outside the data mount; its backup needs manual review") from exc
 
 
-def inspect(compose: Path, service: str | None) -> dict[str, Any]:
-    if not compose.is_file():
+def _configuration_inputs(files: list[Path], unresolved: dict[str, Any], environ: dict[str, str]) -> dict[str, str | None]:
+    """Capture Compose source files and referenced env/secrets without emitting contents."""
+    paths = set(files)
+    paths.add(files[0].parent / ".env")
+    for value in environ.get("COMPOSE_ENV_FILES", "").split(","):
+        if value.strip():
+            path = Path(value.strip())
+            paths.add(path if path.is_absolute() else files[0].parent / path)
+    for service in (unresolved.get("services") or {}).values():
+        for item in service.get("env_file") or []:
+            path = item.get("path") if isinstance(item, dict) else item
+            if path:
+                candidate = Path(path)
+                paths.add(candidate if candidate.is_absolute() else files[0].parent / candidate)
+    for kind in ("secrets", "configs"):
+        for item in (unresolved.get(kind) or {}).values():
+            if isinstance(item, dict) and item.get("file"):
+                candidate = Path(item["file"])
+                paths.add(candidate if candidate.is_absolute() else files[0].parent / candidate)
+    result = {}
+    for path in paths:
+        absolute = path.resolve()
+        try:
+            result[str(absolute)] = absolute.read_bytes().hex()
+        except FileNotFoundError:
+            result[str(absolute)] = None
+        except OSError as exc:
+            raise RuntimeError("A Compose configuration input cannot be read") from exc
+    return result
+
+
+def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
+    files = [compose] if isinstance(compose, Path) else compose
+    if not files or any(not path.is_file() for path in files):
         raise ValueError("Compose file does not exist")
-    compose = compose.resolve()
-    prefix = ("compose", "-f", str(compose))
+    files = [path.resolve() for path in files]
+    prefix = ("compose", *(item for path in files for item in ("-f", str(path))))
     config = json.loads(docker(*prefix, "config", "--format", "json"))
+    unresolved = json.loads(docker(*prefix, "config", "--format", "json", "--no-env-resolution"))
+    inputs = _configuration_inputs(files, unresolved, dict(os.environ))
     services = config.get("services") or {}
     if service is None:
         service = "plex-cast-bridge" if "plex-cast-bridge" in services else next(iter(services)) if len(services) == 1 else None
@@ -100,15 +134,16 @@ def inspect(compose: Path, service: str | None) -> dict[str, Any]:
         path = Path(chosen["Source"]) / str(target.relative_to(PurePosixPath(chosen["Destination"])))
         try:
             protected_files["subscriber_credentials"] = path.read_bytes().hex()
+            inputs[str(path.resolve())] = protected_files["subscriber_credentials"]
         except OSError as exc:
             raise RuntimeError("The mounted subscriber credential file cannot be read") from exc
-    return {"compose": str(compose), "service": service, "compose_image": image,
+    return {"compose": str(files[0]), "compose_files": [str(path) for path in files], "service": service, "compose_image": image,
             "container_id": container["Id"], "current_image_id": container["Image"],
             "current_image_digests": image_info.get("RepoDigests") or [],
             "current_version": ((image_info.get("Config") or {}).get("Labels") or {}).get("org.opencontainers.image.version") or "unknown",
             "data_dir": data_dir, "data_source": str(data_source), "configuration_drift": drift_summary,
             "subscriber_credentials": "mounted" if credentials else "not configured",
-            "_protected": {"compose": config, "container": identity, "files": protected_files}}
+            "_protected": {"compose": config, "inputs": inputs, "container": identity, "files": protected_files}}
 
 
 def latest_release() -> dict[str, str]:
@@ -181,7 +216,7 @@ def _verification_signatures(state: dict[str, Any], key: bytes) -> dict[str, str
               for m in container.get("Mounts") or []]
     mounts.sort(key=lambda m: str(m.get("Destination")))
     return {"persistent_identity": _signature(_persistent_identity(protected["files"]), key),
-            "compose_configuration": _signature(protected["compose"], key),
+            "compose_configuration": _signature({"rendered": protected["compose"], "inputs": protected.get("inputs", {})}, key),
             "mounts": _signature(mounts, key)}
 
 
@@ -192,7 +227,8 @@ def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
         if content.get("schema") != 2 or len(key) != 32:
             raise ValueError
         baseline = content["verification"]
-        if not isinstance(baseline, dict):
+        installation = content["installation"]
+        if not isinstance(baseline, dict) or not isinstance(installation, dict) or not isinstance(installation.get("configuration_drift"), dict):
             raise ValueError
         current = _verification_signatures(state, key)
     except (KeyError, TypeError, ValueError) as exc:
@@ -205,7 +241,7 @@ def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
             failures.append(reason)
     if state.get("configuration_drift", {}).get("status") != "PASS":
         failures.append("configuration drift diagnostic NOT TESTED")
-    elif state["configuration_drift"].get("warnings") != content["installation"]["configuration_drift"].get("warnings"):
+    elif state["configuration_drift"].get("warnings") != installation["configuration_drift"].get("warnings"):
         failures.append("gateway drift warnings changed")
     if content.get("target") not in state.get("current_image_digests", []):
         failures.append("running image does not have the reviewed digest")
@@ -255,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action", required=True)
     for action in ("doctor", "plan"):
         command = sub.add_parser(action)
-        command.add_argument("--compose-file", required=True, type=Path)
+        command.add_argument("--compose-file", required=True, type=Path, action="append", help="Compose file; repeat for overrides")
         command.add_argument("--service")
         if action == "doctor":
             command.add_argument("--check-updates", action="store_true", help="Check the latest official release")
