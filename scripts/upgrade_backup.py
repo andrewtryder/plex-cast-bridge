@@ -10,9 +10,10 @@ import argparse
 import hashlib
 import os
 import sqlite3
+import shutil
 import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def _digest(path: Path) -> str:
@@ -39,7 +40,22 @@ def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="pcb-restore-check-") as temp:
         root = Path(temp)
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(root, filter="data")
+            for member in tar:
+                name = PurePosixPath(member.name)
+                if name.is_absolute() or ".." in name.parts or not name.parts or name.parts[0] != "data":
+                    raise ValueError("archive contains an unsafe path")
+                target = root.joinpath(*name.parts)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    content = tar.extractfile(member)
+                    if content is None:
+                        raise ValueError("archive member is unreadable")
+                    with content, target.open("xb") as out:
+                        shutil.copyfileobj(content, out)
+                else:
+                    raise ValueError("archive contains a link or special file")
         data = root / "data"
         if not data.is_dir():
             raise ValueError("archive has no data directory")
