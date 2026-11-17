@@ -1,0 +1,82 @@
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import upgrade
+
+
+def test_inspect_and_plan_redact_credentials_and_record_reviewed_identity(tmp_path, monkeypatch):
+    data = tmp_path / "custom-data"
+    data.mkdir()
+    secret = "DO-NOT-EXPOSE-THIS"
+    (data / "plex_connection.json").write_text(json.dumps({"jwt_token": secret}))
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}")
+    container = {"Id": "abcde", "Image": "sha256:old", "State": {"Running": True},
+                 "Config": {"Env": ["PLEX_TOKEN=" + secret]}, "HostConfig": {},
+                 "Mounts": [{"Type": "bind", "Source": str(data), "Destination": "/custom", "RW": True}]}
+
+    def fake_docker(*args):
+        if "config" in args:
+            return json.dumps({"services": {"bridge": {"image": "example:old", "environment": {"SECRET": secret}}}})
+        if args[-2:] == ("-q", "bridge"):
+            return "abcde\n"
+        if args[:2] == ("inspect", "abcde"):
+            return json.dumps([container])
+        if args[0] == "exec":
+            return "/custom\n"
+        if args == ("ps", "-q"):
+            return "abcde\n"
+        if args[:2] == ("image", "inspect"):
+            return '[{"RepoDigests":["example@sha256:old"]}]'
+        if args[:2] == ("buildx", "imagetools"):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    monkeypatch.setattr(upgrade, "_configuration_drift_capture", lambda _: {"available": True, "report": {"release_preflight_warnings": []}})
+    state = upgrade.inspect(compose, None)
+    plan_file = tmp_path / "private" / "plan.json"
+    report = upgrade.plan(state, "example@sha256:" + "a" * 64, plan_file)
+    assert report["installation"]["service"] == "bridge"
+    assert report["installation"]["data_source"] == str(data)
+    assert secret not in json.dumps(report)
+    assert secret not in plan_file.read_text()
+    assert plan_file.stat().st_mode & 0o077 == 0
+    before = plan_file.read_bytes()
+    upgrade.plan(state, "example@sha256:" + "a" * 64, plan_file)
+    assert plan_file.read_bytes() == before
+    state["_protected"]["files"]["plex_connection.json"] = "changed"
+    with pytest.raises(ValueError, match="no longer matches"):
+        upgrade.plan(state, "example@sha256:" + "a" * 64, plan_file)
+
+
+def test_plan_refuses_mutable_target_or_unavailable_registry(tmp_path, monkeypatch):
+    state = {"_protected": {}, "configuration_drift": {"status": "PASS", "warnings": []}}
+    with pytest.raises(ValueError, match="immutable"):
+        upgrade.plan(state, "example:latest", tmp_path / "plan.json")
+    monkeypatch.setattr(upgrade, "docker", lambda *args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    with pytest.raises(RuntimeError, match="unavailable"):
+        upgrade.plan(state, "example@sha256:" + "b" * 64, tmp_path / "plan.json")
+    assert not (tmp_path / "plan.json").exists()
+
+
+def test_plan_refuses_unavailable_drift_before_writing(tmp_path, monkeypatch):
+    state = {"_protected": {}, "configuration_drift": {"status": "NOT TESTED", "warnings": []}}
+    monkeypatch.setattr(upgrade, "docker", lambda *args: "")
+    with pytest.raises(ValueError, match="NOT TESTED"):
+        upgrade.plan(state, "example@sha256:" + "a" * 64, tmp_path / "plan.json")
+    assert not (tmp_path / "plan.json").exists()
+
+
+def test_release_lookup_resolves_official_immutable_digest(monkeypatch):
+    from io import BytesIO
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: BytesIO(b'{"tag_name":"v1.2.3","draft":false,"prerelease":false}'))
+    monkeypatch.setattr(upgrade, "docker", lambda *args: "Name: image\nDigest: sha256:" + "d" * 64 + "\n")
+    found = upgrade.latest_release()
+    assert found == {"version": "1.2.3", "target": "ghcr.io/andrewtryder/plex-cast-bridge@sha256:" + "d" * 64}
