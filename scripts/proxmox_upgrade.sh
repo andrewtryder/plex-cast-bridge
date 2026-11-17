@@ -136,7 +136,7 @@ rollback() {
   # The verified archive remains available for an explicit offline restore.
   echo "Preserving current data and configuration; backup is available for manual offline recovery." >&2
 
-  docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "$SERVICE_NAME"
+  docker compose -f "$COMPOSE_FILE" up -d --no-deps --pull never --force-recreate "$SERVICE_NAME"
   echo "Image rollback attempted using $target_backup." >&2
 }
 
@@ -344,7 +344,7 @@ fi
 
 echo "Recreating container with published image…"
 STOPPED_FOR_BACKUP=0
-docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "$SERVICE_NAME" || {
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --pull never --force-recreate "$SERVICE_NAME" || {
   echo "ERROR: candidate container could not start. Preserve data and use the image rollback instructions." >&2
   exit 2
 }
