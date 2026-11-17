@@ -14,6 +14,7 @@ import sqlite3
 import shutil
 import tarfile
 import tempfile
+from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 
 
@@ -37,7 +38,8 @@ def _files(root: Path) -> dict[str, str]:
     return files
 
 
-def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
+@contextmanager
+def restored_tree(archive: Path, expected: dict[str, str] | None = None):
     if expected is None:
         sidecar = archive.with_name(archive.name + ".sha256")
         try:
@@ -74,9 +76,16 @@ def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
         for path in data.rglob("*"):
             if not path.is_file() or path.suffix not in {".sqlite", ".sqlite3", ".db"}:
                 continue
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                     raise ValueError("restored SQLite integrity check failed")
+
+        yield data
+
+
+def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
+    with restored_tree(archive, expected):
+        pass
 
 
 def create(source: Path, archive: Path) -> None:

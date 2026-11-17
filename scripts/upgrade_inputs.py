@@ -48,3 +48,34 @@ def create_inputs_backup(inputs: dict[str, str | None], archive: Path) -> None:
             archive.unlink(missing_ok=True)
             archive.with_name(archive.name + ".sha256").unlink(missing_ok=True)
             raise
+
+
+def verify_inputs_backup(inputs: dict[str, str | None], archive: Path) -> None:
+    import tarfile
+    from upgrade_backup import verify
+
+    verify(archive)
+    with tarfile.open(archive, "r:gz") as tar:
+        manifest_file = tar.extractfile("data/manifest.json")
+        if manifest_file is None:
+            raise ValueError("Configuration backup manifest is missing")
+        manifest = json.load(manifest_file)
+        if not isinstance(manifest, list) or len(manifest) != len(inputs):
+            raise ValueError("Configuration backup manifest is invalid")
+        captured = {}
+        for entry in manifest:
+            if not isinstance(entry, dict) or not isinstance(entry.get("source"), str) or entry["source"] in captured:
+                raise ValueError("Configuration backup manifest is invalid")
+            filename = entry.get("file")
+            if filename is None:
+                value = None
+            else:
+                if not isinstance(filename, str) or not filename.startswith("input-") or not filename[6:].isdigit():
+                    raise ValueError("Configuration backup manifest is invalid")
+                content = tar.extractfile("data/" + filename)
+                if content is None:
+                    raise ValueError("Configuration backup input is missing")
+                value = content.read().hex()
+            captured[entry["source"]] = value
+        if captured != inputs:
+            raise ValueError("Configuration backup differs from the reviewed inputs")

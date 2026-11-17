@@ -39,3 +39,15 @@ def test_inputs_backup_rejects_changed_reviewed_file(tmp_path):
         create_inputs_backup({str(path): expected}, archive)
     assert not archive.exists()
     assert path.read_text() == "after"
+
+
+def test_verified_configuration_backup_must_match_reviewed_inputs(tmp_path):
+    from upgrade_inputs import verify_inputs_backup
+    path = tmp_path / "env"
+    path.write_text("reviewed")
+    inputs = {str(path): path.read_bytes().hex()}
+    archive = tmp_path / "config.tgz"
+    create_inputs_backup(inputs, archive)
+    verify_inputs_backup(inputs, archive)
+    with pytest.raises(ValueError, match="differs"):
+        verify_inputs_backup({str(path): b"different".hex()}, archive)

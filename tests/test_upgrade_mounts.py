@@ -102,7 +102,7 @@ esac
     docker.chmod(0o755)
     env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "APP_DIR": str(app),
            "COMPOSE_FILE": str(compose), "FAKE_LOG": str(logs), "FAKE_DRIFT": str(drift),
-           "TARGET_IMAGE": "example/image@sha256:" + "a" * 64}
+           "TARGET_IMAGE": "example/image@sha256:" + "a" * 64, "PCB_REVIEW_PLAN": "/not-used-when-pull-fails"}
     script = Path(__file__).resolve().parents[1] / "scripts/proxmox_upgrade.sh"
     result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
     assert result.returncode != 0
