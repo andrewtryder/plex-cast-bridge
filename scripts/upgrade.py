@@ -150,6 +150,12 @@ def _require_backed_mounts(container: dict[str, Any], data_dir: str, catalog_des
         raise ValueError("Additional or parent writable mounts need backup review before upgrading")
 
 
+def _normalize_mounts(container: dict[str, Any]) -> dict[str, Any]:
+    """Docker does not promise a stable order for a container's mounts."""
+    return {**container, "Mounts": sorted(container.get("Mounts") or [],
+            key=lambda mount: (str(mount.get("Destination")), str(mount.get("Source"))))}
+
+
 def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     files = [compose] if isinstance(compose, Path) else compose
     if not files or any(not path.is_file() for path in files):
@@ -170,7 +176,7 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     ids = docker(*prefix, "ps", "-q", service).split()
     if len(ids) != 1:
         raise ValueError("Exactly one running bridge container is required")
-    container = json.loads(docker("inspect", ids[0]))[0]
+    container = _normalize_mounts(json.loads(docker("inspect", ids[0]))[0])
     if not (container.get("State") or {}).get("Running"):
         raise ValueError("The bridge container is not running")
     data_dir = str(PurePosixPath(docker("exec", ids[0], "python", "-c", "from plex_cast_bridge.catalog_store import DATA_DIR; print(DATA_DIR)").strip()))

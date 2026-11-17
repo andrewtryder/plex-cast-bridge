@@ -474,3 +474,12 @@ def test_check_plan_accepts_new_repository_alias_for_same_image(tmp_path, monkey
     state["current_image_id"] = "sha256:different"
     with pytest.raises(ValueError, match="current_image_id"):
         upgrade.check_plan_file(path)
+
+
+def test_container_mount_order_does_not_change_reviewed_configuration():
+    mounts = [{"Destination": "/data", "Source": "/host/data", "RW": True},
+              {"Destination": "/catalog.json", "Source": "/host/catalog.json", "RW": True}]
+    first = upgrade._normalize_mounts({"Id": "same", "Mounts": mounts})
+    second = upgrade._normalize_mounts({"Id": "same", "Mounts": list(reversed(mounts))})
+    assert first == second
+    assert upgrade._signature(first, b"key") == upgrade._signature(second, b"key")
