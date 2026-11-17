@@ -60,7 +60,8 @@ checksum, restores the archive into an isolated temporary directory, checks
 SQLite integrity, checks the configured environment and credential files when
 present, and confirms the previous image is cached. An older archive without an
 integrity record is NOT TESTED by this check. This does not prove that a full
-service rollback will succeed or that every custom mount was backed up.
+service rollback will succeed, that restored ownership can be recreated, or that
+every custom mount was backed up.
 
 ## After an image upgrade
 
