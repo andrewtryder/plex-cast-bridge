@@ -22,7 +22,10 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
     data.chmod(0o777)
     (data / "plex_connection.json").write_text(json.dumps({"mode": "jwt", "jwt_token": "synthetic", "client_identifier": "id-1"}))
     catalog = tmp_path / "external-catalog.json" if external_catalog else data / "catalog.json"
-    catalog.write_text(json.dumps({"speakers": [{"id": "virtual-1", "cast_uuid": "cast-1"}]}))
+    speakers = [{"id": "virtual-1", "cast_uuid": "cast-1", "kind": "speaker"},
+                {"id": "virtual-2", "cast_uuid": "cast-2", "kind": "speaker"},
+                {"id": "virtual-group", "cast_uuid": "group-1", "kind": "group"}]
+    catalog.write_text(json.dumps({"speakers": speakers}))
     db_path = data / "music_index.sqlite3"
     with sqlite3.connect(db_path) as db:
         db.executescript("CREATE TABLE tracks(server_id TEXT,library_id TEXT,rating_key TEXT);"
@@ -61,7 +64,7 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
         assert result.returncode == 0, result.stderr
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data", "--health-url", health)
         assert result.returncode == 0, result.stderr
-        assert json.loads(catalog.read_text())["speakers"][0]["id"] == "virtual-1"
+        assert {item["id"] for item in json.loads(catalog.read_text())["speakers"]} == {item["id"] for item in speakers}
         assert json.loads((data / "plex_connection.json").read_text())["client_identifier"] == "id-1"
         result = cli("verify", "--plan-file", str(plan), "--health-url", health)
         assert result.returncode == 0, result.stderr
@@ -71,5 +74,56 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
         assert (data / "new-user-data.json").read_text() == '{"keep":true}'
         with sqlite3.connect(db_path) as db:
             assert db.execute("SELECT id FROM mixes").fetchall() == [(1,)]
+    finally:
+        run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
+
+
+@pytest.mark.skipif(os.getenv("PCB_TEST_UPGRADE_E2E") != "1", reason="requires local Docker and a published immutable target")
+def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_path):
+    if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
+        pytest.skip("bind mount test must run on the Docker daemon host")
+    root = Path(__file__).resolve().parents[1]
+    target = os.environ["PCB_TEST_UPGRADE_TARGET"]
+    data = tmp_path / "data"
+    data.mkdir(mode=0o777)
+    data.chmod(0o777)
+    (data / "catalog.json").write_text('{"speakers":[]}')
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    # The locally built candidate contains the new diagnostic; the pinned older
+    # published image does not. Its startup writes a synthetic file, then fails.
+    server = ("import os,sys; from pathlib import Path\n"
+              "if not os.path.exists('/app/src/plex_cast_bridge/config_drift.py'):\n"
+              " Path('/data/newer.json').write_text('{\\\"keep\\\":true}')\n"
+              " sys.exit(1)\n"
+              "from http.server import HTTPServer,BaseHTTPRequestHandler\n"
+              "H=type('H',(BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(200),s.end_headers()),"
+              "'log_message':lambda *a:None}); HTTPServer(('0.0.0.0',8000),H).serve_forever()")
+    compose = tmp_path / "compose.json"
+    compose.write_text(json.dumps({"services": {"bridge": {"image": "plex-cast-bridge-config-drift-test",
+        "command": ["python", "-c", server], "ports": [f"127.0.0.1:{port}:8000"], "volumes": [f"{data}:/data"]}}}))
+    env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbfail" + os.urandom(6).hex()}
+    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", "plex-cast-bridge-config-drift-test", "."],
+                   cwd=root, env=env, check=True, capture_output=True)
+    def run(*args):
+        return subprocess.run(list(args), cwd=root, env=env, capture_output=True, text=True, timeout=240)
+    def cli(*args):
+        return run(sys.executable, str(root / "scripts/upgrade.py"), *args)
+    plan = tmp_path / "review.json"
+    try:
+        result = run("docker", "compose", "-f", str(compose), "up", "-d", "--no-build")
+        assert result.returncode == 0, result.stderr
+        old = run("docker", "compose", "-f", str(compose), "ps", "-q", "bridge").stdout.strip()
+        old_image = json.loads(run("docker", "inspect", old).stdout)[0]["Image"]
+        result = cli("plan", "--compose-file", str(compose), "--target", target, "--plan-file", str(plan))
+        assert result.returncode == 0, result.stderr
+        result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data",
+                     "--health-url", f"http://127.0.0.1:{port}/health")
+        assert result.returncode != 0
+        assert (data / "newer.json").exists()
+        current = run("docker", "compose", "-f", str(compose), "ps", "-q", "bridge").stdout.strip()
+        assert json.loads(run("docker", "inspect", current).stdout)[0]["Image"] == old_image
+        assert not (plan.with_suffix(".backup") / "apply-completed.json").exists()
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
