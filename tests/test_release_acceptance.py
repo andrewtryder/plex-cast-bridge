@@ -123,7 +123,7 @@ def test_compare_fails_closed_when_cast_uuid_mapping_is_missing(tmp_path: Path):
 
     safe, differences = acceptance.compare(left, right, scope="local")
     assert not safe
-    assert any("four Cast UUID-to-device mappings" in item.get("reason", "") for item in differences)
+    assert any(item.get("path") == "api.speaker_identity" for item in differences)
 
 
 def test_compare_fails_closed_on_identity_change(tmp_path: Path):
@@ -187,9 +187,11 @@ def test_api_capture_records_get_status_and_mix_retrieval(monkeypatch):
                            "volumes": {"default_cast_volume": 0.4, "max_cast_volume": 0.85}},
     }
 
+    calls = []
     def fake_get(url, token, timeout):
         path = url[url.index("://") + 3 :]
         path = "/" + path.split("/", 1)[1]
+        calls.append(path)
         body = responses.get(path)
         return (200 if body is not None else 404), 1, body, None
 
@@ -197,14 +199,10 @@ def test_api_capture_records_get_status_and_mix_retrieval(monkeypatch):
     result = acceptance._api_capture("http://localhost:8000", None, 1)
     encoded = json.dumps(result)
     assert result["/health"]["http_status"] == 200
-    assert result["saved_mix_ids"] == [7]
-    assert result["mix:7"]["retrieved"] is True
-    assert result["music_index"]["track_count"] == 12
+    assert not set(calls) & {"/api/speakers", "/api/google-home/status", "/api/music-index", "/api/mixes"}
     assert result["plex"]["section"] == "Music"
     assert result["playback"]["Master Bedroom"]["state"] == "PLAYING"
     assert result["playback"]["Master Bedroom"]["current_track_present"] is True
-    assert result["speaker_identity"][0]["uuid"] == "cast-1"
-    assert "availability" not in result["speaker_identity"][0]
     assert "private track" not in encoded
     assert "private query" not in encoded
     assert "private detail" not in encoded
@@ -630,3 +628,56 @@ def test_compare_requires_valid_drift_and_detects_new_warning(tmp_path):
     safe, differences = acceptance.compare(left, right, "local")
     assert not safe
     assert any(d["path"] == "configuration_drift.catalog_write_key" for d in differences)
+
+
+def test_compare_accepts_varied_speaker_counts_and_optional_google_home(tmp_path):
+    for count in (0, 1, 7):
+        before = _valid_report()
+        before["local"]["google_home_sync_state"] = {"present": False}
+        before["local"]["installation_files"]["subscriber_credentials"] = {"present": False}
+        before["local"]["music_index_sqlite"] = {"present": False, "integrity": "NOT_TESTED"}
+        before["api"]["saved_mix_ids"] = []
+        before["api"]["speakers"] = [{"id": f"v{i}", "uuid": f"c{i}", "kind": "group" if i == 0 else "speaker"} for i in range(count)]
+        after = json.loads(json.dumps(before))
+        left, right = tmp_path / "before.json", tmp_path / "after.json"
+        left.write_text(json.dumps(before))
+        right.write_text(json.dumps(after))
+        assert acceptance.compare(left, right, "local")[0]
+        if count:
+            after["api"]["speakers"][0]["id"] = "changed"
+            right.write_text(json.dumps(after))
+            assert not acceptance.compare(left, right, "local")[0]
+
+
+def test_sqlite_wal_is_not_opened_or_changed(tmp_path):
+    path = tmp_path / "music_index.sqlite3"
+    path.write_bytes(b"database")
+    wal = tmp_path / "music_index.sqlite3-wal"
+    wal.write_bytes(b"journal")
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    result = acceptance._sqlite_integrity(path)
+    assert result["integrity"] == "NOT_TESTED"
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_capture_does_not_change_persistent_files(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from scripts.release_catalog_snapshot import snapshot
+
+    data = tmp_path / "persistent"
+    data.mkdir()
+    (data / "catalog.json").write_text('{"speakers":[{"id":"v1","cast_uuid":"cast1"}]}')
+    (data / "plex_connection.json").write_text('{"mode":"jwt","jwt_token":"private"}')
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in data.iterdir()}
+    args = Namespace(state_dir=tmp_path / "reports", env_file=tmp_path / "absent-env",
+                     credentials_file=tmp_path / "absent-creds", data_dir=data,
+                     compose_file=tmp_path / "compose.yml", api_url="http://example", api_key=None,
+                     timeout=1, container="test", backup_dir=None, project="", cloud_run_service="x", region="x")
+    monkeypatch.setattr(acceptance, "_get_json", lambda *args: (200, 1, {}, None))
+    monkeypatch.setattr(acceptance, "_container_capture", lambda *args: None)
+    monkeypatch.setattr(acceptance, "_catalog_snapshot_capture", lambda *args: snapshot(data / "catalog.json"))
+    monkeypatch.setattr(acceptance, "_configuration_drift_capture", lambda *args: {"available": False})
+    report = acceptance.capture(args)["report"]
+    assert report["api"]["speaker_identity"][0]["cast_uuid"] == "cast1"
+    assert report["cloud_run"]["status"] == "NOT_APPLICABLE"
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in data.iterdir()} == before

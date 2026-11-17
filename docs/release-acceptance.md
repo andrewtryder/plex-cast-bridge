@@ -1,7 +1,6 @@
 # Release acceptance for existing installations
 
-The acceptance collector is read-only. It performs GET requests, reads Docker and
-Cloud Run metadata, and opens the music index in SQLite read-only mode. It never
+The acceptance collector avoids GET endpoints that trigger discovery, catalog migration, index initialization, or scan recovery. It reads the selected catalog directly inside the running container and opens the music index in immutable read-only mode. An active SQLite WAL or journal makes index verification NOT TESTED; retry after a consistent offline snapshot is available. It never
 plays, pauses, changes volume, or stops a Cast device. Reports and the HMAC key
 are stored outside the repository under
 `~/.local/share/plex-cast-bridge/release-acceptance` (directory mode `0700`, files
@@ -28,9 +27,9 @@ python3 /path/to/plex-cast-bridge/scripts/release_acceptance.py capture \
 If the local API key is enabled, set `API_KEY` in the invoking shell; it is sent
 only in the `X-API-Key` header. Do not put API keys in a URL or command line. The
 collector records each GET's HTTP status and elapsed time, diagnostics
-outcomes, speaker names/UUIDs and visibility, the four Google Home virtual
+outcomes, speaker names/UUIDs and visibility, the existing Google Home virtual
 device IDs, Google Home link and catalog-sync state, Plex library selection,
-index counts and scan state, saved-mix IDs and retrieval results, database
+index counts and scan state, saved-mix IDs from the index when safely readable, database
 integrity, protected configuration fingerprints, Cloud Run's ready revision and
 traffic, active revision images/service accounts, and Docker image/mount data.
 Speaker online/offline availability is recorded for reference but excluded from
