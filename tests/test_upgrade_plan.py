@@ -184,7 +184,7 @@ def test_apply_never_claims_full_verification_when_index_is_untested(tmp_path, m
     import urllib.request
     state = {"configuration_drift": {"status": "PASS", "warnings": []},
              "_protected": {"inputs": {}}, "compose_files": [str(tmp_path / "compose.yml")],
-             "service": "bridge", "music_index_present": True, "data_source": str(tmp_path)}
+             "service": "bridge", "music_index_present": True, "data_source": str(tmp_path), "container_id": "cid", "data_dir": "/data"}
     content = {"backup_dir": str(tmp_path / "backup"), "target": "image@sha256:" + "a" * 64,
                "plan_auth": "signed", "installation": {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge"}}
     monkeypatch.setattr(upgrade, "check_plan_file", lambda _: (content, state))
@@ -194,13 +194,13 @@ def test_apply_never_claims_full_verification_when_index_is_untested(tmp_path, m
         def __enter__(self): return self
         def __exit__(self, *args): pass
     monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
-    monkeypatch.setattr(upgrade, "create_inputs_backup", lambda *args: None)
+    monkeypatch.setattr(upgrade, "create_inputs_backup", lambda *args, **kwargs: None)
     monkeypatch.setattr(upgrade, "verify_inputs_backup", lambda *args: None)
     monkeypatch.setattr(upgrade, "verify_backup", lambda *args: None)
     monkeypatch.setattr(upgrade, "_receipt", lambda *args: {"schema": 2, "plan_auth": "signed", "target": content["target"]})
     monkeypatch.setattr(upgrade, "inspect", lambda *args: state)
     monkeypatch.setattr(upgrade, "verify_plan", lambda *args: [])
-    monkeypatch.setattr(upgrade, "verify_music_backup", lambda *args: ["music index verification NOT TESTED"])
+    monkeypatch.setattr(upgrade, "verify_music_backup", lambda *args, **kwargs: ["music index verification NOT TESTED"])
     calls = []
     monkeypatch.setattr(upgrade.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace(returncode=0))
     result = upgrade.apply_plan(tmp_path / "plan.json", confirm_exclusive=True, acknowledge_drift=False, health_url="http://localhost/health")
@@ -356,6 +356,8 @@ def test_quiesced_backup_rejects_changes_after_review(tmp_path, monkeypatch):
         raise AssertionError(args)
     monkeypatch.setattr(upgrade, "docker", fake_docker)
     monkeypatch.setattr(upgrade, "_container_file_matches", lambda *args: True)
+    from upgrade_backup import _files, verify
+    monkeypatch.setattr(upgrade, "docker_backup", lambda action, image, source, directory: verify(directory / "data.tgz", _files(source)))
     plan = tmp_path / "review.json"
     upgrade.plan(saved, "image@sha256:" + "a" * 64, plan)
     backup = tmp_path / "review.backup"
@@ -435,6 +437,8 @@ def test_quiesced_external_catalog_is_in_verified_configuration_backup(tmp_path,
         raise AssertionError(args)
     monkeypatch.setattr(upgrade, "docker", fake_docker)
     monkeypatch.setattr(upgrade, "_container_file_matches", lambda *args: True)
+    from upgrade_backup import _files, verify
+    monkeypatch.setattr(upgrade, "docker_backup", lambda action, image, source, directory: verify(directory / "data.tgz", _files(source)))
     plan = tmp_path / "review.json"
     upgrade.plan(saved, "image@sha256:" + "a" * 64, plan)
     backup = tmp_path / "review.backup"
@@ -504,3 +508,85 @@ def test_stage_restore_requires_separate_private_destination(tmp_path, monkeypat
     upgrade.stage_restore(tmp_path / "plan", destination)
     assert (destination / "state").read_text() == "old"
     assert (active / "state").read_text() == "newer"
+
+
+def test_restore_data_requires_confirmation_and_preserves_newer_data(tmp_path, monkeypatch):
+    from upgrade_backup import create, restored_tree
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "state").write_text("newer")
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "state").write_text("original")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    create(old, backup / "data.tgz")
+    saved = {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge"}
+    container = {"Id": "synthetic", "State": {"Running": True}}
+    content = {"installation": saved}
+    monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
+    context_calls = []
+    def recovery_context(_):
+        context_calls.append(True)
+        state = container if len(context_calls) == 1 else {"Id": "synthetic", "State": {"Running": False}}
+        return saved, backup, state, data
+    monkeypatch.setattr(upgrade, "_recovery_context", recovery_context)
+    monkeypatch.setattr(upgrade, "_check_recovery_configuration", lambda _: None)
+    commands = []
+    def fake_docker(*args):
+        commands.append(args)
+        if args[:2] == ("inspect", "synthetic"):
+            return json.dumps([{"Id": "synthetic", "State": {"Running": False}}])
+        return ""
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    monkeypatch.setattr(upgrade, "rollback_plan", lambda *args, **kwargs: 0)
+    with pytest.raises(ValueError, match="Confirm replacement"):
+        upgrade.restore_data(tmp_path / "plan", confirm_overwrite=False, confirm_exclusive=True, health_url="http://localhost/health")
+    assert not commands and (data / "state").read_text() == "newer"
+    assert upgrade.restore_data(tmp_path / "plan", confirm_overwrite=True, confirm_exclusive=True, health_url="http://localhost/health") == 0
+    assert any("stop" in args for args in commands)
+    assert (data / "state").read_text() == "original"
+    journal = json.loads((backup / "data-restore-journal.json").read_text())
+    assert (Path(journal["preserved"]) / "state").read_text() == "newer"
+    with restored_tree(Path(journal["safety_archive"])) as safe:
+        assert (safe / "state").read_text() == "newer"
+
+
+def test_container_owned_credential_can_be_read_without_changing_it(tmp_path, monkeypatch):
+    path = tmp_path / "plex_connection.json"
+    path.write_text("private")
+    original_mode = path.stat().st_mode & 0o777
+    original = Path.read_bytes
+    def read_bytes(item):
+        if item == path:
+            raise PermissionError("container owned")
+        return original(item)
+    calls = []
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(upgrade, "_read_container_file", lambda container, name: calls.append((container, str(name))) or b"private")
+    result = upgrade._read_persistent_files(tmp_path, Path("catalog.json"), container_id="cid", container_root="/data")
+    assert result["plex_connection.json"] == b"private".hex()
+    assert calls == [("cid", "/data/plex_connection.json")]
+    assert path.stat().st_mode & 0o777 == original_mode
+
+
+def test_live_music_snapshot_reads_docker_copy_without_touching_database(tmp_path, monkeypatch):
+    import shutil
+    import sqlite3
+    path = tmp_path / "music_index.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.executescript("CREATE TABLE tracks(server_id TEXT,library_id TEXT,rating_key TEXT);"
+                         "CREATE TABLE artists(server_id TEXT,library_id TEXT,artist_key TEXT);"
+                         "CREATE TABLE albums(server_id TEXT,library_id TEXT,album_key TEXT);"
+                         "CREATE TABLE mixes(id INTEGER PRIMARY KEY,name TEXT);"
+                         "CREATE TABLE mix_tracks(mix_id INTEGER,position INTEGER,rating_key TEXT);"
+                         "INSERT INTO mixes VALUES(1,'private');")
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    def copy(*args):
+        assert args[:2] == ("cp", "cid:/data/music_index.sqlite3")
+        shutil.copyfile(path, args[2])
+        return ""
+    monkeypatch.setattr(upgrade, "docker", copy)
+    result = upgrade._live_music_snapshot(path, "cid", "/data")
+    assert result["mixes"] == [(1, "private")]
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before

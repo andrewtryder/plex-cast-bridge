@@ -9,7 +9,7 @@ from pathlib import Path
 from upgrade_backup import create
 
 
-def create_inputs_backup(inputs: dict[str, str | None], archive: Path) -> None:
+def create_inputs_backup(inputs: dict[str, str | None], archive: Path, *, reader=None) -> None:
     """Archive exactly the input bytes inspected at review; abort on a change."""
     with tempfile.TemporaryDirectory(prefix="pcb-config-backup-") as temp:
         stage = Path(temp)
@@ -17,7 +17,7 @@ def create_inputs_backup(inputs: dict[str, str | None], archive: Path) -> None:
         for index, (name, expected) in enumerate(sorted(inputs.items())):
             path = Path(name)
             try:
-                value = path.read_bytes()
+                value = reader(path) if reader else path.read_bytes()
             except FileNotFoundError:
                 value = None
             if (value.hex() if value is not None else None) != expected:
@@ -34,7 +34,8 @@ def create_inputs_backup(inputs: dict[str, str | None], archive: Path) -> None:
         def recheck() -> None:
             for name, expected in inputs.items():
                 try:
-                    current = Path(name).read_bytes().hex()
+                    path = Path(name)
+                    current = (reader(path) if reader else path.read_bytes()).hex()
                 except FileNotFoundError:
                     current = None
                 if current != expected:

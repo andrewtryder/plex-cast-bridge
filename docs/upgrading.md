@@ -66,7 +66,7 @@ python3 scripts/upgrade.py rollback \
   --confirm-image-rollback
 ```
 
-This changes the image only. It does not overwrite newer data, credentials, or Compose files with the backup. An older image may not understand data changed by a newer version; if it cannot start, keep the backup and current data and investigate before restoring anything. Never extract a database backup over a running writer. A full data restore can discard newer changes and requires a separate, explicitly authorized offline procedure.
+This changes the image only. It does not overwrite newer data, credentials, or Compose files with the backup. An older image may not understand data changed by a newer version; if it cannot start, keep the backup and current data and investigate before restoring anything. Never extract a database backup over a running writer. A full data restore replaces the active data with the older backup, so newer changes will no longer appear in the service. It requires separate explicit authorization and all writers must remain stopped.
 
 You can inspect a backup without changing active data. Choose a new destination under a private directory; preserving the original file ownership may require additional host permissions:
 
@@ -79,8 +79,18 @@ python3 scripts/upgrade.py stage-restore \
 
 The staged copy contains credentials and needs the same protection as the original data. The command refuses to overwrite an existing destination or write inside the active data directory.
 
+If image-only rollback cannot recover the service and you have reviewed the backup, this separate command stops the bridge, creates and verifies a safety backup of current data, preserves the current directory, restores the selected data backup, and starts the previous image:
+
+```sh
+python3 scripts/upgrade.py restore-data \
+  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
+  --confirm-overwrite-data --confirm-exclusive-data
+```
+
+This is an explicit data replacement. Keep the printed safety backup, preserved directory, and restore journal: they contain newer data and credentials. The command refuses to proceed if it cannot preserve ownership, if a data restore journal already exists, or if the current configuration differs from the reviewed one. It does not replace Compose files, external catalogs, or credentials outside the data directory. If interrupted, leave writers stopped and inspect the journal and preserved directory before taking further action.
+
 ## Google Home and Cloud Run
 
 Cloud Run is optional and is not changed by a local upgrade. Existing Google Home users should keep their current cloud service, credentials, Firestore data, and linked devices. Cloud Run image updates are a separate maintainer operation described in [persistent state and upgrades](persistent-state.md); do not rerun first-install provisioning or relink merely to upgrade.
 
-The current draft does not yet provide an automated offline data restore or prove that restored ownership can be recreated. It stops for manual review when it cannot safely account for additional writable mounts. A catalog outside the data mount is supported only when it is an individually bind-mounted file. Named Docker volumes whose source is inaccessible to the host user also need manual handling. These limitations are being addressed before the workflow is recommended for general users.
+The offline data restore has not yet been validated across all filesystem and container configurations. It stops for manual review when it cannot safely account for additional writable mounts. A catalog outside the data mount is supported only when it is an individually bind-mounted file. Named Docker volumes whose source is inaccessible to the host user also need manual handling. These limitations are being addressed before the workflow is recommended for general users.

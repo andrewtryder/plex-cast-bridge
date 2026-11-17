@@ -18,7 +18,9 @@ from typing import Any
 from upgrade_mounts import assert_no_other_writers, resolve_data_mount
 from release_acceptance import PROTECTED_ENV_KEYS, _configuration_drift_capture, _catalog_snapshot_capture
 from upgrade_inputs import create_inputs_backup, verify_inputs_backup
-from upgrade_backup import _files as backup_files, restored_tree, restore_to_new_directory, verify as verify_backup
+from upgrade_restore import restore_offline
+from upgrade_backup import restored_tree, restore_to_new_directory, verify as verify_backup
+from upgrade_docker_backup import docker_backup, read_host_file
 from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
@@ -56,7 +58,8 @@ def _catalog_relative(data_dir: str, catalog_path: str | None, workdir: str) -> 
         raise ValueError("Custom catalog is outside the data mount; its backup needs manual review") from exc
 
 
-def _read_recorded_inputs(paths: list[str]) -> dict[str, str | None]:
+def _read_recorded_inputs(paths: list[str], *, fallback_image: str | None = None,
+                          fallback_paths: set[str] | None = None) -> dict[str, str | None]:
     result = {}
     for name in paths:
         path = Path(name)
@@ -64,6 +67,10 @@ def _read_recorded_inputs(paths: list[str]) -> dict[str, str | None]:
             result[str(path)] = path.read_bytes().hex()
         except FileNotFoundError:
             result[str(path)] = None
+        except PermissionError as exc:
+            if not fallback_image or str(path) not in (fallback_paths or set()):
+                raise RuntimeError("A Compose configuration input cannot be read") from exc
+            result[str(path)] = read_host_file(fallback_image, path).hex()
         except OSError as exc:
             raise RuntimeError("A Compose configuration input cannot be read") from exc
     return result
@@ -91,15 +98,20 @@ def _configuration_inputs(files: list[Path], unresolved: dict[str, Any], environ
     return _read_recorded_inputs(sorted(str(path.resolve()) for path in paths))
 
 
-def _container_file_matches(container_id: str, container_path: str, host_path: Path) -> bool:
+def _container_file_matches(container_id: str, container_path: str, host_path: Path, image: str | None = None) -> bool:
     """Catch bind-mounted files whose host pathname now names a different inode."""
     if ":" in container_path:
         raise ValueError("Catalog mount path requires manual review")
     with tempfile.TemporaryDirectory(prefix="pcb-mount-check-") as temp:
         copied = Path(temp) / "catalog"
         docker("cp", f"{container_id}:{container_path}", str(copied))
-        return hmac.compare_digest(hashlib.sha256(copied.read_bytes()).digest(),
-                                   hashlib.sha256(host_path.read_bytes()).digest())
+        try:
+            host_bytes = host_path.read_bytes()
+        except PermissionError:
+            if not image:
+                raise
+            host_bytes = read_host_file(image, host_path)
+        return hmac.compare_digest(hashlib.sha256(copied.read_bytes()).digest(), hashlib.sha256(host_bytes).digest())
 
 
 def _resolve_catalog(data_dir: str, catalog_path: str | None, workdir: str,
@@ -123,7 +135,19 @@ def _resolve_catalog(data_dir: str, catalog_path: str | None, workdir: str,
         return None, source, str(target)
 
 
-def _read_persistent_files(root: Path, catalog_relative: Path | None) -> dict[str, str | None]:
+def _read_container_file(container_id: str, path: PurePosixPath) -> bytes:
+    if ":" in str(path):
+        raise ValueError("Container file path requires manual review")
+    with tempfile.TemporaryDirectory(prefix="pcb-file-read-") as temp:
+        copied = Path(temp) / "file"
+        docker("cp", f"{container_id}:{path}", str(copied))
+        if copied.is_symlink() or not copied.is_file():
+            raise ValueError("Persistent configuration is not a regular file")
+        return copied.read_bytes()
+
+
+def _read_persistent_files(root: Path, catalog_relative: Path | None, *,
+                           container_id: str | None = None, container_root: str | None = None) -> dict[str, str | None]:
     files = {}
     for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "plex_device_private.pem", "plex_device_public.pem"):
         if name == "catalog.json" and catalog_relative is None:
@@ -131,9 +155,16 @@ def _read_persistent_files(root: Path, catalog_relative: Path | None) -> dict[st
             continue
         path = root / (catalog_relative if name == "catalog.json" else name)
         try:
+            if path.is_symlink():
+                raise ValueError("Persistent configuration symlinks require manual review")
             files[name] = path.read_bytes().hex()
         except FileNotFoundError:
             files[name] = None
+        except PermissionError as exc:
+            if not container_id or not container_root:
+                raise RuntimeError("A persistent configuration file is not readable") from exc
+            relative = catalog_relative if name == "catalog.json" else Path(name)
+            files[name] = _read_container_file(container_id, PurePosixPath(container_root) / str(relative)).hex()
         except OSError as exc:
             raise RuntimeError("A persistent configuration file is not readable") from exc
     return files
@@ -189,7 +220,7 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     _require_backed_mounts(container, data_dir, catalog_dest)
     if catalog_external:
         assert_no_other_writers(catalog_external, others)
-        if not _container_file_matches(ids[0], catalog_dest, catalog_external):
+        if not _container_file_matches(ids[0], catalog_dest, catalog_external, container["Image"]):
             raise ValueError("Container and host external catalog differ; manual review is required")
     image_info = json.loads(docker("image", "inspect", container["Image"]))[0]
     drift = _configuration_drift_capture(ids[0])
@@ -201,9 +232,12 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     identity = {name: container.get(name) for name in ("Id", "Image", "Config", "HostConfig", "Mounts")}
     # Configuration is retained only in memory and included in a keyed combined
     # comparison; no individual credential values or hashes are printed.
-    protected_files = _read_persistent_files(data_source, catalog_relative)
+    protected_files = _read_persistent_files(data_source, catalog_relative, container_id=ids[0], container_root=data_dir)
     if catalog_external:
-        protected_files["catalog.json"] = catalog_external.read_bytes().hex()
+        try:
+            protected_files["catalog.json"] = catalog_external.read_bytes().hex()
+        except PermissionError:
+            protected_files["catalog.json"] = read_host_file(container["Image"], catalog_external).hex()
         inputs[str(catalog_external)] = protected_files["catalog.json"]
     if protected_files["catalog.json"] is None and catalog["speakers"]:
         raise ValueError("Existing speaker identities are in a non-persistent seed catalog; manual backup is required")
@@ -218,9 +252,12 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
         chosen = max(candidates, key=lambda item: len(PurePosixPath(item["Destination"]).parts))
         path = Path(chosen["Source"]) / str(target.relative_to(PurePosixPath(chosen["Destination"])))
         try:
-            if not _container_file_matches(ids[0], str(target), path):
+            if not _container_file_matches(ids[0], str(target), path, container["Image"]):
                 raise ValueError("Container and host subscriber credentials differ; manual review is required")
-            protected_files["subscriber_credentials"] = path.read_bytes().hex()
+            try:
+                protected_files["subscriber_credentials"] = path.read_bytes().hex()
+            except PermissionError:
+                protected_files["subscriber_credentials"] = read_host_file(container["Image"], path).hex()
             credential_source = str(path.resolve())
             inputs[credential_source] = protected_files["subscriber_credentials"]
         except OSError as exc:
@@ -487,7 +524,8 @@ def check_quiesced_backup(plan_path: Path, backup_dir: Path, container_id: str) 
     files = saved["compose_files"]
     prefix = ("compose", *(item for path in files for item in ("-f", path)))
     config = json.loads(docker(*prefix, "config", "--format", "json"))
-    inputs = _read_recorded_inputs(saved["configuration_input_paths"])
+    fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
+    inputs = _read_recorded_inputs(saved["configuration_input_paths"], fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
     verify_inputs_backup(inputs, backup_dir / "configuration.tgz")
     relative = Path(saved["catalog_relative"]) if saved.get("catalog_relative") is not None else None
     if relative is not None and (relative.is_absolute() or ".." in relative.parts):
@@ -495,7 +533,7 @@ def check_quiesced_backup(plan_path: Path, backup_dir: Path, container_id: str) 
     external_catalog = saved.get("catalog_external_source")
     if external_catalog:
         assert_no_other_writers(Path(external_catalog), others)
-        if not _container_file_matches(container_id, saved["catalog_container_path"], Path(external_catalog)):
+        if not _container_file_matches(container_id, saved["catalog_container_path"], Path(external_catalog), saved["current_image_id"]):
             raise ValueError("Container and host external catalog differ; backup cannot be trusted")
     with restored_tree(backup_dir / "data.tgz") as restored:
         snapshot_files = _read_persistent_files(restored, relative)
@@ -503,7 +541,7 @@ def check_quiesced_backup(plan_path: Path, backup_dir: Path, container_id: str) 
         if credential_source:
             if credential_source not in inputs or inputs[credential_source] is None:
                 raise ValueError("Reviewed subscriber credentials are unavailable")
-            if not _container_file_matches(container_id, saved["credential_container_path"], Path(credential_source)):
+            if not _container_file_matches(container_id, saved["credential_container_path"], Path(credential_source), saved["current_image_id"]):
                 raise ValueError("Container and host subscriber credentials differ; backup cannot be trusted")
             snapshot_files["subscriber_credentials"] = inputs[credential_source]
         if external_catalog:
@@ -529,8 +567,8 @@ def check_quiesced_backup(plan_path: Path, backup_dir: Path, container_id: str) 
                 raise ValueError("Quiesced backup or configuration changed since review")
     # Confirm the archived source still matches the stopped data tree. External
     # host writers must remain stopped until replacement completes.
-    verify_backup(backup_dir / "data.tgz", backup_files(source))
-    if _read_recorded_inputs(saved["configuration_input_paths"]) != inputs:
+    docker_backup("compare", saved["current_image_id"], source, backup_dir)
+    if _read_recorded_inputs(saved["configuration_input_paths"], fallback_image=saved["current_image_id"], fallback_paths=fallback_paths) != inputs:
         raise ValueError("Configuration inputs changed while checking the quiesced backup")
 
 
@@ -565,11 +603,37 @@ def _music_snapshot(path: Path) -> dict[str, Any] | None:
         raise RuntimeError("music index verification NOT TESTED") from exc
 
 
-def verify_music_backup(backup: Path, data_source: Path) -> list[str]:
+def _live_music_snapshot(path: Path, container_id: str, container_root: str) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    journal = path.with_name(path.name + "-journal")
+    wal = path.with_name(path.name + "-wal")
+    if journal.exists() or wal.exists():
+        raise RuntimeError("music index verification NOT TESTED while a journal or WAL exists")
+    try:
+        before = path.stat()
+        with tempfile.TemporaryDirectory(prefix="pcb-index-check-") as temp:
+            copy = Path(temp) / "music_index.sqlite3"
+            docker("cp", f"{container_id}:{PurePosixPath(container_root) / 'music_index.sqlite3'}", str(copy))
+            if copy.is_symlink() or not copy.is_file():
+                raise RuntimeError("music index verification NOT TESTED: source is not a regular file")
+            snapshot = _music_snapshot(copy)
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or journal.exists() or wal.exists():
+            raise RuntimeError("music index verification NOT TESTED because the database changed")
+        return snapshot
+    except OSError as exc:
+        raise RuntimeError("music index verification NOT TESTED") from exc
+
+
+def verify_music_backup(backup: Path, data_source: Path, *, container_id: str | None = None,
+                        container_root: str | None = None) -> list[str]:
     try:
         with restored_tree(backup) as restored:
             before = _music_snapshot(restored / "music_index.sqlite3")
-        after = _music_snapshot(data_source / "music_index.sqlite3")
+        live_path = data_source / "music_index.sqlite3"
+        after = (_live_music_snapshot(live_path, container_id, container_root)
+                 if container_id and container_root else _music_snapshot(live_path))
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         return [str(exc) if isinstance(exc, RuntimeError) else "music index verification NOT TESTED"]
     if before is not None:
@@ -606,7 +670,15 @@ def apply_plan(plan_path: Path, *, confirm_exclusive: bool, acknowledge_drift: b
         raise ValueError("The planned backup directory already exists; inspect it before retrying")
     backup_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     try:
-        create_inputs_backup(state["_protected"]["inputs"], backup_dir / "configuration.tgz")
+        fallback_paths = {value for value in (state.get("credential_source"), state.get("catalog_external_source")) if value}
+        def read_input(path: Path) -> bytes:
+            try:
+                return path.read_bytes()
+            except PermissionError:
+                if str(path) not in fallback_paths:
+                    raise
+                return read_host_file(state["current_image_id"], path)
+        create_inputs_backup(state["_protected"]["inputs"], backup_dir / "configuration.tgz", reader=read_input)
         verify_inputs_backup(state["_protected"]["inputs"], backup_dir / "configuration.tgz")
         check_plan_file(plan_path)
     except (OSError, ValueError, RuntimeError):
@@ -657,7 +729,8 @@ def verify_installation(plan_path: Path, *, health_url: str) -> int:
         verify_inputs_backup(after["_protected"]["inputs"], backup_dir / "configuration.tgz")
     except (OSError, ValueError):
         failures.append("configuration backup does not match the reviewed inputs")
-    failures.extend(verify_music_backup(backup_dir / "data.tgz", Path(after["data_source"])))
+    failures.extend(verify_music_backup(backup_dir / "data.tgz", Path(after["data_source"]),
+                                        container_id=after["container_id"], container_root=after["data_dir"]))
     try:
         with urlopen(health_url, timeout=5) as response:
             if response.status != 200:
@@ -672,10 +745,7 @@ def verify_installation(plan_path: Path, *, health_url: str) -> int:
     return 0
 
 
-def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
-    if not confirm:
-        raise ValueError("Confirm image rollback; the existing data and configuration will be kept")
-    content = load_plan(plan_path)
+def _recovery_context(content: dict[str, Any]) -> tuple[dict[str, Any], Path, dict[str, Any], Path]:
     saved = content["installation"]
     backup_dir = Path(content["backup_dir"])
     verify_backup(backup_dir / "data.tgz")
@@ -707,7 +777,8 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
         paths = saved.get("configuration_input_paths")
         if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
             raise ValueError("Reviewed configuration input evidence is unavailable")
-        inputs = _read_recorded_inputs(paths)
+        fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
+        inputs = _read_recorded_inputs(paths, fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
         actual = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
         if not hmac.compare_digest(content["verification"]["compose_configuration"], actual):
             raise ValueError("Compose inputs changed; image rollback requires manual review")
@@ -720,6 +791,15 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     key = bytes.fromhex(content["key"])
     if str(source) != saved["data_source"] or not hmac.compare_digest(content["verification"]["mounts"], _mount_signature(current, key)):
         raise ValueError("Persistent mounts changed; image rollback requires manual review")
+    return saved, backup_dir, current, source
+
+
+def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
+    if not confirm:
+        raise ValueError("Confirm image rollback; the existing data and configuration will be kept")
+    content = load_plan(plan_path)
+    saved, backup_dir, _, _ = _recovery_context(content)
+    old_id = saved["current_image_id"]
     files = saved["compose_files"]
     first = Path(files[0])
     env = {**os.environ, "COMPOSE_FILE": str(first), "PCB_COMPOSE_FILES_JSON": json.dumps(files),
@@ -736,6 +816,70 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
         return 2
     print("Previous image is running; current data and configuration were preserved.")
     return 0
+
+
+def _check_recovery_configuration(content: dict[str, Any]) -> None:
+    saved = content["installation"]
+    files = saved["compose_files"]
+    prefix = ("compose", *(item for path in files for item in ("-f", path)))
+    config = json.loads(docker(*prefix, "config", "--format", "json"))
+    fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
+    inputs = _read_recorded_inputs(saved["configuration_input_paths"], fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
+    current = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
+    if not hmac.compare_digest(content["verification"]["compose_configuration"], current):
+        raise ValueError("Compose or credential inputs changed; data restoration requires manual review")
+
+
+def restore_data(plan_path: Path, *, confirm_overwrite: bool, confirm_exclusive: bool, health_url: str) -> int:
+    if not confirm_overwrite or not confirm_exclusive:
+        raise ValueError("Confirm replacement of current data and that all other writers will remain stopped")
+    content = load_plan(plan_path)
+    saved, backup_dir, container, source = _recovery_context(content)
+    _check_recovery_configuration(content)
+    journal = backup_dir / "data-restore-journal.json"
+    if journal.exists() or journal.is_symlink():
+        raise ValueError("A prior data restore journal exists; inspect it before retrying")
+    safety = backup_dir / ("pre-restore-" + secrets.token_hex(12) + ".tgz")
+    files = saved["compose_files"]
+    prefix = ("compose", *(item for path in files for item in ("-f", path)))
+    was_running = (container.get("State") or {}).get("Running") is True
+    original = source.stat()
+    print("WARNING: replacing current data with the selected backup. Newer data will be retained separately and may not appear in the restored service.")
+    print(f"A safety backup of the current data will be created at {safety}.")
+    try:
+        if was_running:
+            docker(*prefix, "stop", saved["service"])
+        if container.get("Id"):
+            stopped = json.loads(docker("inspect", container["Id"]))[0]
+            if (stopped.get("State") or {}).get("Running") is not False:
+                raise RuntimeError("Bridge did not stop; current data was not replaced")
+        def verify_stopped() -> None:
+            _, _, rechecked_container, rechecked = _recovery_context(content)
+            _check_recovery_configuration(content)
+            if rechecked != source or rechecked_container.get("Id") != container.get("Id"):
+                raise ValueError("Data mount or container changed during restore preflight")
+            if rechecked_container.get("Id") and (rechecked_container.get("State") or {}).get("Running") is not False:
+                raise RuntimeError("Bridge restarted during restore preflight; current data was not replaced")
+        verify_stopped()
+        result = restore_offline(backup_dir / "data.tgz", source, safety, journal,
+                                 writers_stopped=True, confirm_overwrite=True, pre_swap_check=verify_stopped)
+    except BaseException:
+        # Restart only when the original tree is still in place. A partially
+        # installed restore is left stopped for inspection and manual recovery.
+        try:
+            current = source.stat()
+            same_tree = (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino)
+        except OSError:
+            same_tree = False
+        if was_running and same_tree:
+            try:
+                docker(*prefix, "start", saved["service"])
+            except RuntimeError:
+                print("Could not restart the previous container; inspect it before retrying.", file=sys.stderr)
+        raise
+    print(f"Newer data was retained at {result['preserved']} and in the safety backup.")
+    print(f"Restore journal: {journal}")
+    return rollback_plan(plan_path, confirm=True, health_url=health_url)
 
 
 def stage_restore(plan_path: Path, destination: Path) -> None:
@@ -789,11 +933,19 @@ def main(argv: list[str] | None = None) -> int:
     rollback.add_argument("--plan-file", required=True, type=Path)
     rollback.add_argument("--confirm-image-rollback", action="store_true")
     rollback.add_argument("--health-url", default="http://127.0.0.1:8000/health")
+    restore = sub.add_parser("restore-data", help="Explicitly restore the old data after preserving newer data")
+    restore.add_argument("--plan-file", required=True, type=Path)
+    restore.add_argument("--confirm-overwrite-data", action="store_true")
+    restore.add_argument("--confirm-exclusive-data", action="store_true")
+    restore.add_argument("--health-url", default="http://127.0.0.1:8000/health")
     stage = sub.add_parser("stage-restore", help="Restore a backup to a new offline directory for review")
     stage.add_argument("--plan-file", required=True, type=Path)
     stage.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.action == "restore-data":
+            return restore_data(args.plan_file, confirm_overwrite=args.confirm_overwrite_data,
+                                confirm_exclusive=args.confirm_exclusive_data, health_url=args.health_url)
         if args.action == "stage-restore":
             stage_restore(args.plan_file, args.destination)
             print(f"Backup restored to {args.destination}; the active data directory was not changed.")

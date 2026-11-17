@@ -342,7 +342,7 @@ rechecked="$(python3 "$SCRIPT_DIR/upgrade_mounts.py" "$cid" --data-dir "$DATA_CO
 if [[ "$(printf '%s\n' "$rechecked" | sed -n '1p')" != "$DATA_SOURCE" ]]; then
   echo "ERROR: persistent data mount changed during preflight." >&2; exit 1
 fi
-python3 "$SCRIPT_DIR/upgrade_backup.py" create "$DATA_SOURCE" "$BACKUP_DIR/data.tgz" --writers-stopped
+python3 "$SCRIPT_DIR/upgrade_docker_backup.py" create --image "$PREV_IMAGE" --source "$DATA_SOURCE" --backup-dir "$BACKUP_DIR"
 python3 "$SCRIPT_DIR/upgrade_backup.py" verify "$BACKUP_DIR/data.tgz"
 echo "Restored and verified an isolated copy of the quiesced data backup."
 python3 "$SCRIPT_DIR/upgrade.py" check-backup --plan-file "$PCB_REVIEW_PLAN" --backup-dir "$BACKUP_DIR" --container "$cid" || {

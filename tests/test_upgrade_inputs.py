@@ -51,3 +51,17 @@ def test_verified_configuration_backup_must_match_reviewed_inputs(tmp_path):
     verify_inputs_backup(inputs, archive)
     with pytest.raises(ValueError, match="differs"):
         verify_inputs_backup({str(path): b"different".hex()}, archive)
+
+
+def test_inputs_backup_uses_supplied_reader_without_changing_source(tmp_path):
+    path = tmp_path / "container-owned"
+    path.write_text("synthetic")
+    calls = []
+    def reader(item):
+        calls.append(item)
+        return b"synthetic"
+    archive = tmp_path / "config.tgz"
+    create_inputs_backup({str(path): b"synthetic".hex()}, archive, reader=reader)
+    assert len(calls) >= 2
+    assert path.read_text() == "synthetic"
+    verify(archive)

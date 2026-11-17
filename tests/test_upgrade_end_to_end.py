@@ -74,6 +74,15 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
         assert (data / "new-user-data.json").read_text() == '{"keep":true}'
         with sqlite3.connect(db_path) as db:
             assert db.execute("SELECT id FROM mixes").fetchall() == [(1,)]
+        result = cli("restore-data", "--plan-file", str(plan), "--confirm-overwrite-data",
+                     "--confirm-exclusive-data", "--health-url", health)
+        assert result.returncode == 0, result.stderr
+        assert not (data / "new-user-data.json").exists()
+        journal = json.loads((plan.with_suffix(".backup") / "data-restore-journal.json").read_text())
+        assert (Path(journal["preserved"]) / "new-user-data.json").read_text() == '{"keep":true}'
+        assert Path(journal["safety_archive"]).exists()
+        with sqlite3.connect(db_path) as db:
+            assert db.execute("SELECT id FROM mixes").fetchall() == [(1,)]
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
 

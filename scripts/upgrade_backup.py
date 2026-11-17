@@ -164,11 +164,17 @@ def main() -> None:
     make.add_argument("--writers-stopped", action="store_true", required=True)
     check = sub.add_parser("verify")
     check.add_argument("archive", type=Path)
+    compare = sub.add_parser("compare")
+    compare.add_argument("archive", type=Path)
+    compare.add_argument("source", type=Path)
     args = parser.parse_args()
     if args.action == "create":
         create(args.source, args.archive)
+    elif args.action == "verify":
+        verify(args.archive)
     else:
         verify(args.archive)
+        verify(args.archive, _files(args.source))
     print("Backup restore verification passed.")
 
 
