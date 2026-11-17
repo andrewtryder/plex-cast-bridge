@@ -286,6 +286,12 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
 def _valid_drift(report: Any) -> bool:
     if not isinstance(report, dict) or not isinstance(report.get("files"), dict):
         return False
+    files = report["files"]
+    required = ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "music_index.sqlite3")
+    if any(name not in files or not isinstance(files[name], str) for name in required):
+        return False
+    if any("invalid" in files[name] or "unreadable" in files[name] for name in required):
+        return False
     settings = report.get("settings")
     warnings = report.get("release_preflight_warnings")
     if not isinstance(settings, dict) or not isinstance(warnings, list):

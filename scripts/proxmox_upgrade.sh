@@ -173,6 +173,8 @@ validate_drift_report() {
 try:
  d=json.load(sys.stdin); settings=d["settings"]; files=d["files"]; warnings=d["release_preflight_warnings"]
  assert isinstance(settings,dict) and isinstance(files,dict) and isinstance(warnings,list)
+ for name in ("plex_connection.json","app_settings.json","catalog.json","google_home_sync.json","google_home_setup.json","music_index.sqlite3"):
+  status=files[name]; assert isinstance(status,str) and "invalid" not in status and "unreadable" not in status
  names=("cloud_gateway_url", "catalog_write_key")
  for name in names:
   entry=settings[name]; assert isinstance(entry["conflict"],bool) and entry["classification"] in ("ok","informational","release_preflight_warning")

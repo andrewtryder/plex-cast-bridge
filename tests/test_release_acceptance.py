@@ -28,7 +28,7 @@ def _valid_report():
     return {
         "captured_at": "before",
         "local": {
-            "configuration_drift": {"available": True, "report": {"files": {}, "settings": {
+            "configuration_drift": {"available": True, "report": {"files": {name: "absent" for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "music_index.sqlite3")}, "settings": {
                 name: {"conflict": False, "classification": "ok"} for name in ("cloud_gateway_url", "catalog_write_key")
             }, "release_preflight_warnings": []}},
             "docker": {"image_id": "sha256:old", "application_commit": None, "running": True,
