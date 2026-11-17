@@ -180,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Service: {installation['service']}")
         print(f"Current version: {installation['current_version']}")
         print(f"Current image: {installation['current_image_id']}")
+        for digest in installation["current_image_digests"]:
+            print(f"Current published digest: {digest}")
         print(f"Compose image: {installation['compose_image']}")
         print(f"Persistent data: {installation['data_source']}")
         drift = installation["configuration_drift"]
