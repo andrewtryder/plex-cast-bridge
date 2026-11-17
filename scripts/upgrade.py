@@ -32,6 +32,20 @@ def _signature(value: Any, key: bytes) -> str:
     return hmac.new(key, json.dumps(value, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
 
 
+def _catalog_relative(data_dir: str, catalog_path: str | None, workdir: str) -> Path:
+    if not catalog_path:
+        return Path("catalog.json")
+    requested = PurePosixPath(catalog_path)
+    if not requested.is_absolute():
+        requested = PurePosixPath(workdir) / requested
+    if ".." in requested.parts:
+        raise ValueError("Custom catalog paths containing parent traversal require manual review")
+    try:
+        return Path(str(requested.relative_to(PurePosixPath(data_dir))))
+    except ValueError as exc:
+        raise ValueError("Custom catalog is outside the data mount; its backup needs manual review") from exc
+
+
 def inspect(compose: Path, service: str | None) -> dict[str, Any]:
     if not compose.is_file():
         raise ValueError("Compose file does not exist")
@@ -63,16 +77,18 @@ def inspect(compose: Path, service: str | None) -> dict[str, Any]:
     identity = {name: container.get(name) for name in ("Id", "Image", "Config", "HostConfig", "Mounts")}
     # Configuration is retained only in memory and included in a keyed combined
     # comparison; no individual credential values or hashes are printed.
+    env = dict(item.split("=", 1) for item in (container.get("Config") or {}).get("Env", []) if "=" in item)
+    catalog_relative = _catalog_relative(data_dir, env.get("CATALOG_PATH"),
+                                         (container.get("Config") or {}).get("WorkingDir") or "/")
     protected_files = {}
     for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "plex_device_private.pem", "plex_device_public.pem"):
-        path = data_source / name
+        path = data_source / (catalog_relative if name == "catalog.json" else name)
         try:
             protected_files[name] = path.read_bytes().hex()
         except FileNotFoundError:
             protected_files[name] = None
         except OSError as exc:
             raise RuntimeError("A persistent configuration file is not readable") from exc
-    env = dict(item.split("=", 1) for item in (container.get("Config") or {}).get("Env", []) if "=" in item)
     credentials = env.get("GOOGLE_APPLICATION_CREDENTIALS", "")
     if credentials:
         target = PurePosixPath(credentials)
@@ -123,6 +139,79 @@ def public(state: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in state.items() if not k.startswith("_")}
 
 
+def _persistent_identity(files: dict[str, str | None]) -> dict[str, Any]:
+    def obj(name: str) -> dict[str, Any] | None:
+        raw = files.get(name)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(bytes.fromhex(raw))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("A persistent configuration file is invalid") from exc
+        if not isinstance(value, dict):
+            raise ValueError("A persistent configuration file is invalid")
+        return value
+
+    plex, app, catalog = (obj(name) for name in ("plex_connection.json", "app_settings.json", "catalog.json"))
+    sync, setup = (obj(name) for name in ("google_home_sync.json", "google_home_setup.json"))
+    plex_identity = None if plex is None else {key: plex.get(key) for key in ("mode", "client_identifier", "server_url", "music_section")}
+    if plex_identity is not None:
+        plex_identity["jwt_present"] = bool(plex.get("jwt_token"))
+    sync_identity = None if sync is None else {key: sync.get(key) for key in ("cloud_gateway_url", "catalog_write_key", "agent_user_id")}
+    setup_identity = None if setup is None else {key: setup.get(key) for key in ("project_id", "cloud_run_url", "oauth")}
+    catalog_identity = None
+    if catalog is not None:
+        speakers = catalog.get("speakers", [])
+        if not isinstance(speakers, list) or any(not isinstance(speaker, dict) for speaker in speakers):
+            raise ValueError("The persisted catalog is invalid")
+        fields = ("id", "google_home_device_id", "uuid", "cast_uuid", "name", "speaker_name", "google_home_name",
+                  "enabled", "google_home_visible", "room_hint", "roomHint", "kind", "removed")
+        projected = [{key: speaker[key] for key in fields if key in speaker} for speaker in speakers]
+        projected.sort(key=lambda value: json.dumps(value, sort_keys=True))
+        catalog_identity = {"speakers": projected}
+    return {"plex": plex_identity, "settings": app, "catalog": catalog_identity, "gateway": sync_identity,
+            "wizard": setup_identity, "private_key": files.get("plex_device_private.pem"),
+            "public_key": files.get("plex_device_public.pem"), "subscriber_credentials": files.get("subscriber_credentials")}
+
+
+def _verification_signatures(state: dict[str, Any], key: bytes) -> dict[str, str]:
+    protected = state["_protected"]
+    container = protected["container"]
+    mounts = [{name: m.get(name) for name in ("Type", "Name", "Source", "Destination", "RW")}
+              for m in container.get("Mounts") or []]
+    mounts.sort(key=lambda m: str(m.get("Destination")))
+    return {"persistent_identity": _signature(_persistent_identity(protected["files"]), key),
+            "compose_configuration": _signature(protected["compose"], key),
+            "mounts": _signature(mounts, key)}
+
+
+def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
+    """Return non-secret reasons why a post-upgrade inspection is not verified."""
+    try:
+        key = bytes.fromhex(content["key"])
+        if content.get("schema") != 2 or len(key) != 32:
+            raise ValueError
+        baseline = content["verification"]
+        if not isinstance(baseline, dict):
+            raise ValueError
+        current = _verification_signatures(state, key)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Plan lacks valid verification evidence; prepare a new plan") from exc
+    failures = []
+    for label, reason in (("persistent_identity", "persistent identities or credentials changed"),
+                          ("compose_configuration", "Compose configuration changed"),
+                          ("mounts", "persistent mounts changed")):
+        if not isinstance(baseline.get(label), str) or not hmac.compare_digest(baseline[label], current[label]):
+            failures.append(reason)
+    if state.get("configuration_drift", {}).get("status") != "PASS":
+        failures.append("configuration drift diagnostic NOT TESTED")
+    elif state["configuration_drift"].get("warnings") != content["installation"]["configuration_drift"].get("warnings"):
+        failures.append("gateway drift warnings changed")
+    if content.get("target") not in state.get("current_image_digests", []):
+        failures.append("running image does not have the reviewed digest")
+    return failures
+
+
 def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
     import re
     if not re.fullmatch(r".+@sha256:[0-9a-f]{64}", target):
@@ -136,7 +225,7 @@ def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
         try:
             content = json.loads(plan_file.read_text(encoding="utf-8"))
             key = bytes.fromhex(content["key"])
-            if (len(key) != 32 or content.get("schema") != 1 or content.get("target") != target
+            if (len(key) != 32 or content.get("schema") != 2 or content.get("target") != target
                     or content.get("installation") != public(state)
                     or not hmac.compare_digest(content["protected_state"], _signature(state["_protected"], key))):
                 raise ValueError("Existing plan no longer matches the installation; choose a new plan file")
@@ -144,8 +233,9 @@ def plan(state: dict[str, Any], target: str, plan_file: Path) -> dict[str, Any]:
             raise ValueError("Existing plan file is invalid") from exc
     else:
         key = secrets.token_bytes(32)
-        content = {"schema": 1, "installation": public(state), "target": target,
-                   "key": key.hex(), "protected_state": _signature(state["_protected"], key)}
+        content = {"schema": 2, "installation": public(state), "target": target,
+                   "key": key.hex(), "protected_state": _signature(state["_protected"], key),
+                   "verification": _verification_signatures(state, key)}
         plan_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(plan_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:

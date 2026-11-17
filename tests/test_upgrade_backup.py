@@ -54,3 +54,17 @@ def test_backup_rejects_symlinks(tmp_path):
     (data / "link").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="symbolic"):
         create(data, tmp_path / "archive.tgz")
+
+
+def test_verify_detects_changed_archive_and_missing_record(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "config.json").write_text('{"value":1}')
+    archive = tmp_path / "backup.tgz"
+    create(data, archive)
+    archive.write_bytes(archive.read_bytes() + b"altered")
+    with pytest.raises(ValueError, match="integrity record"):
+        verify(archive)
+    archive.with_name(archive.name + ".sha256").unlink()
+    with pytest.raises(ValueError, match="missing"):
+        verify(archive)

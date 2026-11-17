@@ -50,6 +50,8 @@ def test_image_rollback_does_not_restore_or_overwrite_live_data(tmp_path):
     (old_data / "state.json").write_text('{"old": true}')
     with tarfile.open(backup / "data.tgz", "w:gz") as tar:
         tar.add(old_data, arcname="data")
+    import hashlib
+    (backup / "data.tgz.sha256").write_text(hashlib.sha256((backup / "data.tgz").read_bytes()).hexdigest() + "\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, code in {"docker": "exit 0", "curl": "exit 0"}.items():

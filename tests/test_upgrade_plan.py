@@ -80,3 +80,40 @@ def test_release_lookup_resolves_official_immutable_digest(monkeypatch):
     monkeypatch.setattr(upgrade, "docker", lambda *args: "Name: image\nDigest: sha256:" + "d" * 64 + "\n")
     found = upgrade.latest_release()
     assert found == {"version": "1.2.3", "target": "ghcr.io/andrewtryder/plex-cast-bridge@sha256:" + "d" * 64}
+
+
+def test_verification_ignores_operational_state_but_detects_identity_change(tmp_path, monkeypatch):
+    def raw(value):
+        return json.dumps(value).encode().hex()
+
+    monkeypatch.setattr(upgrade, "docker", lambda *args: "")
+    target = "example@sha256:" + "a" * 64
+    files = {"plex_connection.json": raw({"mode": "jwt", "jwt_token": "token", "client_identifier": "id"}),
+             "app_settings.json": raw({"default_cast_volume": 0.4}),
+             "catalog.json": raw({"speakers": [{"id": "virtual-1", "cast_uuid": "cast-1", "last_seen": "old"}]}),
+             "google_home_sync.json": raw({"cloud_gateway_url": "url", "catalog_write_key": "secret", "version": 1}),
+             "google_home_setup.json": None, "plex_device_private.pem": "0102", "plex_device_public.pem": "0304"}
+    protected = {"files": files, "compose": {"services": {}},
+                 "container": {"Mounts": [{"Type": "bind", "Source": "/x", "Destination": "/data", "RW": True}]}}
+    state = {"_protected": protected, "configuration_drift": {"status": "PASS", "warnings": []}, "current_image_digests": []}
+    path = tmp_path / "plan.json"
+    upgrade.plan(state, target, path)
+    content = json.loads(path.read_text())
+    state["current_image_digests"] = [target]
+    files["google_home_sync.json"] = raw({"cloud_gateway_url": "url", "catalog_write_key": "secret", "version": 2})
+    files["catalog.json"] = raw({"speakers": [{"id": "virtual-1", "cast_uuid": "cast-1", "last_seen": "new"}]})
+    assert upgrade.verify_plan(content, state) == []
+    files["catalog.json"] = raw({"speakers": [{"id": "virtual-2", "cast_uuid": "cast-1"}]})
+    assert "persistent identities or credentials changed" in upgrade.verify_plan(content, state)
+    state["configuration_drift"] = {"status": "NOT TESTED", "warnings": []}
+    assert "configuration drift diagnostic NOT TESTED" in upgrade.verify_plan(content, state)
+    assert "secret" not in path.read_text()
+
+
+def test_custom_catalog_must_be_backed_up_with_data_mount():
+    assert upgrade._catalog_relative("/data", "/data/custom/library.json", "/app") == Path("custom/library.json")
+    assert upgrade._catalog_relative("/data", "catalog.json", "/data") == Path("catalog.json")
+    with pytest.raises(ValueError, match="outside the data mount"):
+        upgrade._catalog_relative("/data", "/other/catalog.json", "/app")
+    with pytest.raises(ValueError, match="parent traversal"):
+        upgrade._catalog_relative("/data", "/data/../other/catalog.json", "/app")

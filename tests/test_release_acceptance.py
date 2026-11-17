@@ -241,7 +241,7 @@ def test_backup_inventory_requires_all_files_archive_and_cached_image(tmp_path: 
     backup = tmp_path / "backups" / "20261111T000000Z"
     backup.mkdir(parents=True)
     for name in (
-        "data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json",
+        "data.tgz", "data.tgz.sha256", ".env", "docker-compose.yml", "gcp-credentials.json",
         "previous_image.txt", "previous_image_digest.txt",
     ):
         (backup / name).write_text("image-sha256:abc" if "image" in name else "placeholder")
@@ -259,27 +259,43 @@ def test_backup_inventory_requires_all_files_archive_and_cached_image(tmp_path: 
         return result
 
     monkeypatch.setattr(acceptance.subprocess, "run", fake_run)
-    result = acceptance._backup_capture(tmp_path / "backups")
+    result = acceptance._backup_capture(tmp_path / "backups", require_env=True, require_credentials=True)
     assert result["rollback_ready"] is True
     assert result["data_archive_valid"] is True
     assert result["data_archive_contains_data"] is True
     assert result["previous_image_cached"] is True
 
     archive_members[:] = ["unrelated/file"]
-    result = acceptance._backup_capture(tmp_path / "backups")
+    result = acceptance._backup_capture(tmp_path / "backups", require_env=True, require_credentials=True)
     assert result["data_archive_valid"] is True
     assert result["data_archive_contains_data"] is False
     assert result["rollback_ready"] is False
 
     archive_members[:] = ["data/", "data/google_home_sync.json"]
     (backup / ".env").write_text("")
-    result = acceptance._backup_capture(tmp_path / "backups")
+    result = acceptance._backup_capture(tmp_path / "backups", require_env=True, require_credentials=True)
     assert result["rollback_ready"] is False
 
     (backup / ".env").write_text("placeholder")
     (backup / "gcp-credentials.json").unlink()
-    result = acceptance._backup_capture(tmp_path / "backups")
+    result = acceptance._backup_capture(tmp_path / "backups", require_env=True, require_credentials=True)
     assert result["rollback_ready"] is False
+
+
+def test_backup_inventory_permits_optional_google_home_and_env(tmp_path, monkeypatch):
+    backup = tmp_path / "backups" / "one"
+    backup.mkdir(parents=True)
+    for name in ("data.tgz", "data.tgz.sha256", "docker-compose.yml", "previous_image.txt"):
+        (backup / name).write_text("present")
+    class Completed:
+        returncode = 0
+        stdout = "data/\n"
+    monkeypatch.setattr(acceptance.subprocess, "run", lambda *a, **k: Completed())
+    result = acceptance._backup_capture(tmp_path / "backups")
+    assert result["restore_verified"] is True
+    assert result["rollback_ready"] is True
+    (backup / "data.tgz.sha256").unlink()
+    assert not acceptance._backup_capture(tmp_path / "backups")["rollback_ready"]
 
 
 def test_physical_cast_helper_requires_disruptive_flag_before_connecting():

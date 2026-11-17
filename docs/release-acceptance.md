@@ -55,10 +55,12 @@ Before replacing an image, independently verify that the existing backup contain
 `data/`, `.env`, Compose configuration, and the separate Google subscriber
 credential file. Record the previous image digest and perform the documented
 rollback procedure in a disposable validation window. A file count alone is not
-proof that a backup is restorable. The collector marks rollback preflight ready
-only when the data archive is readable and contains a `data/` entry, required
-config and credential files are nonempty, and the previous image is cached.
-This still does not prove that an actual restore succeeds.
+proof that a backup is restorable. The collector requires the recorded archive
+checksum, restores the archive into an isolated temporary directory, checks
+SQLite integrity, checks the configured environment and credential files when
+present, and confirms the previous image is cached. An older archive without an
+integrity record is NOT TESTED by this check. This does not prove that a full
+service rollback will succeed or that every custom mount was backed up.
 
 ## After an image upgrade
 

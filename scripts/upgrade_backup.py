@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import os
 import sqlite3
 import shutil
@@ -37,6 +38,14 @@ def _files(root: Path) -> dict[str, str]:
 
 
 def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
+    if expected is None:
+        sidecar = archive.with_name(archive.name + ".sha256")
+        try:
+            recorded = sidecar.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("backup integrity record is missing or invalid") from exc
+        if len(recorded) != 64 or not hmac.compare_digest(recorded, _digest(archive)):
+            raise ValueError("backup archive does not match its integrity record")
     with tempfile.TemporaryDirectory(prefix="pcb-restore-check-") as temp:
         root = Path(temp)
         with tarfile.open(archive, "r:gz") as tar:
@@ -88,7 +97,27 @@ def create(source: Path, archive: Path) -> None:
         if original != _files(source):
             raise RuntimeError("persistent data changed during backup")
         verify(temp, original)
+        sidecar = archive.with_name(archive.name + ".sha256")
+        if sidecar.exists():
+            raise FileExistsError("backup integrity record already exists")
+        checksum = _digest(temp)
+        with temp.open("rb") as stream:
+            os.fsync(stream.fileno())
         os.link(temp, archive)  # no replacement of an existing backup
+        try:
+            fd = os.open(sidecar, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(checksum + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            directory_fd = os.open(archive.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            archive.unlink(missing_ok=True)
+            raise
     finally:
         temp.unlink(missing_ok=True)
 

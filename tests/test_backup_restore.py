@@ -98,6 +98,9 @@ def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):
         dummy.write_text("hello")
         tar.add(dummy, arcname="data/dummy.txt")
 
+    import hashlib
+    (backup_dir / "data.tgz.sha256").write_text(hashlib.sha256(tar_path.read_bytes()).hexdigest() + "\n")
+
     docker_bin = tmp_path / "bin"
     docker_bin.mkdir()
     docker_stub = docker_bin / "docker"

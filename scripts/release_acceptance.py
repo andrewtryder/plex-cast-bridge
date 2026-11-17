@@ -464,7 +464,7 @@ def _credentials_capture(path: Path, key: bytes) -> dict[str, Any]:
     }
 
 
-def _backup_capture(path: Path | None) -> dict[str, Any]:
+def _backup_capture(path: Path | None, *, require_env: bool = False, require_credentials: bool = False) -> dict[str, Any]:
     if not path:
         return {"configured": False, "available": False}
     if not path.exists():
@@ -475,7 +475,7 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
         files = [p for p in path.iterdir() if p.is_file()] if path.is_dir() else [path]
         return {"configured": True, "available": bool(files), "file_count": len(files), "rollback_ready": False}
     latest = max(dirs, key=lambda p: p.stat().st_mtime_ns)
-    expected = ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json",
+    expected = ("data.tgz", "data.tgz.sha256", ".env", "docker-compose.yml", "gcp-credentials.json",
                 "previous_image.txt", "previous_image_digest.txt")
     present = {name: (latest / name).is_file() for name in expected}
     previous_image = ""
@@ -510,7 +510,20 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
             )
         except (OSError, subprocess.TimeoutExpired):
             archive_valid = False
-    required_names = ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json", "previous_image_digest.txt")
+    restore_verified = False
+    if archive_valid and archive_contains_data and present["data.tgz.sha256"]:
+        try:
+            restore_verified = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent / "upgrade_backup.py"), "verify", str(latest / "data.tgz")],
+                capture_output=True, check=False, timeout=120,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            restore_verified = False
+    required_names = ("data.tgz", "data.tgz.sha256", "docker-compose.yml")
+    if require_env:
+        required_names += (".env",)
+    if require_credentials:
+        required_names += ("gcp-credentials.json",)
     required_nonempty = {
         name: bool(present.get(name) and (latest / name).stat().st_size > 0)
         for name in required_names
@@ -524,10 +537,11 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
         "required_nonempty_files": required_nonempty,
         "data_archive_valid": archive_valid,
         "data_archive_contains_data": archive_contains_data,
+        "restore_verified": restore_verified,
         "previous_image_cached": image_cached,
         "rollback_ready": (
             required_present and all(required_nonempty.values())
-            and archive_valid and archive_contains_data and image_cached
+            and archive_valid and archive_contains_data and restore_verified and image_cached
         ),
     }
 
@@ -579,7 +593,8 @@ def capture(args: argparse.Namespace) -> dict[str, Any]:
                 ),
             },
             "music_index_sqlite": index_state,
-            "backup": _backup_capture(args.backup_dir),
+            "backup": _backup_capture(args.backup_dir, require_env=bool(args.env_file and args.env_file.is_file()),
+                                      require_credentials=creds_path.is_file()),
         },
         "cloud_run": _cloud_capture(args.project, args.cloud_run_service, args.region, key) if args.project else {"available": False, "status": "NOT_APPLICABLE" if not sync_state.get("present") else "NOT_TESTED"},
         "api": api,
