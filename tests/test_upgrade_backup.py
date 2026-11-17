@@ -84,3 +84,61 @@ def test_restore_verification_preserves_private_modes_and_empty_directories(tmp_
     with restored_tree(archive) as restored:
         assert (restored / "credential.json").stat().st_mode & 0o777 == 0o600
         assert (restored / "empty").stat().st_mode & 0o777 == 0o700
+
+
+def test_restore_to_new_directory_never_overwrites_existing_data(tmp_path):
+    from scripts.upgrade_backup import restore_to_new_directory
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "secret.json").write_text("protected")
+    (source / "secret.json").chmod(0o600)
+    archive = tmp_path / "backup.tgz"
+    create(source, archive)
+    destination = tmp_path / "staged"
+    restore_to_new_directory(archive, destination)
+    assert (destination / "secret.json").read_text() == "protected"
+    assert (destination / "secret.json").stat().st_mode & 0o777 == 0o600
+    (destination / "newer.json").write_text("do not overwrite")
+    with pytest.raises(FileExistsError):
+        restore_to_new_directory(archive, destination)
+    assert (destination / "newer.json").read_text() == "do not overwrite"
+
+
+def test_backup_refuses_to_lose_hardlink_identity(tmp_path):
+    import os
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "first").write_text("content")
+    os.link(data / "first", data / "second")
+    with pytest.raises(ValueError, match="hard-linked"):
+        create(data, tmp_path / "backup.tgz")
+    assert (data / "first").read_text() == "content"
+
+
+def test_staged_restore_refuses_unpreservable_ownership(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import os
+    import tarfile
+    from scripts.upgrade_backup import restore_to_new_directory
+
+    archive = tmp_path / "backup.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        folder = tarfile.TarInfo("data")
+        folder.type = tarfile.DIRTYPE
+        folder.mode = 0o700
+        folder.uid, folder.gid = os.getuid(), os.getgid()
+        tar.addfile(folder)
+        member = tarfile.TarInfo("data/secret")
+        member.mode = 0o600
+        member.uid, member.gid = os.getuid() + 1, os.getgid()
+        member.size = 6
+        tar.addfile(member, io.BytesIO(b"secret"))
+    archive.with_name("backup.tgz.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
+    def fail_chown(*args):
+        raise PermissionError("denied")
+    monkeypatch.setattr(os, "chown", fail_chown)
+    destination = tmp_path / "stage"
+    with pytest.raises(PermissionError, match="preserve backup ownership"):
+        restore_to_new_directory(archive, destination)
+    assert not destination.exists()

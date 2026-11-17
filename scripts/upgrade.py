@@ -18,7 +18,7 @@ from typing import Any
 from upgrade_mounts import assert_no_other_writers, resolve_data_mount
 from release_acceptance import PROTECTED_ENV_KEYS, _configuration_drift_capture, _catalog_snapshot_capture
 from upgrade_inputs import create_inputs_backup, verify_inputs_backup
-from upgrade_backup import _files as backup_files, restored_tree, verify as verify_backup
+from upgrade_backup import _files as backup_files, restored_tree, restore_to_new_directory, verify as verify_backup
 from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
@@ -738,6 +738,24 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     return 0
 
 
+def stage_restore(plan_path: Path, destination: Path) -> None:
+    content = load_plan(plan_path)
+    backup_dir = Path(content["backup_dir"])
+    source = Path(content["installation"]["data_source"]).resolve()
+    target = destination.resolve()
+    if target == source or source in target.parents:
+        raise ValueError("Staged restore must be outside the active data directory")
+    receipt_path = backup_dir / "apply-completed.json"
+    if receipt_path.exists():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Apply receipt is invalid; inspect the backup manually") from exc
+        if receipt != _receipt(content, backup_dir):
+            raise ValueError("Backup contents do not match the recorded upgrade")
+    restore_to_new_directory(backup_dir / "data.tgz", destination)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -771,8 +789,15 @@ def main(argv: list[str] | None = None) -> int:
     rollback.add_argument("--plan-file", required=True, type=Path)
     rollback.add_argument("--confirm-image-rollback", action="store_true")
     rollback.add_argument("--health-url", default="http://127.0.0.1:8000/health")
+    stage = sub.add_parser("stage-restore", help="Restore a backup to a new offline directory for review")
+    stage.add_argument("--plan-file", required=True, type=Path)
+    stage.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.action == "stage-restore":
+            stage_restore(args.plan_file, args.destination)
+            print(f"Backup restored to {args.destination}; the active data directory was not changed.")
+            return 0
         if args.action == "rollback":
             return rollback_plan(args.plan_file, confirm=args.confirm_image_rollback, health_url=args.health_url)
         if args.action == "check-backup":

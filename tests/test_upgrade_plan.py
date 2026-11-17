@@ -483,3 +483,24 @@ def test_container_mount_order_does_not_change_reviewed_configuration():
     second = upgrade._normalize_mounts({"Id": "same", "Mounts": list(reversed(mounts))})
     assert first == second
     assert upgrade._signature(first, b"key") == upgrade._signature(second, b"key")
+
+
+def test_stage_restore_requires_separate_private_destination(tmp_path, monkeypatch):
+    from upgrade_backup import create
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / "state").write_text("newer")
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "state").write_text("old")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    create(original, backup / "data.tgz")
+    content = {"backup_dir": str(backup), "installation": {"data_source": str(active)}}
+    monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
+    with pytest.raises(ValueError, match="outside"):
+        upgrade.stage_restore(tmp_path / "plan", active / "staged")
+    destination = tmp_path / "staged"
+    upgrade.stage_restore(tmp_path / "plan", destination)
+    assert (destination / "state").read_text() == "old"
+    assert (active / "state").read_text() == "newer"

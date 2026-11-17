@@ -7,6 +7,7 @@ until it returns. This utility never stops or starts containers.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import hmac
 import os
@@ -26,11 +27,27 @@ def _digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def _check_metadata(path: Path) -> None:
+    if path.is_file() and path.stat().st_nlink > 1:
+        raise ValueError("hard-linked files require a backup that preserves link identity")
+    if hasattr(os, "listxattr"):
+        try:
+            attributes = os.listxattr(path, follow_symlinks=False)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
+        else:
+            if attributes:
+                raise ValueError("extended attributes require a backup that preserves them")
+
+
 def _files(root: Path) -> dict[str, tuple[str, int]]:
     files = {}
+    _check_metadata(root)
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise ValueError("symbolic links in persistent data require manual backup")
+        _check_metadata(path)
         if path.is_file():
             files[str(path.relative_to(root))] = (_digest(path), path.stat().st_mode & 0o777)
         elif path.is_dir():
@@ -157,3 +174,46 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def restore_to_new_directory(archive: Path, destination: Path) -> None:
+    """Restore to a new offline directory, preserving ownership and permissions.
+
+    This never replaces an existing path. The caller must decide how and when a
+    staged tree can replace live data after stopping every writer.
+    """
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("restore destination already exists")
+    if destination.parent.stat().st_mode & 0o077:
+        raise ValueError("restore destination parent must be private")
+    with restored_tree(archive) as restored:
+        expected = _files(restored)
+        destination.mkdir(mode=0o700, parents=False, exist_ok=False)
+        try:
+            shutil.copytree(restored, destination, dirs_exist_ok=True)
+            if _files(destination) != expected:
+                raise ValueError("staged restore does not match the verified backup")
+            with tarfile.open(archive, "r:gz") as tar:
+                entries = tar.getmembers()
+            # Change directory ownership last, so non-root callers never lose
+            # traversal access before all child ownership has been restored.
+            entries.sort(key=lambda member: (member.isdir(), -len(PurePosixPath(member.name).parts)))
+            for entry in entries:
+                parts = PurePosixPath(entry.name).parts
+                if not parts or parts[0] != "data" or ".." in parts or not (entry.isfile() or entry.isdir()):
+                    raise ValueError("archive contains an unsafe restore member")
+                path = destination.joinpath(*parts[1:])
+                if not path.exists():
+                    if entry.isfile() and entry.name.endswith(("-wal", "-shm", "-journal")):
+                        continue  # SQLite checkpointed this sidecar in the isolated copy.
+                    raise ValueError("staged restore is missing an archive member")
+                info = path.stat()
+                if (info.st_uid, info.st_gid) != (entry.uid, entry.gid):
+                    try:
+                        os.chown(path, entry.uid, entry.gid)
+                    except OSError as exc:
+                        raise PermissionError("cannot preserve backup ownership; run recovery with suitable permissions") from exc
+                os.chmod(path, entry.mode & 0o777)
+        except BaseException:
+            shutil.rmtree(destination)
+            raise

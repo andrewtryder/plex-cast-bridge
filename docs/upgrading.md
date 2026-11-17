@@ -68,6 +68,17 @@ python3 scripts/upgrade.py rollback \
 
 This changes the image only. It does not overwrite newer data, credentials, or Compose files with the backup. An older image may not understand data changed by a newer version; if it cannot start, keep the backup and current data and investigate before restoring anything. Never extract a database backup over a running writer. A full data restore can discard newer changes and requires a separate, explicitly authorized offline procedure.
 
+You can inspect a backup without changing active data. Choose a new destination under a private directory; preserving the original file ownership may require additional host permissions:
+
+```sh
+mkdir -p -m 700 "$HOME/.local/share/plex-cast-bridge/restore-review"
+python3 scripts/upgrade.py stage-restore \
+  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
+  --destination "$HOME/.local/share/plex-cast-bridge/restore-review/staged-data"
+```
+
+The staged copy contains credentials and needs the same protection as the original data. The command refuses to overwrite an existing destination or write inside the active data directory.
+
 ## Google Home and Cloud Run
 
 Cloud Run is optional and is not changed by a local upgrade. Existing Google Home users should keep their current cloud service, credentials, Firestore data, and linked devices. Cloud Run image updates are a separate maintainer operation described in [persistent state and upgrades](persistent-state.md); do not rerun first-install provisioning or relink merely to upgrade.
