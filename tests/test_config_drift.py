@@ -44,4 +44,12 @@ def test_gateway_warning_uses_effective_environment_only(tmp_path):
     result = drift.diagnose({"CATALOG_WRITE_KEY": "saved"}, {"CATALOG_WRITE_KEY": "stale"}, tmp_path)
     assert result["release_preflight_warnings"] == []
     result = drift.diagnose({"CATALOG_WRITE_KEY": "different"}, {}, tmp_path)
-    assert result["release_preflight_warnings"] == ["catalog_write_key"]
+    assert result["release_preflight_warnings"] == []
+    assert result["settings"]["catalog_write_key"]["classification"] == "informational"
+
+
+def test_invalid_existing_catalog_is_selected(tmp_path):
+    (tmp_path / "catalog.json").write_text("not json")
+    result = drift.diagnose({}, {}, tmp_path)
+    assert result["catalog_source"] == "data catalog"
+    assert result["files"]["catalog.json"] == "unreadable or invalid"

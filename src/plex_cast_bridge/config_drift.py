@@ -93,7 +93,7 @@ def diagnose(environ: dict[str, str], dotenv: dict, data_dir: Path, root: Path =
                 normalize = (lambda x: str(x).rstrip("/")) if name == "cloud_gateway_url" else str
                 conflict = normalize(env_value) != normalize(saved)
             if conflict:
-                classification = "release_preflight_warning"
+                classification = "release_preflight_warning" if gateway_pair else "informational"
             note = "Both environment values trigger a sync-file overwrite at startup." if gateway_pair else "A partial environment pair does not configure the sync file."
         elif name in ("plex_url", "plex_music_section", "plex_token"):
             field = {"plex_url": "server_url", "plex_music_section": "music_section", "plex_token": "jwt_token"}[name]
@@ -109,7 +109,7 @@ def diagnose(environ: dict[str, str], dotenv: dict, data_dir: Path, root: Path =
     return {"settings": entries, "files": files,
             "release_preflight_warnings": [name for name, entry in entries.items() if entry["classification"] == "release_preflight_warning"],
             "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
-            "catalog_source": "CATALOG_PATH process environment" if environ.get("CATALOG_PATH") else ("data catalog" if files["catalog.json"] == "readable" else "bundled catalog fallback"),
+            "catalog_source": "CATALOG_PATH process environment" if environ.get("CATALOG_PATH") else ("data catalog" if (data_dir / "catalog.json").exists() else "bundled catalog fallback"),
             "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic."}
 
 

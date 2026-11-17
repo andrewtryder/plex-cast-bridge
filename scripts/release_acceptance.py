@@ -283,6 +283,25 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
     return results
 
 
+def _valid_drift(report: Any) -> bool:
+    if not isinstance(report, dict) or not isinstance(report.get("files"), dict):
+        return False
+    settings = report.get("settings")
+    warnings = report.get("release_preflight_warnings")
+    if not isinstance(settings, dict) or not isinstance(warnings, list):
+        return False
+    for name in ("cloud_gateway_url", "catalog_write_key"):
+        entry = settings.get(name)
+        if not isinstance(entry, dict) or entry.get("classification") not in {
+            "ok", "informational", "release_preflight_warning"
+        } or not isinstance(entry.get("conflict"), bool):
+            return False
+    return all(name in ("cloud_gateway_url", "catalog_write_key") for name in warnings) and set(warnings) == {
+        name for name in ("cloud_gateway_url", "catalog_write_key")
+        if settings[name]["classification"] == "release_preflight_warning"
+    }
+
+
 def _configuration_drift_capture(container: str) -> dict[str, Any]:
     """Run this checkout's diagnostic in the existing container, including old images."""
     source = Path(__file__).resolve().parents[1] / "src/plex_cast_bridge/config_drift.py"
@@ -295,7 +314,7 @@ def _configuration_drift_capture(container: str) -> dict[str, Any]:
         if proc.returncode:
             return {"available": False}
         report = json.loads(proc.stdout)
-        if not isinstance(report, dict) or not isinstance(report.get("release_preflight_warnings"), list):
+        if not _valid_drift(report):
             return {"available": False}
         return {"available": True, "report": report}
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -795,6 +814,23 @@ def compare(before_path: Path, after_path: Path, scope: str = "all") -> tuple[bo
             differences.append({"scope": check_scope, "path": "before", "reason": missing})
         for missing in _missing_scope_evidence(after, check_scope):
             differences.append({"scope": check_scope, "path": "after", "reason": missing})
+    if "local" in scopes:
+        drift_before = _at(before, "local.configuration_drift")
+        drift_after = _at(after, "local.configuration_drift")
+        for label, drift in (("before", drift_before), ("after", drift_after)):
+            if not isinstance(drift, dict) or drift.get("available") is not True or not _valid_drift(drift.get("report")):
+                differences.append({"scope": "local", "path": label, "reason": "configuration drift diagnostic NOT TESTED or invalid"})
+        if (isinstance(drift_before, dict) and isinstance(drift_after, dict)
+                and _valid_drift(drift_before.get("report")) and _valid_drift(drift_after.get("report"))):
+            old, new = drift_before["report"], drift_after["report"]
+            for name in ("cloud_gateway_url", "catalog_write_key"):
+                if old["settings"][name]["classification"] != new["settings"][name]["classification"]:
+                    differences.append({"scope": "local", "path": "configuration_drift." + name,
+                                        "reason": "gateway drift classification changed; review required"})
+            for name in old["files"].keys() | new["files"].keys():
+                if old["files"].get(name) != new["files"].get(name):
+                    differences.append({"scope": "local", "path": "configuration_drift.files." + name,
+                                        "reason": "persisted file presence or validity changed"})
     selected_paths = []
     if "local" in scopes:
         selected_paths.extend(LOCAL_IDENTITY_PATHS)

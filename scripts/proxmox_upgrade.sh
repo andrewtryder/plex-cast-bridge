@@ -355,12 +355,14 @@ if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
   exit 2
 fi
 echo "Protected configuration fingerprint verified after upgrade."
-if configuration_drift > "$BACKUP_DIR/config_drift_after.json"; then
+if configuration_drift > "$BACKUP_DIR/config_drift_after.json" && \
+  python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d["settings"],dict) and isinstance(d["files"],dict) and isinstance(d["release_preflight_warnings"],list)' < "$BACKUP_DIR/config_drift_after.json"; then
   echo "Post-upgrade configuration report: $BACKUP_DIR/config_drift_after.json"
   cat "$BACKUP_DIR/config_drift_after.json"
 else
   rm -f "$BACKUP_DIR/config_drift_after.json"
-  echo "WARNING: post-upgrade configuration diagnostic unavailable; review manually." >&2
+  echo "NOT TESTED: post-upgrade configuration diagnostic unavailable or invalid; acceptance incomplete. Review manually." >&2
+  exit 2
 fi
 
 echo "Layered check: diagnostics (non-secret)…"

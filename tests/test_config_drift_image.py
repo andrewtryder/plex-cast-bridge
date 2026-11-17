@@ -32,7 +32,7 @@ def test_production_image_diagnostic_is_read_only():
 
         before = snapshot()
         run = subprocess.run(["docker", "run", "--rm", "--network", "none", "--read-only",
-                              "--mount", mount + ",readonly", "-e", "CATALOG_WRITE_KEY=other-secret", tag,
+                              "--mount", mount + ",readonly", "-e", "CATALOG_WRITE_KEY=other-secret", "-e", "CLOUD_GATEWAY_URL=https://example.invalid", tag,
                               "python", "-m", "plex_cast_bridge.config_drift"],
                              capture_output=True, text=True, check=True)
         assert json.loads(run.stdout)["release_preflight_warnings"] == ["catalog_write_key"]
