@@ -49,6 +49,19 @@ def _catalog_relative(data_dir: str, catalog_path: str | None, workdir: str) -> 
         raise ValueError("Custom catalog is outside the data mount; its backup needs manual review") from exc
 
 
+def _read_recorded_inputs(paths: list[str]) -> dict[str, str | None]:
+    result = {}
+    for name in paths:
+        path = Path(name)
+        try:
+            result[str(path)] = path.read_bytes().hex()
+        except FileNotFoundError:
+            result[str(path)] = None
+        except OSError as exc:
+            raise RuntimeError("A Compose configuration input cannot be read") from exc
+    return result
+
+
 def _configuration_inputs(files: list[Path], unresolved: dict[str, Any], environ: dict[str, str]) -> dict[str, str | None]:
     """Capture Compose source files and referenced env/secrets without emitting contents."""
     paths = set(files)
@@ -68,16 +81,7 @@ def _configuration_inputs(files: list[Path], unresolved: dict[str, Any], environ
             if isinstance(item, dict) and item.get("file"):
                 candidate = Path(item["file"])
                 paths.add(candidate if candidate.is_absolute() else files[0].parent / candidate)
-    result = {}
-    for path in paths:
-        absolute = path.resolve()
-        try:
-            result[str(absolute)] = absolute.read_bytes().hex()
-        except FileNotFoundError:
-            result[str(absolute)] = None
-        except OSError as exc:
-            raise RuntimeError("A Compose configuration input cannot be read") from exc
-    return result
+    return _read_recorded_inputs(sorted(str(path.resolve()) for path in paths))
 
 
 def _require_backed_mounts(container: dict[str, Any], data_dir: str) -> None:
@@ -155,7 +159,10 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
             "current_image_digests": image_info.get("RepoDigests") or [],
             "current_version": ((image_info.get("Config") or {}).get("Labels") or {}).get("org.opencontainers.image.version") or "unknown",
             "data_dir": data_dir, "data_source": str(data_source), "configuration_drift": drift_summary,
+            "mounts": [{name: mount.get(name) for name in ("Type", "Name", "Source", "Destination", "RW")}
+                       for mount in container.get("Mounts") or []],
             "subscriber_credentials": "mounted" if credentials else "not configured",
+            "configuration_input_paths": sorted(inputs),
             "music_index_present": (data_source / "music_index.sqlite3").exists(),
             "_protected": {"compose": config, "inputs": inputs, "container": identity, "files": protected_files,
                            "catalog_snapshot": catalog["speakers"]}}
@@ -204,9 +211,10 @@ def _persistent_identity(files: dict[str, str | None]) -> dict[str, Any]:
 
     plex, app, catalog = (obj(name) for name in ("plex_connection.json", "app_settings.json", "catalog.json"))
     sync, setup = (obj(name) for name in ("google_home_sync.json", "google_home_setup.json"))
-    plex_identity = None if plex is None else {key: plex.get(key) for key in ("mode", "client_identifier", "server_url", "music_section")}
+    plex_identity = None if plex is None else {key: plex.get(key) for key in ("mode", "client_identifier", "server_client_id", "server_url", "music_section")}
     if plex_identity is not None:
         plex_identity["jwt_present"] = bool(plex.get("jwt_token"))
+        plex_identity["access_token_present"] = bool(plex.get("access_token"))
     sync_identity = None if sync is None else {key: sync.get(key) for key in ("cloud_gateway_url", "catalog_write_key", "agent_user_id")}
     setup_identity = None if setup is None else {key: setup.get(key) for key in ("project_id", "cloud_run_url", "oauth")}
     catalog_identity = None
@@ -499,6 +507,14 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     backup_dir = Path(content["backup_dir"])
     verify_backup(backup_dir / "data.tgz")
     verify_backup(backup_dir / "configuration.tgz")
+    receipt_path = backup_dir / "apply-completed.json"
+    if receipt_path.exists():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Apply receipt is invalid; inspect the backup manually") from exc
+        if receipt != _receipt(content, backup_dir):
+            raise ValueError("Backup contents do not match the recorded upgrade")
     old_id = (backup_dir / "previous_image.txt").read_text(encoding="utf-8").strip()
     old_digest = (backup_dir / "previous_image_digest.txt").read_text(encoding="utf-8").strip()
     if old_id != saved["current_image_id"] or (old_digest and old_digest not in saved["current_image_digests"] + [old_id]):
@@ -506,9 +522,24 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     files = saved["compose_files"]
     prefix = ("compose", *(item for path in files for item in ("-f", path)))
     ids = docker(*prefix, "ps", "-a", "-q", saved["service"]).split()
-    if len(ids) != 1:
+    if len(ids) > 1:
         raise ValueError("The bridge container cannot be uniquely identified for rollback")
-    current = json.loads(docker("inspect", ids[0]))[0]
+    if ids:
+        current = json.loads(docker("inspect", ids[0]))[0]
+    else:
+        # A failed recreation may have removed the old container before making a
+        # replacement. Recheck the reviewed mounts and Compose inputs directly.
+        if not isinstance(saved.get("mounts"), list):
+            raise ValueError("Reviewed mount evidence is unavailable for recovery")
+        config = json.loads(docker(*prefix, "config", "--format", "json"))
+        paths = saved.get("configuration_input_paths")
+        if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+            raise ValueError("Reviewed configuration input evidence is unavailable")
+        inputs = _read_recorded_inputs(paths)
+        actual = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
+        if not hmac.compare_digest(content["verification"]["compose_configuration"], actual):
+            raise ValueError("Compose inputs changed; image rollback requires manual review")
+        current = {"Id": "", "Mounts": saved["mounts"]}
     running = [cid for cid in docker("ps", "-q").split() if not current["Id"].startswith(cid)]
     others = json.loads(docker("inspect", *running)) if running else []
     source = resolve_data_mount(current, others, saved["data_dir"])

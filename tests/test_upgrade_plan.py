@@ -280,3 +280,41 @@ def test_rollback_from_stopped_candidate_preserves_current_data(tmp_path, monkey
     assert (data / "sentinel").read_text() == "newer user data"
     with pytest.raises(ValueError, match="Confirm image rollback"):
         upgrade.rollback_plan(tmp_path / "plan", confirm=False, health_url="http://localhost/health")
+
+
+def test_rollback_recovers_when_failed_recreation_left_no_container(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "sentinel").write_text("keep")
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    old_id = "sha256:" + "1" * 64
+    (backup / "previous_image.txt").write_text(old_id)
+    (backup / "previous_image_digest.txt").write_text(old_id)
+    mounts = [{"Type": "bind", "Source": str(data), "Destination": "/data", "RW": True}]
+    key = b"k" * 32
+    inputs = upgrade._read_recorded_inputs([str(compose), str(tmp_path / ".env")])
+    config = {"services": {}}
+    saved = {"compose_files": [str(compose)], "service": "bridge", "data_dir": "/data",
+             "data_source": str(data), "current_image_id": old_id, "current_image_digests": [],
+             "mounts": mounts, "configuration_input_paths": list(inputs)}
+    content = {"backup_dir": str(backup), "installation": saved, "key": key.hex(), "verification": {
+        "mounts": upgrade._mount_signature({"Mounts": mounts}, key),
+        "compose_configuration": upgrade._signature({"rendered": config, "inputs": inputs}, key)}}
+    monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
+    monkeypatch.setattr(upgrade, "verify_backup", lambda _: None)
+    monkeypatch.setattr(upgrade, "resolve_data_mount", lambda *args: data)
+    monkeypatch.setattr(upgrade, "inspect", lambda *args: {"current_image_id": old_id})
+    def fake_docker(*args):
+        if "ps" in args:
+            return ""
+        if "config" in args:
+            return json.dumps(config)
+        raise AssertionError(args)
+    monkeypatch.setattr(upgrade, "docker", fake_docker)
+    monkeypatch.setattr(upgrade.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    assert upgrade.rollback_plan(tmp_path / "plan", confirm=True, health_url="http://localhost/health") == 0
+    assert (data / "sentinel").read_text() == "keep"
