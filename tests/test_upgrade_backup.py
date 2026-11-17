@@ -68,3 +68,19 @@ def test_verify_detects_changed_archive_and_missing_record(tmp_path):
     archive.with_name(archive.name + ".sha256").unlink()
     with pytest.raises(ValueError, match="missing"):
         verify(archive)
+
+
+def test_restore_verification_preserves_private_modes_and_empty_directories(tmp_path):
+    from scripts.upgrade_backup import restored_tree
+    data = tmp_path / "data"
+    data.mkdir()
+    private = data / "credential.json"
+    private.write_text("secret")
+    private.chmod(0o600)
+    empty = data / "empty"
+    empty.mkdir(mode=0o700)
+    archive = tmp_path / "archive.tgz"
+    create(data, archive)
+    with restored_tree(archive) as restored:
+        assert (restored / "credential.json").stat().st_mode & 0o777 == 0o600
+        assert (restored / "empty").stat().st_mode & 0o777 == 0o700

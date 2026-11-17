@@ -26,20 +26,22 @@ def _digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def _files(root: Path) -> dict[str, str]:
+def _files(root: Path) -> dict[str, tuple[str, int]]:
     files = {}
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise ValueError("symbolic links in persistent data require manual backup")
         if path.is_file():
-            files[str(path.relative_to(root))] = _digest(path)
-        elif not path.is_dir():
+            files[str(path.relative_to(root))] = (_digest(path), path.stat().st_mode & 0o777)
+        elif path.is_dir():
+            files[str(path.relative_to(root))] = ("directory", path.stat().st_mode & 0o777)
+        else:
             raise ValueError("special files in persistent data require manual backup")
     return files
 
 
 @contextmanager
-def restored_tree(archive: Path, expected: dict[str, str] | None = None):
+def restored_tree(archive: Path, expected: dict[str, tuple[str, int]] | None = None):
     if expected is None:
         sidecar = archive.with_name(archive.name + ".sha256")
         try:
@@ -50,6 +52,7 @@ def restored_tree(archive: Path, expected: dict[str, str] | None = None):
             raise ValueError("backup archive does not match its integrity record")
     with tempfile.TemporaryDirectory(prefix="pcb-restore-check-") as temp:
         root = Path(temp)
+        directories = []
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
                 name = PurePosixPath(member.name)
@@ -58,6 +61,7 @@ def restored_tree(archive: Path, expected: dict[str, str] | None = None):
                 target = root.joinpath(*name.parts)
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
+                    directories.append((target, member.mode & 0o777))
                 elif member.isfile():
                     target.parent.mkdir(parents=True, exist_ok=True)
                     content = tar.extractfile(member)
@@ -65,8 +69,11 @@ def restored_tree(archive: Path, expected: dict[str, str] | None = None):
                         raise ValueError("archive member is unreadable")
                     with content, target.open("xb") as out:
                         shutil.copyfileobj(content, out)
+                    os.chmod(target, member.mode & 0o777)
                 else:
                     raise ValueError("archive contains a link or special file")
+        for directory, mode in reversed(directories):
+            os.chmod(directory, mode)
         data = root / "data"
         if not data.is_dir():
             raise ValueError("archive has no data directory")
@@ -83,7 +90,7 @@ def restored_tree(archive: Path, expected: dict[str, str] | None = None):
         yield data
 
 
-def verify(archive: Path, expected: dict[str, str] | None = None) -> None:
+def verify(archive: Path, expected: dict[str, tuple[str, int]] | None = None) -> None:
     with restored_tree(archive, expected):
         pass
 
