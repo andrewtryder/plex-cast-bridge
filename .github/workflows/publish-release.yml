@@ -63,6 +63,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Refuse an existing versioned image
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if docker buildx imagetools inspect \
+              "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "Versioned image already exists: ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v6
