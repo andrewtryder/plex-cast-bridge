@@ -255,28 +255,46 @@ def test_rollback_from_stopped_candidate_preserves_current_data(tmp_path, monkey
     old_id = "sha256:" + "1" * 64
     (backup / "previous_image.txt").write_text(old_id)
     (backup / "previous_image_digest.txt").write_text(old_id)
-    container = {"Id": "candidate", "State": {"Running": False},
+    container = {"Id": "candidate", "Image": old_id, "State": {"Running": False},
                  "Mounts": [{"Type": "bind", "Source": str(data), "Destination": "/data", "RW": True}]}
     key = b"k" * 32
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}")
+    inputs = upgrade._read_recorded_inputs([str(compose)])
+    config = {"services": {}}
     saved = {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge", "data_dir": "/data",
-             "data_source": str(data), "current_image_id": old_id, "current_image_digests": []}
-    content = {"backup_dir": str(backup), "installation": saved, "key": key.hex(),
-               "verification": {"mounts": upgrade._mount_signature(container, key)}}
+             "data_source": str(data), "current_image_id": old_id, "current_image_digests": [],
+             "configuration_input_paths": list(inputs)}
+    content = {"backup_dir": str(backup), "installation": saved, "key": key.hex(), "target": "reviewed-target",
+               "verification": {"mounts": upgrade._mount_signature(container, key),
+                                "compose_configuration": upgrade._signature({"rendered": config, "inputs": inputs}, key)}}
     monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
     monkeypatch.setattr(upgrade, "verify_backup", lambda _: None)
     monkeypatch.setattr(upgrade, "resolve_data_mount", lambda *args: data)
     monkeypatch.setattr(upgrade, "inspect", lambda *args: {"current_image_id": old_id})
     def fake_docker(*args):
+        if "config" in args:
+            return json.dumps(config)
         if "ps" in args and "-a" in args:
             return "candidate\n"
         if args == ("inspect", "candidate"):
             return json.dumps([container])
+        if args == ("image", "inspect", "reviewed-target"):
+            return json.dumps([{"Id": "reviewed-image"}])
         if args == ("ps", "-q"):
             return ""
         raise AssertionError(args)
     monkeypatch.setattr(upgrade, "docker", fake_docker)
     monkeypatch.setattr(upgrade.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     assert upgrade.rollback_plan(tmp_path / "plan", confirm=True, health_url="http://localhost/health") == 0
+    assert (data / "sentinel").read_text() == "newer user data"
+    container["Image"] = "unrelated-image"
+    with pytest.raises(ValueError, match="not the reviewed candidate"):
+        upgrade.rollback_plan(tmp_path / "plan", confirm=True, health_url="http://localhost/health")
+    container["Image"] = old_id
+    compose.write_text("services: {changed: {image: unexpected}}")
+    with pytest.raises(ValueError, match="recovery requires manual review"):
+        upgrade.rollback_plan(tmp_path / "plan", confirm=True, health_url="http://localhost/health")
     assert (data / "sentinel").read_text() == "newer user data"
     with pytest.raises(ValueError, match="Confirm image rollback"):
         upgrade.rollback_plan(tmp_path / "plan", confirm=False, health_url="http://localhost/health")

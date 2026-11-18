@@ -761,6 +761,9 @@ def _recovery_context(content: dict[str, Any]) -> tuple[dict[str, Any], Path, di
     old_id = (backup_dir / "previous_image.txt").read_text(encoding="utf-8").strip()
     if old_id != saved["current_image_id"]:
         raise ValueError("Backup image identity does not match the reviewed baseline")
+    # Compose recreates from the current files, even when a candidate container
+    # still exists. Never apply a changed configuration during image recovery.
+    _check_recovery_configuration(content)
     files = saved["compose_files"]
     prefix = ("compose", *(item for path in files for item in ("-f", path)))
     ids = docker(*prefix, "ps", "-a", "-q", saved["service"]).split()
@@ -768,20 +771,15 @@ def _recovery_context(content: dict[str, Any]) -> tuple[dict[str, Any], Path, di
         raise ValueError("The bridge container cannot be uniquely identified for rollback")
     if ids:
         current = json.loads(docker("inspect", ids[0]))[0]
+        if current.get("Image") != old_id:
+            candidate = json.loads(docker("image", "inspect", content["target"]))
+            if len(candidate) != 1 or current.get("Image") != candidate[0].get("Id"):
+                raise ValueError("The current container is not the reviewed candidate; recovery requires manual review")
     else:
         # A failed recreation may have removed the old container before making a
         # replacement. Recheck the reviewed mounts and Compose inputs directly.
         if not isinstance(saved.get("mounts"), list):
             raise ValueError("Reviewed mount evidence is unavailable for recovery")
-        config = json.loads(docker(*prefix, "config", "--format", "json"))
-        paths = saved.get("configuration_input_paths")
-        if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
-            raise ValueError("Reviewed configuration input evidence is unavailable")
-        fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
-        inputs = _read_recorded_inputs(paths, fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
-        actual = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
-        if not hmac.compare_digest(content["verification"]["compose_configuration"], actual):
-            raise ValueError("Compose inputs changed; image rollback requires manual review")
         current = {"Id": "", "Mounts": saved["mounts"]}
     running = [cid for cid in docker("ps", "-q").split() if not current["Id"].startswith(cid)]
     others = json.loads(docker("inspect", *running)) if running else []
@@ -823,11 +821,14 @@ def _check_recovery_configuration(content: dict[str, Any]) -> None:
     files = saved["compose_files"]
     prefix = ("compose", *(item for path in files for item in ("-f", path)))
     config = json.loads(docker(*prefix, "config", "--format", "json"))
+    paths = saved.get("configuration_input_paths")
+    if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("Reviewed configuration input evidence is unavailable")
     fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
-    inputs = _read_recorded_inputs(saved["configuration_input_paths"], fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
+    inputs = _read_recorded_inputs(paths, fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
     current = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
     if not hmac.compare_digest(content["verification"]["compose_configuration"], current):
-        raise ValueError("Compose or credential inputs changed; data restoration requires manual review")
+        raise ValueError("Compose or credential inputs changed; recovery requires manual review")
 
 
 def restore_data(plan_path: Path, *, confirm_overwrite: bool, confirm_exclusive: bool, health_url: str) -> int:

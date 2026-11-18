@@ -117,6 +117,11 @@ verify_rollback() {
   return 0
 }
 
+print_recovery_command() {
+  printf '  python3 %q rollback --plan-file %q --confirm-image-rollback --health-url %q\n' \
+    "$SCRIPT_DIR/upgrade.py" "$PCB_REVIEW_PLAN" "$HEALTH_URL" >&2
+}
+
 write_image_override() {
   python3 - "$SERVICE_NAME" "$1" "$2" <<'PYCODE'
 import json, os, pathlib, sys
@@ -132,6 +137,18 @@ else:
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write(content)
 PYCODE
+}
+
+recover_reviewed_image() {
+  echo "Attempting reviewed image-only recovery; current data and credentials will not be restored." >&2
+  if python3 "$SCRIPT_DIR/upgrade.py" rollback --plan-file "$PCB_REVIEW_PLAN" \
+      --confirm-image-rollback --health-url "$HEALTH_URL"; then
+    echo "Previous image recovered; the upgrade did not complete." >&2
+  else
+    echo "ERROR: automatic image recovery could not be proven safe or did not complete." >&2
+    echo "Preserve current data and the backup at $BACKUP_DIR. After resolving the reported issue, retry:" >&2
+    print_recovery_command
+  fi
 }
 
 rollback() {
@@ -330,6 +347,10 @@ resume_after_backup_failure() {
     echo "Upgrade interrupted before replacement; restarting the existing container." >&2
     "${COMPOSE[@]}" start "$SERVICE_NAME" >&2 || true
   fi
+  if [[ "${REPLACEMENT_IN_PROGRESS:-0}" == "1" ]]; then
+    echo "Replacement was interrupted or did not complete. Preserve data and $BACKUP_DIR; after inspecting the failure, recover with:" >&2
+    print_recovery_command
+  fi
 }
 trap resume_after_backup_failure EXIT
 "${COMPOSE[@]}" stop "$SERVICE_NAME"
@@ -382,8 +403,10 @@ write_image_override "$INTENDED_IMAGE" "$IMAGE_OVERRIDE"
 
 echo "Recreating container with published image…"
 STOPPED_FOR_BACKUP=0
+REPLACEMENT_IN_PROGRESS=1
 "${COMPOSE[@]}" -f "$IMAGE_OVERRIDE" up -d --no-deps --pull never --force-recreate "$SERVICE_NAME" || {
-  echo "ERROR: candidate container could not start. Preserve data and use the image rollback instructions." >&2
+  echo "ERROR: candidate container could not be created or started." >&2
+  recover_reviewed_image
   exit 2
 }
 
@@ -398,30 +421,15 @@ for _ in $(seq 1 40); do
 done
 
 if [[ "$ok" -ne 1 ]]; then
-  echo "ERROR: health check failed. Executing rollback…" >&2
-  rollback "$BACKUP_DIR"
-  echo "Waiting for /health to recover after rollback…" >&2
-  for _ in $(seq 1 40); do
-    if curl -sf "$HEALTH_URL" >/dev/null; then
-      echo "Service restored after rollback." >&2
-      exit 2
-    fi
-    sleep 1
-  done
-  echo "FATAL: service did not recover after rollback." >&2
+  echo "ERROR: health check failed." >&2
+  recover_reviewed_image
   exit 2
 fi
 
 CONFIG_FINGERPRINT_AFTER="$(protected_config_fingerprint "$GCP_CREDS")"
 if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
-  echo "ERROR: protected configuration fingerprint changed during upgrade; rolling back." >&2
-  rollback "$BACKUP_DIR"
-  CONFIG_FINGERPRINT_ROLLED_BACK="$(protected_config_fingerprint "$GCP_CREDS")"
-  if [[ "$CONFIG_FINGERPRINT_ROLLED_BACK" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
-    echo "FATAL: protected configuration fingerprint did not return to its backed-up value." >&2
-    exit 3
-  fi
-  echo "Protected configuration fingerprint verified after rollback." >&2
+  echo "ERROR: protected configuration fingerprint changed during upgrade; review is required." >&2
+  recover_reviewed_image
   exit 2
 fi
 echo "Protected configuration fingerprint verified after upgrade."
@@ -445,5 +453,6 @@ fi
 curl -sS "$HEALTH_URL" || true
 echo
 echo "Upgrade complete. Backup at $BACKUP_DIR (layered_diag=$diag_ok)"
+REPLACEMENT_IN_PROGRESS=0
 echo "Manual rollback if needed:"
 echo "  bash $0 rollback $BACKUP_DIR"

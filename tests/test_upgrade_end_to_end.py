@@ -88,7 +88,10 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
 
 
 @pytest.mark.skipif(os.getenv("PCB_TEST_UPGRADE_E2E") != "1", reason="requires local Docker and a published immutable target")
-def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_path):
+@pytest.mark.parametrize("failure_mode", ["startup", "creation"])
+def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_path, failure_mode):
+    import shlex
+    import shutil
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
         pytest.skip("bind mount test must run on the Docker daemon host")
     root = Path(__file__).resolve().parents[1]
@@ -127,12 +130,38 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
         old_image = json.loads(run("docker", "inspect", old).stdout)[0]["Image"]
         result = cli("plan", "--compose-file", str(compose), "--target", target, "--plan-file", str(plan))
         assert result.returncode == 0, result.stderr
+        if failure_mode == "creation":
+            # Simulate a daemon creation error after the old container has been
+            # removed. All other operations still use the real Docker daemon.
+            docker_path = shutil.which("docker")
+            assert docker_path
+            wrapper_dir = tmp_path / "docker-wrapper"
+            wrapper_dir.mkdir()
+            wrapper = wrapper_dir / "docker"
+            wrapper.write_text(f'''#!/bin/sh
+case " $* " in
+  *upgrade-image-override.json*" up "*)
+    {shlex.quote(docker_path)} rm -f "$PCB_TEST_OLD_CONTAINER" >/dev/null
+    echo 'injected candidate creation failure' >&2
+    exit 1 ;;
+esac
+exec {shlex.quote(docker_path)} "$@"
+''')
+            wrapper.chmod(0o755)
+            env["PATH"] = str(wrapper_dir) + os.pathsep + env["PATH"]
+            env["PCB_TEST_OLD_CONTAINER"] = old
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data",
                      "--health-url", f"http://127.0.0.1:{port}/health")
         assert result.returncode != 0
-        assert (data / "newer.json").exists()
+        if failure_mode == "startup":
+            assert (data / "newer.json").exists()
         current = run("docker", "compose", "-f", str(compose), "ps", "-q", "bridge").stdout.strip()
         assert json.loads(run("docker", "inspect", current).stdout)[0]["Image"] == old_image
         assert not (plan.with_suffix(".backup") / "apply-completed.json").exists()
+        result = cli("rollback", "--plan-file", str(plan), "--confirm-image-rollback",
+                     "--health-url", f"http://127.0.0.1:{port}/health")
+        assert result.returncode == 0, result.stderr
+        if failure_mode == "startup":
+            assert (data / "newer.json").read_text() == '{"keep":true}'
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
