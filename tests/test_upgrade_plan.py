@@ -184,7 +184,8 @@ def test_apply_never_claims_full_verification_when_index_is_untested(tmp_path, m
     import urllib.request
     state = {"configuration_drift": {"status": "PASS", "warnings": []},
              "_protected": {"inputs": {}}, "compose_files": [str(tmp_path / "compose.yml")],
-             "service": "bridge", "music_index_present": True, "data_source": str(tmp_path), "container_id": "cid", "data_dir": "/data"}
+             "service": "bridge", "music_index_present": True, "data_source": str(tmp_path), "container_id": "cid", "data_dir": "/data",
+             "current_image_id": "sha256:test"}
     content = {"backup_dir": str(tmp_path / "backup"), "target": "image@sha256:" + "a" * 64,
                "plan_auth": "signed", "installation": {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge"}}
     monkeypatch.setattr(upgrade, "check_plan_file", lambda _: (content, state))
@@ -235,6 +236,20 @@ def test_saved_mix_verification_compares_restored_backup_without_writes(tmp_path
     assert upgrade.verify_music_backup(archive, data) == ["music index or saved mixes changed from the verified backup"]
     (data / "music_index.sqlite3-wal").write_bytes(b"active")
     assert "NOT TESTED" in upgrade.verify_music_backup(archive, data)[0]
+
+
+def test_online_snapshot_fails_closed_if_readonly_helper_is_unavailable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    def fail(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1, stdout="", stderr="private output")
+    monkeypatch.setattr(upgrade.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="NOT TESTED") as exc:
+        upgrade._readonly_online_music_snapshot(tmp_path, "image")
+    assert "private output" not in str(exc.value)
+    assert "none" in calls[0] and "--read-only" in calls[0]
+    assert any("readonly,bind-propagation=rprivate,bind-recursive=readonly" in item for item in calls[0])
 
 
 def test_unbacked_writable_mounts_cannot_be_silently_ignored():

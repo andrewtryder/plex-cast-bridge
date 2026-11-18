@@ -58,7 +58,7 @@ python3 scripts/upgrade.py verify \
   --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json"
 ```
 
-Use the same `--health-url` if you supplied one during apply. A **NOT TESTED** result is not a pass; for example, an active SQLite WAL can prevent a read-only comparison. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
+Use the same `--health-url` if you supplied one during apply. The music check attempts a SQLite online snapshot in a network-isolated helper with the source mounted recursively read-only. It returns **NOT TESTED** if the Docker version, kernel, filesystem, database state, or permissions do not support that operation. Offline backup verification is separate. A **NOT TESTED** result is not a pass. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
 
 For image recovery, select the same plan and explicitly confirm the image rollback:
 

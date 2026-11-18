@@ -20,7 +20,7 @@ from release_acceptance import PROTECTED_ENV_KEYS, _configuration_drift_capture,
 from upgrade_inputs import create_inputs_backup, verify_inputs_backup
 from upgrade_restore import restore_offline
 from upgrade_backup import restored_tree, restore_to_new_directory, verify as verify_backup
-from upgrade_docker_backup import docker_backup, read_host_file
+from upgrade_docker_backup import _mount, docker_backup, read_host_file
 from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
@@ -603,7 +603,64 @@ def _music_snapshot(path: Path) -> dict[str, Any] | None:
         raise RuntimeError("music index verification NOT TESTED") from exc
 
 
-def _live_music_snapshot(path: Path, container_id: str, container_root: str) -> dict[str, Any] | None:
+def _readonly_online_music_snapshot(source: Path, image: str) -> dict[str, Any] | None:
+    """Snapshot through SQLite with the entire source mount enforced read-only."""
+    code = '''import json, pathlib, sqlite3
+p = pathlib.Path("/source/music_index.sqlite3")
+if p.is_symlink():
+    raise ValueError("database symlink")
+if not p.exists():
+    print("null")
+else:
+    if not p.is_file():
+        raise ValueError("database is not a regular file")
+    db = sqlite3.connect("file:/source/music_index.sqlite3?mode=ro", uri=True, timeout=5)
+    copy = sqlite3.connect(":memory:")
+    try:
+        db.backup(copy)
+        if copy.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+            raise ValueError("integrity check failed")
+        result = {"mixes": copy.execute("SELECT * FROM mixes ORDER BY id").fetchall(),
+                  "mix_tracks": copy.execute("SELECT * FROM mix_tracks ORDER BY mix_id, position").fetchall(),
+                  "index_ids": {"tracks": copy.execute("SELECT server_id, library_id, rating_key FROM tracks").fetchall(),
+                                "artists": copy.execute("SELECT server_id, library_id, artist_key FROM artists").fetchall(),
+                                "albums": copy.execute("SELECT server_id, library_id, album_key FROM albums").fetchall()}}
+        print(json.dumps(result))
+    finally:
+        copy.close()
+        db.close()
+'''
+    name = "pcb-index-check-" + secrets.token_hex(12)
+    try:
+        cmd = ["docker", "run", "--rm", "--name", name, "--pull", "never", "--network", "none", "--read-only",
+               "--cap-drop", "ALL", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges",
+               "--user", "0", "--entrypoint", "python", "--mount",
+               _mount(source, "/source", readonly=True) + ",bind-propagation=rprivate,bind-recursive=readonly",
+               image, "-B", "-c", code]
+        try:
+            result = subprocess.run(cmd, text=True, capture_output=True, timeout=30, check=False)
+        except subprocess.TimeoutExpired:
+            try:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=15, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            raise
+        if result.returncode:
+            raise RuntimeError("music index verification NOT TESTED: read-only online snapshot unavailable")
+        raw = json.loads(result.stdout)
+        if raw is None:
+            return None
+        return {"mixes": [tuple(row) for row in raw["mixes"]],
+                "mix_tracks": [tuple(row) for row in raw["mix_tracks"]],
+                "index_ids": {name: {tuple(row) for row in raw["index_ids"][name]}
+                              for name in ("tracks", "artists", "albums")}}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("music index verification NOT TESTED: read-only online snapshot unavailable") from exc
+
+
+def _live_music_snapshot(path: Path, container_id: str, container_root: str, image: str | None = None) -> dict[str, Any] | None:
+    if image:
+        return _readonly_online_music_snapshot(path.parent, image)
     if not path.exists():
         return None
     journal = path.with_name(path.name + "-journal")
@@ -627,12 +684,12 @@ def _live_music_snapshot(path: Path, container_id: str, container_root: str) -> 
 
 
 def verify_music_backup(backup: Path, data_source: Path, *, container_id: str | None = None,
-                        container_root: str | None = None) -> list[str]:
+                        container_root: str | None = None, image: str | None = None) -> list[str]:
     try:
         with restored_tree(backup) as restored:
             before = _music_snapshot(restored / "music_index.sqlite3")
         live_path = data_source / "music_index.sqlite3"
-        after = (_live_music_snapshot(live_path, container_id, container_root)
+        after = (_live_music_snapshot(live_path, container_id, container_root, image)
                  if container_id and container_root else _music_snapshot(live_path))
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         return [str(exc) if isinstance(exc, RuntimeError) else "music index verification NOT TESTED"]
@@ -730,7 +787,8 @@ def verify_installation(plan_path: Path, *, health_url: str) -> int:
     except (OSError, ValueError):
         failures.append("configuration backup does not match the reviewed inputs")
     failures.extend(verify_music_backup(backup_dir / "data.tgz", Path(after["data_source"]),
-                                        container_id=after["container_id"], container_root=after["data_dir"]))
+                                        container_id=after["container_id"], container_root=after["data_dir"],
+                                        image=after["current_image_id"]))
     try:
         with urlopen(health_url, timeout=5) as response:
             if response.status != 200:
