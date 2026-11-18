@@ -27,11 +27,13 @@ After the reviewed release commit is on `main`, dispatch **Publish Verified
 Release** from GitHub Actions with the numeric semver version and the reviewed
 commit or `main` ref. The workflow:
 
-1. builds and pushes only the versioned and major/minor GHCR tags;
-2. resolves the immutable digest and requires `linux/amd64` and `linux/arm64`;
-3. requires OCI version and revision labels for both platforms;
-4. creates `vVERSION` and the GitHub release only after those checks pass;
-5. promotes that verified digest to `latest`.
+1. verifies that the selected revision is merged into `main` and matches the release version;
+2. refuses an existing tag or versioned GHCR image;
+3. builds and pushes only the versioned and major/minor GHCR tags;
+4. resolves the immutable digest and requires `linux/amd64` and `linux/arm64`;
+5. requires OCI version and revision labels for both platforms;
+6. creates `vVERSION` and the GitHub release only after those checks pass;
+7. promotes that verified digest to `latest`.
 
 The older Docker workflow is a manual build diagnostic only; it cannot publish
 GHCR tags. Do not restore automatic `main` or tag publishing, because that can

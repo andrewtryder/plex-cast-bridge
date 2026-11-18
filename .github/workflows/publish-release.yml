@@ -36,9 +36,19 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - name: Record reviewed revision
+      - name: Fetch origin main
+        run: git fetch origin main --tags
+
+      - name: Validate release commit is on main
         id: revision
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python scripts/verify_release_commit.py \
+            --version "$RELEASE_VERSION" \
+            --ref "${{ inputs.ref }}" \
+            --main-ref origin/main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Refuse an existing release tag
         env:
