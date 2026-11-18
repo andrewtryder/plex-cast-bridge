@@ -385,6 +385,29 @@ def _verification_signatures(state: dict[str, Any], key: bytes) -> dict[str, str
             "mounts": _mount_signature(container, key)}
 
 
+def _legacy_env_identity_signature(state: dict[str, Any], key: bytes) -> str | None:
+    """Recognize a newly created, token-free record for unchanged legacy env settings."""
+    protected = state["_protected"]
+    files = protected["files"]
+    try:
+        record = json.loads(bytes.fromhex(files["plex_connection.json"]))
+        if not isinstance(record, dict) or set(record) - {
+            "mode", "server_url", "music_section", "server_name", "updated_at", "client_identifier"
+        } or record.get("mode") != "env" or not isinstance(record.get("client_identifier"), str) or not record["client_identifier"]:
+            return None
+        raw_env = (protected["container"].get("Config") or {}).get("Env") or []
+        env = dict(item.split("=", 1) for item in raw_env if "=" in item)
+        if not all(env.get(name) for name in ("PLEX_URL", "PLEX_TOKEN", "PLEX_MUSIC_SECTION")):
+            return None
+        if str(record.get("server_url") or "").rstrip("/") != env["PLEX_URL"].rstrip("/") or record.get("music_section") != env["PLEX_MUSIC_SECTION"]:
+            return None
+        old_files = {**files, "plex_connection.json": None}
+        return _signature({"files": _persistent_identity(old_files),
+                           "selected_catalog": protected.get("catalog_snapshot")}, key)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+
+
 def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
     """Return non-secret reasons why a post-upgrade inspection is not verified."""
     try:
@@ -403,7 +426,11 @@ def verify_plan(content: dict[str, Any], state: dict[str, Any]) -> list[str]:
                           ("compose_configuration", "Compose configuration changed"),
                           ("runtime_configuration", "runtime configuration changed"),
                           ("mounts", "persistent mounts changed")):
-        if not isinstance(baseline.get(label), str) or not hmac.compare_digest(baseline[label], current[label]):
+        matched = isinstance(baseline.get(label), str) and hmac.compare_digest(baseline[label], current[label])
+        if not matched and label == "persistent_identity" and isinstance(baseline.get(label), str):
+            legacy = _legacy_env_identity_signature(state, key)
+            matched = legacy is not None and hmac.compare_digest(baseline[label], legacy)
+        if not matched:
             failures.append(reason)
     if state.get("configuration_drift", {}).get("status") != "PASS":
         failures.append("configuration drift diagnostic NOT TESTED")

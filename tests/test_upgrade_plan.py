@@ -122,6 +122,34 @@ def test_verification_ignores_operational_state_but_detects_identity_change(tmp_
     assert "secret" not in path.read_text()
 
 
+def test_legacy_env_migration_accepts_only_matching_token_free_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(upgrade, "docker", lambda *args: "")
+    target = "example@sha256:" + "a" * 64
+    env = ["PLEX_URL=http://plex:32400", "PLEX_MUSIC_SECTION=Music", "PLEX_TOKEN=synthetic"]
+    files = {"plex_connection.json": None, "catalog.json": None, "app_settings.json": None,
+             "google_home_sync.json": None, "google_home_setup.json": None}
+    state = {"_protected": {"files": files, "compose": {}, "container": {"Config": {"Env": env}, "Mounts": []}},
+             "configuration_drift": {"status": "PASS", "warnings": []}, "current_image_digests": [target]}
+    path = tmp_path / "plan.json"
+    upgrade.plan(state, target, path)
+    content = json.loads(path.read_text())
+    record = {"mode": "env", "server_url": "http://plex:32400", "music_section": "Music",
+              "client_identifier": "new-generated-id"}
+    files["plex_connection.json"] = json.dumps(record).encode().hex()
+    assert upgrade.verify_plan(content, state) == []
+    record["jwt_token"] = "unexpected"
+    files["plex_connection.json"] = json.dumps(record).encode().hex()
+    assert "persistent identities or credentials changed" in upgrade.verify_plan(content, state)
+    del record["jwt_token"]
+    record["server_url"] = "http://other:32400"
+    files["plex_connection.json"] = json.dumps(record).encode().hex()
+    assert "persistent identities or credentials changed" in upgrade.verify_plan(content, state)
+    record["server_url"] = "http://plex:32400"
+    files["plex_connection.json"] = json.dumps(record).encode().hex()
+    env[2] = "PLEX_TOKEN=changed"
+    assert "runtime configuration changed" in upgrade.verify_plan(content, state)
+
+
 def test_custom_catalog_must_be_backed_up_with_data_mount():
     assert upgrade._catalog_relative("/data", "/data/custom/library.json", "/app") == Path("custom/library.json")
     assert upgrade._catalog_relative("/data", "catalog.json", "/data") == Path("catalog.json")
