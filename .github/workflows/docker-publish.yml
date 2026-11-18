@@ -1,10 +1,6 @@
-name: Publish Docker Image
+name: Build Docker Image (manual diagnostic)
 
 on:
-  push:
-    branches: [main]
-    # release-please historically used plex-cast-bridge-v*; prefer plain v* going forward
-    tags: ["v*", "plex-cast-bridge-v*"]
   workflow_dispatch:
 
 jobs:
@@ -12,7 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Checkout repository
@@ -24,51 +19,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=match,pattern=plex-cast-bridge-v(.*),group=1
-            type=match,pattern=plex-cast-bridge-v(\d+\.\d+),group=1
-            type=sha,format=short
-
-      - name: Build and push multi-arch Docker image
-        id: build
+      - name: Build multi-arch image without publishing
         uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Verify versioned release artifact
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null
-          version="${RELEASE_TAG#plex-cast-bridge-v}"
-          version="${version#v}"
-          python scripts/verify_release_artifact.py \
-            --image "ghcr.io/${GITHUB_REPOSITORY}:${version}" \
-            --expected-digest "$IMAGE_DIGEST" \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA"

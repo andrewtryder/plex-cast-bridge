@@ -33,6 +33,10 @@ commit or `main` ref. The workflow:
 4. creates `vVERSION` and the GitHub release only after those checks pass;
 5. promotes that verified digest to `latest`.
 
+The older Docker workflow is a manual build diagnostic only; it cannot publish
+GHCR tags. Do not restore automatic `main` or tag publishing, because that can
+move `latest` to an unreviewed commit or bypass these checks.
+
 If image build or verification fails, do not create a substitute GitHub release
 and do not tell users to use `latest`. Preserve the workflow logs and fix the
 publication failure before retrying with a new reviewed release process.
