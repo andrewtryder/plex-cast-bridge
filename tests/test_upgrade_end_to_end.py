@@ -117,10 +117,11 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
               "H=type('H',(BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(200),s.end_headers()),"
               "'log_message':lambda *a:None}); HTTPServer(('0.0.0.0',8000),H).serve_forever()")
     compose = tmp_path / "compose.json"
-    compose.write_text(json.dumps({"services": {"bridge": {"image": "plex-cast-bridge-config-drift-test",
+    test_image = "pcb-failure-test:" + os.urandom(6).hex()
+    compose.write_text(json.dumps({"services": {"bridge": {"image": test_image,
         "command": ["python", "-c", server], "ports": [f"127.0.0.1:{port}:8000"], "volumes": [f"{data}:/data"]}}}))
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbfail" + os.urandom(6).hex()}
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", "plex-cast-bridge-config-drift-test", "."],
+    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
                    cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
         return subprocess.run(list(args), cwd=root, env=env, capture_output=True, text=True, timeout=240)
@@ -171,3 +172,4 @@ exec {shlex.quote(docker_path)} "$@"
         assert all((data / name).read_bytes() == contents for name, contents in protected.items())
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
+        run("docker", "image", "rm", test_image)
