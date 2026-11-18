@@ -70,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
 """
     test_image = "pcb-real-test:" + os.urandom(6).hex()
-    compose = tmp_path / "compose.json"
+    compose = tmp_path / "compose.yaml"
     compose.write_text(json.dumps({"services": {
         "plex-sim": {"image": test_image, "command": ["python", "-c", fake_plex], "networks": ["isolated"]},
         "bridge": {"image": os.getenv("PCB_TEST_START_IMAGE", test_image), "depends_on": ["plex-sim"],
@@ -137,7 +137,13 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
         else:
             with urlopen(f"http://127.0.0.1:{port}/api/settings", timeout=5) as response:
                 assert json.load(response)["library"]["linked"] is True
-        result = cli("plan", "--compose-file", str(compose), "--service", "bridge", "--target", target, "--plan-file", str(plan))
+        migration = tmp_path / "migration.json"
+        result = cli("prepare-compose-migration", "--compose-file", str(compose), "--service", "bridge", "--review-file", str(migration))
+        assert result.returncode == 0, result.stderr
+        result = cli("migrate-compose", "--review-file", str(migration), "--confirm")
+        assert result.returncode == 0, result.stderr
+        result = cli("plan", "--compose-file", str(compose), "--compose-file", str(tmp_path / "compose.override.yaml"),
+                     "--service", "bridge", "--target", target, "--plan-file", str(plan))
         assert result.returncode == 0, result.stderr
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data", "--health-url", health)
         assert result.returncode == 0, result.stderr

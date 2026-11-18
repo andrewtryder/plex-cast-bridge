@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from upgrade_inputs import create_inputs_backup, verify_inputs_backup
 from upgrade_restore import restore_offline
 from upgrade_backup import restored_tree, restore_to_new_directory, verify as verify_backup
 from upgrade_docker_backup import _mount, docker_backup, read_host_file
-from upgrade_compose_selection import create_migration, migration_preview
+from upgrade_compose_selection import create_migration, managed_content, migration_preview, switch_managed_image, validate_managed
 from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
@@ -188,7 +189,7 @@ def _normalize_mounts(container: dict[str, Any]) -> dict[str, Any]:
             key=lambda mount: (str(mount.get("Destination")), str(mount.get("Source"))))}
 
 
-def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
+def inspect(compose: Path | list[Path], service: str | None, *, internal: bool = False) -> dict[str, Any]:
     files = [compose] if isinstance(compose, Path) else compose
     if not files or any(not path.is_file() for path in files):
         raise ValueError("Compose file does not exist")
@@ -205,6 +206,7 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
     image = services[service].get("image")
     if not image:
         raise ValueError("The bridge service must specify an image")
+    managed = validate_managed(files, service, image, config, internal=internal)
     ids = docker(*prefix, "ps", "-q", service).split()
     if len(ids) != 1:
         raise ValueError("Exactly one running bridge container is required")
@@ -264,6 +266,7 @@ def inspect(compose: Path | list[Path], service: str | None) -> dict[str, Any]:
         except OSError as exc:
             raise RuntimeError("The mounted subscriber credential file cannot be read") from exc
     return {"compose": str(files[0]), "compose_files": [str(path) for path in files], "service": service, "compose_image": image,
+            **({"managed_override": str(managed)} if managed else {}),
             "container_id": container["Id"], "current_image_id": container["Image"],
             "current_image_digests": image_info.get("RepoDigests") or [],
             "current_version": ((image_info.get("Config") or {}).get("Labels") or {}).get("org.opencontainers.image.version") or "unknown",
@@ -302,6 +305,19 @@ def latest_release() -> dict[str, str]:
     if not digest:
         raise RuntimeError("Could not determine an immutable image digest for the latest release")
     return {"version": version, "target": f"{image}@{digest.group(1)}"}
+
+
+def _is_official_image(state: dict[str, Any]) -> bool:
+    registry = "ghcr.io/andrewtryder/plex-cast-bridge"
+    configured = state["compose_image"].split("@", 1)[0]
+    if configured.rfind(":") > configured.rfind("/"):
+        configured = configured.rsplit(":", 1)[0]
+    if configured.lower() == registry:
+        return True
+    if state["compose_image"].startswith("sha256:"):
+        return any(isinstance(value, str) and value.lower().startswith(registry + "@sha256:")
+                   for value in state.get("current_image_digests", []))
+    return False
 
 
 def public(state: dict[str, Any]) -> dict[str, Any]:
@@ -384,6 +400,27 @@ def _verification_signatures(state: dict[str, Any], key: bytes) -> dict[str, str
             "runtime_configuration": _signature(runtime, key),
             "quiesced_credentials": _signature(_quiesced_credentials(protected["files"]), key),
             "mounts": _mount_signature(container, key)}
+
+
+def _normalize_managed_configuration(content: dict[str, Any], config: dict[str, Any],
+                                     inputs: dict[str, str | None], *, require_target: bool = False) -> tuple[dict[str, Any], dict[str, str | None]]:
+    """Compare only the reviewed image change while preserving all other inputs."""
+    saved = content["installation"]
+    path = saved.get("managed_override")
+    if not path:
+        if require_target:
+            raise ValueError("This older plan has no durable Compose selection; review image recovery and prepare a new plan")
+        return config, inputs
+    service, previous = saved["service"], saved["compose_image"]
+    selected = config["services"][service]["image"]
+    allowed = {previous, content["target"], saved["current_image_id"]}
+    if selected not in allowed or inputs.get(path) != managed_content(service, selected).hex():
+        raise ValueError("Managed Compose selection changed unexpectedly; manual review is required")
+    if require_target and selected != content["target"]:
+        raise ValueError("Durable Compose image selection is not the reviewed target")
+    normalized = json.loads(json.dumps(config))
+    normalized["services"][service]["image"] = previous
+    return normalized, {**inputs, path: managed_content(service, previous).hex()}
 
 
 def _legacy_env_identity_signature(state: dict[str, Any], key: bytes) -> str | None:
@@ -484,9 +521,11 @@ def plan(state: dict[str, Any], target: str, plan_file: Path, *, inspect_registr
             stream.write("\n")
     return {"installation": public(state), "target": target, "plan_file": str(plan_file), "backup_dir": str(backup_dir),
             "actions": ["Pull the reviewed image before stopping the bridge", "Stop the bridge and verify an isolated backup restore",
-                        "Replace the local image and check health", "Verify persistent state against the captured baseline"],
+                        "Replace the local image and check health", "Verify persistent state against the captured baseline",
+                        "Update the reviewed managed Compose override to the target digest"],
             "review": (["Gateway environment conflicts require review before upgrade."] if state["configuration_drift"]["warnings"] else []) + [
                        "Other processes and containers must not write the data or catalog until replacement completes.",
+                       "Do not edit Compose files or the managed override until the upgrade completes.",
                        "Cloud Run is separate and will not be deployed.",
                        "Apply is experimental; review all actions and keep the backup until verification completes."]}
 
@@ -513,10 +552,11 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise ValueError("Could not read a valid private plan") from exc
 
 
-def check_plan_file(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def check_plan_file(path: Path, *, internal: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     content = load_plan(path)
     saved = content["installation"]
-    state = inspect([Path(value) for value in saved["compose_files"]], saved["service"])
+    files = [Path(value) for value in saved["compose_files"]]
+    state = inspect(files, saved["service"], internal=True) if internal else inspect(files, saved["service"])
     key = bytes.fromhex(content["key"])
     if (_stable_public(state) != _stable_public(saved) or not isinstance(content.get("protected_state"), str)
             or not hmac.compare_digest(content["protected_state"], _signature({"protected": state["_protected"], "target": content.get("target"), "installation": _stable_public(saved), "backup_dir": content.get("backup_dir")}, key))):
@@ -744,12 +784,56 @@ def _receipt(content: dict[str, Any], backup_dir: Path) -> dict[str, Any]:
             "configuration_archive": _archive_mac(backup_dir / "configuration.tgz", key)}
 
 
+def _selection_journal(content: dict[str, Any], backup_dir: Path) -> None:
+    saved = content["installation"]
+    path = backup_dir / "image-selection-journal.json"
+    value = {"plan_auth": content["plan_auth"], "override": saved["managed_override"],
+             "previous": saved["compose_image"], "previous_image_id": saved["current_image_id"],
+             "target": content["target"]}
+    encoded = (json.dumps(value, sort_keys=True) + "\n").encode()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        if path.is_symlink() or path.read_bytes() != encoded:
+            raise ValueError("Image selection journal differs; preserve it for manual review")
+        return
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory_fd = os.open(backup_dir, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def finalize_selection(plan_path: Path, *, confirm: bool, health_url: str) -> int:
+    if not confirm:
+        raise ValueError("Confirm selection of the reviewed image after verification")
+    content = load_plan(plan_path)
+    saved = content["installation"]
+    if not saved.get("managed_override"):
+        raise ValueError("This plan does not contain a reviewed managed Compose override")
+    if verify_installation(plan_path, health_url=health_url, require_selection=False):
+        return 2
+    backup_dir = Path(content["backup_dir"])
+    _selection_journal(content, backup_dir)
+    command = [sys.executable, str(Path(__file__).resolve()), "finalize-selection", "--plan-file", str(plan_path.resolve()),
+               "--confirm", "--health-url", health_url]
+    print("If selection is interrupted, review the backup and retry: " + shlex.join(command), file=sys.stderr)
+    switch_managed_image(Path(saved["managed_override"]), saved["service"], saved["compose_image"], content["target"])
+    return verify_installation(plan_path, health_url=health_url)
+
+
 def apply_plan(plan_path: Path, *, confirm_exclusive: bool, acknowledge_drift: bool, health_url: str) -> int:
     content, state = check_plan_file(plan_path)
     if not confirm_exclusive:
-        raise ValueError("Confirm that all other writers to the data and catalog files are stopped and will stay stopped")
+        raise ValueError("Confirm that all other writers to the data, catalog, and Compose configuration are stopped and will stay stopped")
     if state["configuration_drift"]["warnings"] and not acknowledge_drift:
         raise ValueError("Gateway drift warnings require explicit acknowledgement after review")
+    if not state.get("managed_override"):
+        raise ValueError("Prepare and review a managed Compose override before upgrading")
     backup_dir = Path(content["backup_dir"])
     if backup_dir.exists():
         raise ValueError("The planned backup directory already exists; inspect it before retrying")
@@ -791,10 +875,10 @@ def apply_plan(plan_path: Path, *, confirm_exclusive: bool, acknowledge_drift: b
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    return verify_installation(plan_path, health_url=health_url)
+    return finalize_selection(plan_path, confirm=True, health_url=health_url)
 
 
-def verify_installation(plan_path: Path, *, health_url: str) -> int:
+def verify_installation(plan_path: Path, *, health_url: str, require_selection: bool = True) -> int:
     from urllib.error import URLError
     from urllib.request import urlopen
 
@@ -809,6 +893,9 @@ def verify_installation(plan_path: Path, *, health_url: str) -> int:
     verify_backup(backup_dir / "data.tgz")
     saved = content["installation"]
     after = inspect([Path(value) for value in saved["compose_files"]], saved["service"])
+    config, inputs = _normalize_managed_configuration(content, after["_protected"]["compose"],
+                                                       after["_protected"]["inputs"], require_target=require_selection)
+    after = {**after, "_protected": {**after["_protected"], "compose": config, "inputs": inputs}}
     failures = verify_plan(content, after)
     try:
         verify_inputs_backup(after["_protected"]["inputs"], backup_dir / "configuration.tgz")
@@ -827,7 +914,10 @@ def verify_installation(plan_path: Path, *, health_url: str) -> int:
         print("Post-upgrade verification incomplete: " + "; ".join(failures), file=sys.stderr)
         print(f"Keep the backup at {backup_dir}; do not restore over a running writer.", file=sys.stderr)
         return 2
-    print(f"Upgrade identity and backup checks passed. Keep the verified backup at {backup_dir}.")
+    if require_selection:
+        print(f"Upgrade identity and backup checks passed. Keep the verified backup at {backup_dir}.")
+    else:
+        print("Pre-selection checks passed; the durable image selection has not yet been committed.")
     return 0
 
 
@@ -884,17 +974,27 @@ def rollback_plan(plan_path: Path, *, confirm: bool, health_url: str) -> int:
     content = load_plan(plan_path)
     saved, backup_dir, _, _ = _recovery_context(content)
     old_id = saved["current_image_id"]
+    if saved.get("managed_override"):
+        path = Path(saved["managed_override"])
+        current = path.read_bytes()
+        allowed = (saved["compose_image"], content["target"], old_id)
+        selected = next((value for value in allowed if current == managed_content(saved["service"], value)), None)
+        if selected is None:
+            raise ValueError("Managed Compose selection changed; image recovery requires manual review")
+        _selection_journal(content, backup_dir)
+        switch_managed_image(path, saved["service"], selected, old_id)
     files = saved["compose_files"]
     first = Path(files[0])
     env = {**os.environ, "COMPOSE_FILE": str(first), "PCB_COMPOSE_FILES_JSON": json.dumps(files),
-           "SERVICE_NAME": saved["service"], "HEALTH_URL": health_url}
+           "SERVICE_NAME": saved["service"], "HEALTH_URL": health_url, "PCB_RECOVERY_PLAN": str(plan_path.resolve())}
     print("Rolling back the image only; current data and configuration will not be restored from backup.")
     result = subprocess.run(["bash", str(Path(__file__).resolve().parent / "proxmox_upgrade.sh"),
                              "rollback", str(backup_dir)], env=env, check=False)
     if result.returncode:
         print("Image rollback did not complete; preserve current data and the backup for manual recovery.", file=sys.stderr)
         return 2
-    after = inspect([Path(value) for value in files], saved["service"])
+    after = (inspect([Path(value) for value in files], saved["service"], internal=True) if saved.get("managed_override")
+             else inspect([Path(value) for value in files], saved["service"]))
     if after["current_image_id"] != old_id:
         print("Rollback image identity could not be verified; inspect the service.", file=sys.stderr)
         return 2
@@ -912,6 +1012,7 @@ def _check_recovery_configuration(content: dict[str, Any]) -> None:
         raise ValueError("Reviewed configuration input evidence is unavailable")
     fallback_paths = {value for value in (saved.get("credential_source"), saved.get("catalog_external_source")) if value}
     inputs = _read_recorded_inputs(paths, fallback_image=saved["current_image_id"], fallback_paths=fallback_paths)
+    config, inputs = _normalize_managed_configuration(content, config, inputs)
     current = _signature({"rendered": config, "inputs": inputs}, bytes.fromhex(content["key"]))
     if not hmac.compare_digest(content["verification"]["compose_configuration"], current):
         raise ValueError("Compose or credential inputs changed; recovery requires manual review")
@@ -1015,11 +1116,18 @@ def main(argv: list[str] | None = None) -> int:
     check_backup.add_argument("--plan-file", required=True, type=Path)
     check_backup.add_argument("--backup-dir", required=True, type=Path)
     check_backup.add_argument("--container", required=True)
+    check_recovery = sub.add_parser("check-recovery", help=argparse.SUPPRESS)
+    check_recovery.add_argument("--plan-file", required=True, type=Path)
+    check_recovery.add_argument("--backup-dir", required=True, type=Path)
     apply = sub.add_parser("apply", help="Apply a reviewed private plan")
     apply.add_argument("--plan-file", required=True, type=Path)
-    apply.add_argument("--confirm-exclusive-data", action="store_true", help="Confirm other writers to the data and catalog files are stopped and will stay stopped")
+    apply.add_argument("--confirm-exclusive-data", action="store_true", help="Confirm other writers to the data, catalog, and Compose configuration are stopped and will stay stopped")
     apply.add_argument("--acknowledge-gateway-drift", action="store_true")
     apply.add_argument("--health-url", default="http://127.0.0.1:8000/health")
+    finalize = sub.add_parser("finalize-selection", help="Resume a verified but interrupted durable image selection")
+    finalize.add_argument("--plan-file", required=True, type=Path)
+    finalize.add_argument("--confirm", action="store_true")
+    finalize.add_argument("--health-url", default="http://127.0.0.1:8000/health")
     verify = sub.add_parser("verify", help="Verify a completed upgrade against its reviewed plan")
     verify.add_argument("--plan-file", required=True, type=Path)
     verify.add_argument("--health-url", default="http://127.0.0.1:8000/health")
@@ -1047,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
                 stream.flush()
                 os.fsync(stream.fileno())
             print(json.dumps(preview, indent=2))
-            print("Preparation only: upgrades do not yet update this override; continue using your existing workflow.")
+            print("Review the file, then confirm migration. The running image will not change.")
             return 0
         if args.action == "migrate-compose":
             if not args.confirm:
@@ -1057,11 +1165,13 @@ def main(argv: list[str] | None = None) -> int:
             preview = json.loads(args.review_file.read_text(encoding="utf-8"))
             path = create_migration(preview)
             print(f"Created {path}; the running image was not changed.")
-            print("Preparation only: upgrades do not yet update this override; continue using your existing workflow.")
+            print("Create an upgrade plan using both the original Compose file and this override, in that order.")
             return 0
         if args.action == "restore-data":
             return restore_data(args.plan_file, confirm_overwrite=args.confirm_overwrite_data,
                                 confirm_exclusive=args.confirm_exclusive_data, health_url=args.health_url)
+        if args.action == "finalize-selection":
+            return finalize_selection(args.plan_file, confirm=args.confirm, health_url=args.health_url)
         if args.action == "stage-restore":
             stage_restore(args.plan_file, args.destination)
             print(f"Backup restored to {args.destination}; the active data directory was not changed.")
@@ -1072,13 +1182,22 @@ def main(argv: list[str] | None = None) -> int:
             check_quiesced_backup(args.plan_file, args.backup_dir, args.container)
             print("Quiesced backup matches the reviewed identity and configuration.")
             return 0
+        if args.action == "check-recovery":
+            recovered = load_plan(args.plan_file)
+            _, checked_backup, _, _ = _recovery_context(recovered)
+            if checked_backup.resolve() != args.backup_dir.resolve():
+                raise ValueError("Recovery backup does not match the reviewed plan")
+            print("Reviewed image recovery safety checks passed.")
+            return 0
         if args.action == "verify":
             return verify_installation(args.plan_file, health_url=args.health_url)
         if args.action == "apply":
             return apply_plan(args.plan_file, confirm_exclusive=args.confirm_exclusive_data,
                               acknowledge_drift=args.acknowledge_gateway_drift, health_url=args.health_url)
         if args.action == "check-plan":
-            reviewed, current = check_plan_file(args.plan_file)
+            reviewed, current = check_plan_file(args.plan_file, internal=True)
+            if not reviewed["installation"].get("managed_override") or not current.get("managed_override"):
+                raise ValueError("Reviewed plan lacks a managed Compose override; prepare a new plan")
             if reviewed.get("target") != args.target or reviewed.get("backup_dir") != str(args.backup_dir.resolve()):
                 raise ValueError("Target image or backup location does not match the reviewed plan")
             if args.config_backup.resolve() != args.backup_dir.resolve() / "configuration.tgz":
@@ -1092,6 +1211,8 @@ def main(argv: list[str] | None = None) -> int:
             _validate_target(args.target)
             docker("buildx", "imagetools", "inspect", args.target)
         state = inspect(args.compose_file, args.service)
+        if args.action == "plan" and not state.get("managed_override"):
+            raise ValueError("Prepare a reviewed managed Compose override, then pass both Compose files in order")
         output = public(state) if args.action == "doctor" else plan(state, args.target, args.plan_file, inspect_registry=False)
         installation = output["installation"] if args.action == "plan" else output
         print(f"Service: {installation['service']}")
@@ -1100,6 +1221,8 @@ def main(argv: list[str] | None = None) -> int:
         for digest in installation["current_image_digests"]:
             print(f"Current published digest: {digest}")
         print(f"Compose image: {installation['compose_image']}")
+        if installation.get("managed_override"):
+            print(f"Managed image selection: {installation['managed_override']}")
         print(f"Persistent data: {installation['data_source']}")
         drift = installation["configuration_drift"]
         print(f"Configuration diagnostic: {drift['status']}")
@@ -1107,10 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Gateway configuration conflicts require review: " + ", ".join(drift["warnings"]))
         if args.action == "doctor" and args.check_updates:
             try:
-                configured = installation["compose_image"].split("@", 1)[0]
-                if configured.rfind(":") > configured.rfind("/"):
-                    configured = configured.rsplit(":", 1)[0]
-                if configured.lower() != "ghcr.io/andrewtryder/plex-cast-bridge":
+                if not _is_official_image(installation):
                     raise RuntimeError("Automatic update lookup is only available for the official image")
                 available = latest_release()
                 print(f"Latest official release: {available['version']}")

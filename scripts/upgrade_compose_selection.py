@@ -1,8 +1,7 @@
 """Prepare an explicit, image-only Compose override without editing user files.
 
-This module only prepares migration; it does not switch an installation's
-image. The upgrade transaction must separately update and recover the managed
-selection before this can be offered as a complete upgrade workflow.
+Migration creates a reviewed override without changing the running image.
+The upgrade transaction journals selection changes and performs image recovery.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ OVERRIDES = ("compose.override.yaml", "compose.override.yml", "docker-compose.ov
 
 
 def managed_content(service: str, image: str) -> bytes:
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", service) or not image or "\n" in image:
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", service) or not re.fullmatch(r"[a-zA-Z0-9._:/@-]+", image):
         raise ValueError("Service or image is not suitable for a managed Compose override")
     return (HEADER + json.dumps({"services": {service: {"image": image}}}, sort_keys=True, indent=2) + "\n").encode()
 
@@ -36,6 +35,21 @@ def _compose(directory: Path, *args: str) -> str:
         # Compose output can include secrets; do not print it.
         raise RuntimeError("Compose configuration could not be inspected")
     return result.stdout
+
+
+def _running_image(directory: Path, service: str) -> tuple[str, str]:
+    ids = _compose(directory, "ps", "-q", service).split()
+    if len(ids) != 1:
+        raise ValueError("Exactly one running service container is required for migration")
+    try:
+        result = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}} {{.Image}}", ids[0]],
+                                text=True, capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("The running image could not be inspected") from exc
+    parts = result.stdout.strip().split()
+    if result.returncode or len(parts) != 2 or parts[0] != "true" or not re.fullmatch(r"sha256:[0-9a-f]{64}", parts[1]):
+        raise ValueError("The running service image could not be verified")
+    return ids[0], parts[1]
 
 
 def migration_preview(base: Path, service: str) -> dict[str, Any]:
@@ -68,9 +82,11 @@ def migration_preview(base: Path, service: str) -> dict[str, Any]:
     prefix = "compose" if base.name.startswith("compose.") else "docker-compose"
     suffix = "yaml" if base.name.endswith(".yaml") else "yml"
     override = directory / f"{prefix}.override.{suffix}"
-    content = managed_content(service, image)
+    container, running_image = _running_image(directory, service)
+    content = managed_content(service, running_image)
     return {"base": str(base), "override": str(override), "service": service,
-            "current_image": image, "content": content.decode()}
+            "configured_image": image, "container": container, "current_image": running_image,
+            "content": content.decode()}
 
 
 def create_migration(preview: dict[str, Any]) -> Path:
@@ -93,6 +109,44 @@ def create_migration(preview: dict[str, Any]) -> Path:
     return path
 
 
+def validate_managed(files: list[Path], service: str, image: str, rendered: dict[str, Any], *, internal: bool = False) -> Path | None:
+    """Recognize a managed override and prove default Compose selects it."""
+    if len(files) != 2 or files[0].name not in DEFAULTS:
+        return None
+    base, override = files
+    prefix = "compose" if base.name.startswith("compose.") else "docker-compose"
+    suffix = "yaml" if base.name.endswith(".yaml") else "yml"
+    expected_path = base.parent / f"{prefix}.override.{suffix}"
+    if override != expected_path or override.is_symlink():
+        return None
+    try:
+        info = override.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError("Managed override ownership or permissions require manual review")
+        if override.read_bytes() != managed_content(service, image):
+            return None
+    except OSError:
+        return None
+    if internal:
+        return override
+    if "COMPOSE_FILE" in os.environ:
+        raise ValueError("COMPOSE_FILE requires manual review before a durable upgrade")
+    env = _compose(base.parent, "config", "--environment")
+    if any(line.startswith("COMPOSE_FILE=") for line in env.splitlines()):
+        raise ValueError("COMPOSE_FILE requires manual review before a durable upgrade")
+    if any((base.parent / name).exists() or (base.parent / name).is_symlink() for name in DEFAULTS if name != base.name):
+        raise ValueError("Multiple default Compose files require manual review")
+    if any((base.parent / name).exists() or (base.parent / name).is_symlink() for name in OVERRIDES if name != override.name):
+        raise ValueError("Multiple Compose overrides require manual review")
+    try:
+        automatic = json.loads(_compose(base.parent, "config", "--format", "json"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Default Compose configuration could not be verified") from exc
+    if automatic != rendered:
+        raise ValueError("Default Compose does not select the reviewed override")
+    return override
+
+
 def switch_managed_image(path: Path, service: str, previous: str, selected: str) -> None:
     """Atomically switch an unmodified managed override to a verified image.
 
@@ -112,7 +166,12 @@ def switch_managed_image(path: Path, service: str, previous: str, selected: str)
                 raise ValueError("Managed override is not a regular file")
             if old_stat.st_uid != os.geteuid():
                 raise ValueError("Managed override ownership requires manual review")
+            if old_stat.st_mode & 0o022:
+                raise ValueError("Managed override is writable by others; restrict its permissions before switching images")
             current = stream.read()
+        entry = os.lstat(path)
+        if not stat.S_ISREG(entry.st_mode) or (entry.st_dev, entry.st_ino) != (old_stat.st_dev, old_stat.st_ino):
+            raise ValueError("Managed override changed during image selection")
         if current == replacement:
             return
         if current != expected:

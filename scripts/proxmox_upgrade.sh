@@ -221,6 +221,15 @@ if [[ "$ACTION" == "rollback" ]]; then
     echo "ERROR: no backup directory found to rollback" >&2
     exit 1
   fi
+  if [[ -z "${PCB_RECOVERY_PLAN:-}" ]]; then
+    echo "ERROR: direct rollback cannot verify the reviewed Compose configuration and mounts." >&2
+    echo "Use: python3 $SCRIPT_DIR/upgrade.py rollback --plan-file <reviewed-plan.json> --confirm-image-rollback" >&2
+    exit 1
+  fi
+  python3 "$SCRIPT_DIR/upgrade.py" check-recovery --plan-file "$PCB_RECOVERY_PLAN" --backup-dir "$target" || {
+    echo "ERROR: recovery safety checks failed; preserve current data and the backup." >&2
+    exit 1
+  }
   verify_rollback "$target"
   rollback "$target"
   echo "Waiting for /health after manual rollback…"
@@ -251,6 +260,7 @@ if [[ "$ACTION" == "verify-rollback" ]]; then
     exit 1
   fi
   verify_rollback "$target"
+  echo "Backup and image checks do not verify the current Compose configuration or mounts; use the reviewed-plan rollback command for recovery."
   exit 0
 fi
 
@@ -455,4 +465,4 @@ echo
 echo "Upgrade complete. Backup at $BACKUP_DIR (layered_diag=$diag_ok)"
 REPLACEMENT_IN_PROGRESS=0
 echo "Manual rollback if needed:"
-echo "  bash $0 rollback $BACKUP_DIR"
+print_recovery_command

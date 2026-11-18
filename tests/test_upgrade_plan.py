@@ -76,6 +76,14 @@ def test_plan_refuses_mutable_target_or_unavailable_registry(tmp_path, monkeypat
     assert not (tmp_path / "plan.json").exists()
 
 
+def test_official_update_detection_supports_migrated_local_image_id():
+    image_id = "sha256:" + "a" * 64
+    official = "ghcr.io/andrewtryder/plex-cast-bridge@sha256:" + "b" * 64
+    assert upgrade._is_official_image({"compose_image": image_id, "current_image_digests": [official]})
+    assert not upgrade._is_official_image({"compose_image": image_id, "current_image_digests": []})
+    assert not upgrade._is_official_image({"compose_image": "other/image:latest", "current_image_digests": [official]})
+
+
 def test_plan_refuses_unavailable_drift_before_writing(tmp_path, monkeypatch):
     state = {"_protected": {}, "configuration_drift": {"status": "NOT TESTED", "warnings": []}}
     monkeypatch.setattr(upgrade, "docker", lambda *args: "")
@@ -207,15 +215,68 @@ def test_apply_requires_explicit_acknowledgements_before_writing(tmp_path, monke
     assert not (tmp_path / "backup").exists()
 
 
+def test_apply_refuses_unmanaged_compose_before_writing(tmp_path, monkeypatch):
+    state = {"configuration_drift": {"status": "PASS", "warnings": []}}
+    content = {"backup_dir": str(tmp_path / "backup")}
+    monkeypatch.setattr(upgrade, "check_plan_file", lambda _: (content, state))
+    with pytest.raises(ValueError, match="managed Compose override"):
+        upgrade.apply_plan(tmp_path / "plan", confirm_exclusive=True, acknowledge_drift=False, health_url="http://localhost/health")
+    assert not (tmp_path / "backup").exists()
+
+
+def test_managed_selection_normalizes_only_the_reviewed_image(tmp_path):
+    from upgrade_compose_selection import managed_content
+    path = str(tmp_path / "compose.override.yaml")
+    target = "example@sha256:" + "a" * 64
+    saved = {"managed_override": path, "service": "bridge", "compose_image": "example:old", "current_image_id": "sha256:" + "b" * 64}
+    content = {"installation": saved, "target": target}
+    config = {"services": {"bridge": {"image": target, "environment": {"KEEP": "value"}}}}
+    inputs = {path: managed_content("bridge", target).hex(), "other": "1234"}
+    normalized, normalized_inputs = upgrade._normalize_managed_configuration(content, config, inputs, require_target=True)
+    assert normalized["services"]["bridge"]["image"] == "example:old"
+    assert normalized["services"]["bridge"]["environment"] == {"KEEP": "value"}
+    assert normalized_inputs == {path: managed_content("bridge", "example:old").hex(), "other": "1234"}
+    inputs[path] = b"customized".hex()
+    with pytest.raises(ValueError, match="changed unexpectedly"):
+        upgrade._normalize_managed_configuration(content, config, inputs)
+
+
+def test_selection_finalization_can_resume_after_interruption(tmp_path, monkeypatch):
+    from upgrade_compose_selection import managed_content
+    override = tmp_path / "compose.override.yaml"
+    override.write_bytes(managed_content("bridge", "example:old"))
+    target = "example@sha256:" + "a" * 64
+    saved = {"managed_override": str(override), "service": "bridge", "compose_image": "example:old", "current_image_id": "sha256:" + "b" * 64}
+    content = {"installation": saved, "backup_dir": str(tmp_path), "plan_auth": "signed", "target": target}
+    monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
+    monkeypatch.setattr(upgrade, "verify_installation", lambda *args, **kwargs: 0)
+    switch = upgrade.switch_managed_image
+    def interrupted(*args):
+        switch(*args)
+        raise RuntimeError("simulated interruption after replacement")
+    monkeypatch.setattr(upgrade, "switch_managed_image", interrupted)
+    with pytest.raises(RuntimeError, match="interruption"):
+        upgrade.finalize_selection(tmp_path / "plan", confirm=True, health_url="http://localhost/health")
+    assert (tmp_path / "image-selection-journal.json").is_file()
+    assert override.read_bytes() == managed_content("bridge", target)
+    monkeypatch.setattr(upgrade, "switch_managed_image", switch)
+    assert upgrade.finalize_selection(tmp_path / "plan", confirm=True, health_url="http://localhost/health") == 0
+    journal = tmp_path / "image-selection-journal.json"
+    journal.write_text('{"tampered":true}')
+    with pytest.raises(ValueError, match="journal differs"):
+        upgrade.finalize_selection(tmp_path / "plan", confirm=True, health_url="http://localhost/health")
+
+
 def test_apply_never_claims_full_verification_when_index_is_untested(tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace
     import urllib.request
     state = {"configuration_drift": {"status": "PASS", "warnings": []},
-             "_protected": {"inputs": {}}, "compose_files": [str(tmp_path / "compose.yml")],
+             "_protected": {"inputs": {}, "compose": {}}, "compose_files": [str(tmp_path / "compose.yml")],
              "service": "bridge", "music_index_present": True, "data_source": str(tmp_path), "container_id": "cid", "data_dir": "/data",
-             "current_image_id": "sha256:test"}
+             "current_image_id": "sha256:test", "managed_override": str(tmp_path / "compose.override.yml")}
     content = {"backup_dir": str(tmp_path / "backup"), "target": "image@sha256:" + "a" * 64,
-               "plan_auth": "signed", "installation": {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge"}}
+               "plan_auth": "signed", "installation": {"compose_files": [str(tmp_path / "compose.yml")], "service": "bridge",
+                                                        "managed_override": str(tmp_path / "compose.override.yml")}}
     monkeypatch.setattr(upgrade, "check_plan_file", lambda _: (content, state))
     monkeypatch.setattr(upgrade, "load_plan", lambda _: content)
     class Response:
@@ -229,6 +290,7 @@ def test_apply_never_claims_full_verification_when_index_is_untested(tmp_path, m
     monkeypatch.setattr(upgrade, "_receipt", lambda *args: {"schema": 2, "plan_auth": "signed", "target": content["target"]})
     monkeypatch.setattr(upgrade, "inspect", lambda *args: state)
     monkeypatch.setattr(upgrade, "verify_plan", lambda *args: [])
+    monkeypatch.setattr(upgrade, "_normalize_managed_configuration", lambda _content, config, inputs, **kwargs: (config, inputs))
     monkeypatch.setattr(upgrade, "verify_music_backup", lambda *args, **kwargs: ["music index verification NOT TESTED"])
     calls = []
     monkeypatch.setattr(upgrade.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace(returncode=0))

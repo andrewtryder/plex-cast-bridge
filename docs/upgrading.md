@@ -10,7 +10,19 @@ Run these commands on the Docker host: for Proxmox, that means inside the LXC th
 
 For a Compose-only installation, download and extract the source archive for the exact reviewed release from the project's [releases page](https://github.com/andrewtryder/plex-cast-bridge/releases), then change into the extracted directory before running the commands below. The archive must include both `scripts/` and `src/`; downloading only `upgrade.py` is insufficient. Keep your existing Compose files and `.env` in their original location. This draft workflow has not yet been released, so do not substitute an older release's scripts.
 
-Stop all other programs and containers that write the bridge's data directory or external catalog file, and prevent them from restarting until the upgrade finishes. The tool checks other running Docker containers at preflight, but cannot prevent a new writer from starting or identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose files are. If you use multiple Compose files, provide `--compose-file` once for each, in order.
+For example, after choosing the release tag to review, replace the placeholder and use a new directory on the Docker host:
+
+```sh
+REVIEWED_REF=REPLACE_WITH_RELEASE_TAG
+mkdir "$HOME/plex-cast-bridge-upgrade-source"
+curl -fsSL "https://github.com/andrewtryder/plex-cast-bridge/archive/${REVIEWED_REF}.tar.gz" \
+  -o "$HOME/plex-cast-bridge-upgrade-source/source.tar.gz"
+tar -xzf "$HOME/plex-cast-bridge-upgrade-source/source.tar.gz" \
+  --strip-components=1 -C "$HOME/plex-cast-bridge-upgrade-source"
+cd "$HOME/plex-cast-bridge-upgrade-source"
+```
+
+Stop all other programs and containers that write the bridge's data directory or external catalog file, and prevent them from restarting until the upgrade finishes. Do not edit the Compose files or managed override during the operation. The tool checks other running Docker containers at preflight, but cannot prevent a new writer from starting or identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose file is.
 
 ## Check the installation and available release
 
@@ -24,7 +36,26 @@ python3 scripts/upgrade.py doctor \
 
 The command shows the current image and version when the image supplies a version label, the persistent data path, and the latest official release and its immutable image digest. A custom image is not checked against the official release automatically. If the check is unavailable, inspect the project's [releases](https://github.com/andrewtryder/plex-cast-bridge/releases) and obtain the digest from your registry.
 
-If the tool cannot choose the service, add `--service SERVICE_NAME`. For an override file, add another `--compose-file /path/to/override.yml`. Do not proceed if the diagnostic is **NOT TESTED**. A gateway warning needs review: existing environment values may overwrite the saved gateway configuration on startup. Do not delete or regenerate credentials to clear a warning.
+If the tool cannot choose the service, add `--service SERVICE_NAME`. Do not proceed if the diagnostic is **NOT TESTED**. A gateway warning needs review: existing environment values may overwrite the saved gateway configuration on startup. Do not delete or regenerate credentials to clear a warning.
+
+## Prepare persistent image selection
+
+Existing installations need a one-time reviewed migration. For a default Compose filename without an existing override or `COMPOSE_FILE`, prepare a review file and examine its proposed image-only override. Replace `plex-cast-bridge` with your actual Compose service name if needed:
+
+```sh
+python3 scripts/upgrade.py prepare-compose-migration \
+  --compose-file /path/to/compose.yml --service plex-cast-bridge \
+  --review-file "$HOME/.local/share/plex-cast-bridge/compose-migration.json"
+```
+
+After reviewing the printed path and content, explicitly create the override:
+
+```sh
+python3 scripts/upgrade.py migrate-compose \
+  --review-file "$HOME/.local/share/plex-cast-bridge/compose-migration.json" --confirm
+```
+
+This creates the new override alongside the existing Compose file and does not change the running container. It selects the verified running image ID, even if the original Compose file names an older image, so a later recreation preserves the version already running. The image must remain in Docker's local cache. It refuses to overwrite an existing override or handle ambiguous file selection; those installations require manual review. Keep the original Compose file and `.env` in place. The following examples assume the new file is `/path/to/compose.override.yml`; use the path printed by the command.
 
 ## Review and apply
 
@@ -33,6 +64,8 @@ Copy the immutable image reference displayed by the update check and use it as t
 ```sh
 python3 scripts/upgrade.py plan \
   --compose-file /path/to/compose.yml \
+  --compose-file /path/to/compose.override.yml \
+  --service plex-cast-bridge \
   --target 'ghcr.io/andrewtryder/plex-cast-bridge@sha256:REPLACE_WITH_DIGEST' \
   --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json"
 ```
@@ -51,7 +84,7 @@ If the plan shows a gateway warning and you have reviewed its consequences, add 
 
 ## Verify or recover
 
-The apply command runs verification after replacement. The tool keeps an image override inside the backup directory; retain that directory. If you later run Compose commands manually, include its `upgrade-image-override.json` as the last `-f` file so Compose does not revert to the original image. You can repeat verification later:
+The apply command verifies the replacement and then records the reviewed digest in the managed override. Keep the backup directory and the override. From the Compose directory, normal `docker compose up -d` selects that digest; when using explicit `-f` arguments, include the managed override last. Passing only the original file omits it and can select the original image. You can repeat verification later:
 
 ```sh
 python3 scripts/upgrade.py verify \
@@ -59,6 +92,15 @@ python3 scripts/upgrade.py verify \
 ```
 
 Use the same `--health-url` if you supplied one during apply. The music check attempts a SQLite online snapshot in a network-isolated helper with the source mounted recursively read-only. It returns **NOT TESTED** if the Docker version, kernel, filesystem, database state, or permissions do not support that operation. Offline backup verification is separate. A **NOT TESTED** result is not a pass. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
+
+If replacement passed but the image selection was interrupted, preserve the backup and review the printed recovery instructions. Once the service and backup have been inspected, retry selection with:
+
+```sh
+python3 scripts/upgrade.py finalize-selection \
+  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" --confirm
+```
+
+Use the same custom `--health-url` if applicable. This command verifies the candidate and backup before switching the override. If apply did not record completion or verification fails, use the image rollback command below instead of finalizing.
 
 For image recovery, select the same plan and explicitly confirm the image rollback:
 

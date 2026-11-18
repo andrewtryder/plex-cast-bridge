@@ -28,7 +28,7 @@ def test_rejects_unmounted_nested_or_shared_writable_data(tmp_path):
     assert resolve_data_mount(container, [{"State": {"Running": True}, "Mounts": [mount_ro]}], "/data") == tmp_path
 
 
-def test_image_rollback_does_not_restore_or_overwrite_live_data(tmp_path):
+def test_unreviewed_shell_rollback_is_refused_without_changing_data(tmp_path):
     import os
     import subprocess
     import tarfile
@@ -62,7 +62,8 @@ def test_image_rollback_does_not_restore_or_overwrite_live_data(tmp_path):
            "APP_DIR": str(app), "COMPOSE_FILE": str(compose)}
     script = Path(__file__).resolve().parents[1] / "scripts/proxmox_upgrade.sh"
     result = subprocess.run(["bash", str(script), "rollback", str(backup)], env=env, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
+    assert "direct rollback cannot verify" in result.stderr
     assert (app / "data" / "state.json").read_text() == '{"newer": true}'
     assert (app / ".env").read_text() == "CURRENT=1\n"
     assert compose.read_text() == "services: {}\n"
