@@ -98,6 +98,13 @@ jobs:
           PCB_TEST_SQLITE_ONLINE: "1"
           PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
 
+      - name: Verify upgrade from the official older image
+        run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
+        env:
+          PCB_TEST_UPGRADE_E2E: "1"
+          PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
+          PCB_TEST_UPGRADE_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:ed8c8d78bc58e704f875e4b9618259009916db498c93587b3d274fed9c719757
+
       - name: Sync sample catalog for Cloud Run context
         run: cp catalog.json gcp-cloud-run/catalog.json
 
