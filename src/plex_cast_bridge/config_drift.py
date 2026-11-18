@@ -9,7 +9,14 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from .config import Settings
-from .app_settings_store import _normalize
+try:
+    from .app_settings_store import _normalize
+except ModuleNotFoundError as exc:
+    if exc.name != "plex_cast_bridge.app_settings_store":
+        raise
+    # Older releases do not support the persisted app-settings overlay. Do
+    # not guess its semantics if such a file is nevertheless present.
+    _normalize = None
 from . import catalog_store
 
 ROOT = catalog_store.PROJECT_ROOT
@@ -34,7 +41,9 @@ def diagnose(environ: dict[str, str], dotenv: dict, data_dir: Path, root: Path =
     plex = states["plex_connection.json"]
     app = states["app_settings.json"]
     try:
-        applied_app = _normalize(app) if app else {}
+        if app and _normalize is None:
+            raise ValueError("app settings need review on this older image")
+        applied_app = _normalize(app) if app and _normalize is not None else {}
     except (TypeError, ValueError):
         applied_app = {}
         files["app_settings.json"] = "unreadable or invalid"
@@ -58,7 +67,9 @@ def diagnose(environ: dict[str, str], dotenv: dict, data_dir: Path, root: Path =
         return next((source for source, value in env_candidates(name) if value is not None), "default")
 
     gateway_pair = all((environ.get(k) if k in environ else dotenv.get(k)) for k in ("CLOUD_GATEWAY_URL", "CATALOG_WRITE_KEY"))
-    for name in Settings.model_fields:
+    # Include gateway inputs even on older images whose Settings class does
+    # not declare them; the upcoming image can consume the saved values.
+    for name in sorted(set(Settings.model_fields) | {"cloud_gateway_url", "catalog_write_key"}):
         candidates = env_candidates(name)
         source = env_source(name)
         note = None

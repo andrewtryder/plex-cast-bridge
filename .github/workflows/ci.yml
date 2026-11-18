@@ -90,7 +90,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Verify packaged diagnostic against production image
-        run: uv run --dev pytest -q tests/test_config_drift_image.py
+        run: uv run --dev pytest -q tests/test_config_drift_image.py tests/test_config_drift_legacy_image.py
         env:
           PCB_TEST_DOCKER_IMAGE: "1"
 
