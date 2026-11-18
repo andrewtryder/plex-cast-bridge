@@ -83,8 +83,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build local bridge image
-        run: docker build -f deploy/Dockerfile .
+      - name: Start local Docker registry
+        run: docker run -d -p 5000:5000 --name registry registry:2
+
+      - name: Build and register local bridge image
+        run: |
+          docker build -f deploy/Dockerfile -t localhost:5000/plex-cast-bridge:candidate -t plex-cast-bridge-config-drift-test .
+          docker push localhost:5000/plex-cast-bridge:candidate
+          DIGEST="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/plex-cast-bridge:candidate | grep 'localhost:5000' | head -n 1)"
+          echo "PR_CANDIDATE_TARGET=${DIGEST}" >> "$GITHUB_ENV"
 
       - name: Install uv for image integration test
         uses: astral-sh/setup-uv@v7
@@ -100,7 +107,15 @@ jobs:
           PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
           PCB_TEST_COMPOSE_RECREATE: "1"
 
-      - name: Verify upgrade from the official older image
+      - name: Verify upgrade from official older image to Python 3.14 candidate
+        run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration'
+        env:
+          PCB_TEST_UPGRADE_E2E: "1"
+          PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
+          PCB_TEST_UPGRADE_TARGET: ${{ env.PR_CANDIDATE_TARGET }}
+          PCB_TEST_EXPECTED_PYTHON: "3.14"
+
+      - name: Verify upgrade between published releases
         run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
         env:
           PCB_TEST_UPGRADE_E2E: "1"
