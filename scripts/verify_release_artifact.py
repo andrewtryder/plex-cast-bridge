@@ -27,6 +27,21 @@ def inspect_raw(reference: str) -> bytes:
     return result.stdout
 
 
+def inspect_details(reference: str) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect", "--format", "{{json .}}", reference],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+        return json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise RuntimeError("Unable to inspect published OCI metadata") from exc
+    if result.returncode:
+        raise RuntimeError("Published image metadata could not be resolved")
+
+
 def validate_manifest(raw: bytes, expected_digest: str | None = None) -> dict[str, Any]:
     try:
         manifest = json.loads(raw)
@@ -49,12 +64,31 @@ def validate_manifest(raw: bytes, expected_digest: str | None = None) -> dict[st
     return {"digest": digest, "platforms": sorted(f"{os}/{arch}" for os, arch in platforms)}
 
 
+def validate_labels(details: dict[str, Any], *, version: str, revision: str) -> None:
+    images = details.get("image")
+    if not isinstance(images, dict):
+        raise ValueError("Published image metadata is incomplete")
+    for os_name, architecture in REQUIRED_PLATFORMS:
+        platform = f"{os_name}/{architecture}"
+        labels = images.get(platform, {}).get("config", {}).get("Labels")
+        if not isinstance(labels, dict):
+            raise ValueError(f"Published image is missing OCI labels for {platform}")
+        if labels.get("org.opencontainers.image.version") != version:
+            raise ValueError(f"Published image has an incorrect OCI version label for {platform}")
+        if labels.get("org.opencontainers.image.revision") != revision:
+            raise ValueError(f"Published image has an incorrect OCI revision label for {platform}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="Versioned GHCR image reference")
     parser.add_argument("--expected-digest", help="Digest emitted by the publish build")
+    parser.add_argument("--expected-version", required=True, help="Release version expected in OCI labels")
+    parser.add_argument("--expected-revision", required=True, help="Git revision expected in OCI labels")
     args = parser.parse_args()
-    print(json.dumps(validate_manifest(inspect_raw(args.image), args.expected_digest), sort_keys=True))
+    result = validate_manifest(inspect_raw(args.image), args.expected_digest)
+    validate_labels(inspect_details(args.image), version=args.expected_version, revision=args.expected_revision)
+    print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":

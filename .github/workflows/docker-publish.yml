@@ -69,4 +69,6 @@ jobs:
           version="${version#v}"
           python scripts/verify_release_artifact.py \
             --image "ghcr.io/${GITHUB_REPOSITORY}:${version}" \
-            --expected-digest "$IMAGE_DIGEST"
+            --expected-digest "$IMAGE_DIGEST" \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA"
