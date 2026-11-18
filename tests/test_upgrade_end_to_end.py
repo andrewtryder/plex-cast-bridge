@@ -100,6 +100,10 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
     data.mkdir(mode=0o777)
     data.chmod(0o777)
     (data / "catalog.json").write_text('{"speakers":[]}')
+    (data / "plex_connection.json").write_text('{"mode":"jwt","jwt_token":"synthetic-test-only"}')
+    (data / "google_home_sync.json").write_text('{"catalog_write_key":"synthetic-test-only"}')
+    protected = {name: (data / name).read_bytes() for name in
+                 ("catalog.json", "plex_connection.json", "google_home_sync.json")}
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -156,6 +160,7 @@ exec {shlex.quote(docker_path)} "$@"
         if failure_mode == "startup":
             assert (data / "newer.json").exists()
         current = run("docker", "compose", "-f", str(compose), "ps", "-q", "bridge").stdout.strip()
+        assert current, result.stdout + result.stderr
         assert json.loads(run("docker", "inspect", current).stdout)[0]["Image"] == old_image
         assert not (plan.with_suffix(".backup") / "apply-completed.json").exists()
         result = cli("rollback", "--plan-file", str(plan), "--confirm-image-rollback",
@@ -163,5 +168,6 @@ exec {shlex.quote(docker_path)} "$@"
         assert result.returncode == 0, result.stderr
         if failure_mode == "startup":
             assert (data / "newer.json").read_text() == '{"keep":true}'
+        assert all((data / name).read_bytes() == contents for name, contents in protected.items())
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
