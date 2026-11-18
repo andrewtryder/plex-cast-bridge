@@ -8,6 +8,8 @@ An ordinary local upgrade replaces the bridge image and keeps its persistent dat
 
 Run these commands on the Docker host: for Proxmox, that means inside the LXC that runs Docker, not on the Proxmox hypervisor. For Docker Compose, use the host where the bridge container runs. Use the upgrade scripts from a checkout or an extracted source archive for the release you are reviewing; a Compose-only installation does not need Git. Replace the example paths with your own.
 
+For a Compose-only installation, download and extract the source archive for the exact reviewed release from the project's [releases page](https://github.com/andrewtryder/plex-cast-bridge/releases), then change into the extracted directory before running the commands below. The archive must include both `scripts/` and `src/`; downloading only `upgrade.py` is insufficient. Keep your existing Compose files and `.env` in their original location. This draft workflow has not yet been released, so do not substitute an older release's scripts.
+
 Stop all other programs and containers that write the bridge's data directory or external catalog file, and prevent them from restarting until the upgrade finishes. The tool checks other running Docker containers at preflight, but cannot prevent a new writer from starting or identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose files are. If you use multiple Compose files, provide `--compose-file` once for each, in order.
 
 ## Check the installation and available release
@@ -56,7 +58,7 @@ python3 scripts/upgrade.py verify \
   --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json"
 ```
 
-Use the same `--health-url` if you supplied one during apply. A **NOT TESTED** result is not a pass; for example, an active SQLite WAL can prevent a read-only comparison. Keep the backup and investigate before treating the upgrade as complete. Check the dashboard and, if applicable, Google Home in normal use. Keep the previous image and backup until you are satisfied.
+Use the same `--health-url` if you supplied one during apply. A **NOT TESTED** result is not a pass; for example, an active SQLite WAL can prevent a read-only comparison. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
 
 For image recovery, select the same plan and explicitly confirm the image rollback:
 
