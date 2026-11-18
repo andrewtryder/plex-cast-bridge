@@ -283,6 +283,50 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
     return results
 
 
+def _valid_drift(report: Any) -> bool:
+    if not isinstance(report, dict) or not isinstance(report.get("files"), dict):
+        return False
+    files = report["files"]
+    required = ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "music_index.sqlite3")
+    if any(name not in files or not isinstance(files[name], str) for name in required):
+        return False
+    if any("invalid" in files[name] or "unreadable" in files[name] for name in required):
+        return False
+    settings = report.get("settings")
+    warnings = report.get("release_preflight_warnings")
+    if not isinstance(settings, dict) or not isinstance(warnings, list):
+        return False
+    for name in ("cloud_gateway_url", "catalog_write_key"):
+        entry = settings.get(name)
+        if not isinstance(entry, dict) or entry.get("classification") not in {
+            "ok", "informational", "release_preflight_warning"
+        } or not isinstance(entry.get("conflict"), bool):
+            return False
+    return all(name in ("cloud_gateway_url", "catalog_write_key") for name in warnings) and set(warnings) == {
+        name for name in ("cloud_gateway_url", "catalog_write_key")
+        if settings[name]["classification"] == "release_preflight_warning"
+    }
+
+
+def _configuration_drift_capture(container: str) -> dict[str, Any]:
+    """Run this checkout's diagnostic in the existing container, including old images."""
+    source = Path(__file__).resolve().parents[1] / "src/plex_cast_bridge/config_drift.py"
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "-i", container, "python", "-c",
+             'import sys; __package__="plex_cast_bridge"; exec(compile(sys.stdin.read(), "config_drift.py", "exec"))'],
+            input=source.read_text(encoding="utf-8"), capture_output=True, text=True, timeout=25, check=False,
+        )
+        if proc.returncode:
+            return {"available": False}
+        report = json.loads(proc.stdout)
+        if not _valid_drift(report):
+            return {"available": False}
+        return {"available": True, "report": report}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"available": False}
+
+
 def _container_capture(container: str, key: bytes) -> dict[str, Any] | None:
     raw = _run_json(["docker", "inspect", container])
     if not raw:
@@ -570,6 +614,7 @@ def capture(args: argparse.Namespace) -> dict[str, Any]:
         "captured_at": datetime.now(UTC).isoformat(),
         "local": {
             "docker": docker,
+            "configuration_drift": _configuration_drift_capture(args.container),
             "protected_config_fingerprints": _protected_fingerprints(key, env_values),
             "compose_config_fingerprint": compose_fingerprint,
             "google_home_sync_state": sync_state,
@@ -775,6 +820,23 @@ def compare(before_path: Path, after_path: Path, scope: str = "all") -> tuple[bo
             differences.append({"scope": check_scope, "path": "before", "reason": missing})
         for missing in _missing_scope_evidence(after, check_scope):
             differences.append({"scope": check_scope, "path": "after", "reason": missing})
+    if "local" in scopes:
+        drift_before = _at(before, "local.configuration_drift")
+        drift_after = _at(after, "local.configuration_drift")
+        for label, drift in (("before", drift_before), ("after", drift_after)):
+            if not isinstance(drift, dict) or drift.get("available") is not True or not _valid_drift(drift.get("report")):
+                differences.append({"scope": "local", "path": label, "reason": "configuration drift diagnostic NOT TESTED or invalid"})
+        if (isinstance(drift_before, dict) and isinstance(drift_after, dict)
+                and _valid_drift(drift_before.get("report")) and _valid_drift(drift_after.get("report"))):
+            old, new = drift_before["report"], drift_after["report"]
+            for name in ("cloud_gateway_url", "catalog_write_key"):
+                if old["settings"][name]["classification"] != new["settings"][name]["classification"]:
+                    differences.append({"scope": "local", "path": "configuration_drift." + name,
+                                        "reason": "gateway drift classification changed; review required"})
+            for name in old["files"].keys() | new["files"].keys():
+                if old["files"].get(name) != new["files"].get(name):
+                    differences.append({"scope": "local", "path": "configuration_drift.files." + name,
+                                        "reason": "persisted file presence or validity changed"})
     selected_paths = []
     if "local" in scopes:
         selected_paths.extend(LOCAL_IDENTITY_PATHS)
@@ -829,6 +891,10 @@ def main(argv: list[str] | None = None) -> int:
                 path: value.get("http_status")
                 for path, value in result["report"]["api"].items()
                 if isinstance(value, dict) and "http_status" in value
+            },
+            "configuration_drift": {
+                "available": result["report"]["local"]["configuration_drift"]["available"],
+                "release_preflight_warnings": result["report"]["local"]["configuration_drift"].get("report", {}).get("release_preflight_warnings", []),
             },
             "speaker_count": len(result["report"]["api"].get("speakers", [])),
             "google_home_linked": result["report"]["api"].get("google_home", {}).get("cloud_linked"),

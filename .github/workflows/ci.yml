@@ -86,6 +86,14 @@ jobs:
       - name: Build local bridge image
         run: docker build -f deploy/Dockerfile .
 
+      - name: Install uv for image integration test
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify packaged diagnostic against production image
+        run: uv run --dev pytest -q tests/test_config_drift_image.py tests/test_config_drift_legacy_image.py
+        env:
+          PCB_TEST_DOCKER_IMAGE: "1"
+
       - name: Sync sample catalog for Cloud Run context
         run: cp catalog.json gcp-cloud-run/catalog.json
 

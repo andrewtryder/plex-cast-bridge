@@ -28,6 +28,9 @@ def _valid_report():
     return {
         "captured_at": "before",
         "local": {
+            "configuration_drift": {"available": True, "report": {"files": {name: "absent" for name in ("plex_connection.json", "app_settings.json", "catalog.json", "google_home_sync.json", "google_home_setup.json", "music_index.sqlite3")}, "settings": {
+                name: {"conflict": False, "classification": "ok"} for name in ("cloud_gateway_url", "catalog_write_key")
+            }, "release_preflight_warnings": []}},
             "docker": {"image_id": "sha256:old", "application_commit": None, "running": True,
                        "mounts": [{"destination": "/data", "source": "/opt/data", "source_present": True}]},
             "protected_config_fingerprints": {"OAUTH_SIGNING_SECRET": "fingerprint"},
@@ -590,3 +593,40 @@ def test_dashboard_command_failure_log_does_not_include_private_query(monkeypatc
 
     assert response.status_code == 500
     assert "private listening query" not in caplog.text
+
+
+def test_configuration_drift_capture_runs_in_container_and_redacts_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(_valid_report()['local']['configuration_drift']['report']))
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    result = acceptance._configuration_drift_capture("bridge")
+    assert result["available"] is True
+    assert result["report"]["release_preflight_warnings"] == []
+    assert calls[0][0][:4] == ["docker", "exec", "-i", "bridge"]
+    assert "def diagnose" in calls[0][1]["input"]
+
+    monkeypatch.setattr(acceptance.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="secret"))
+    assert acceptance._configuration_drift_capture("bridge") == {"available": False}
+
+
+def test_compare_requires_valid_drift_and_detects_new_warning(tmp_path):
+    before, after = _valid_report(), _valid_report()
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    after["local"]["configuration_drift"] = {"available": False}
+    right.write_text(json.dumps(after))
+    assert not acceptance.compare(left, right, "local")[0]
+    after = _valid_report()
+    drift = after["local"]["configuration_drift"]["report"]
+    drift["settings"]["catalog_write_key"] = {"conflict": True, "classification": "release_preflight_warning"}
+    drift["release_preflight_warnings"] = ["catalog_write_key"]
+    right.write_text(json.dumps(after))
+    safe, differences = acceptance.compare(left, right, "local")
+    assert not safe
+    assert any(d["path"] == "configuration_drift.catalog_write_key" for d in differences)
