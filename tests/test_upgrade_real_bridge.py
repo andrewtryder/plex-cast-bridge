@@ -146,6 +146,10 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
                      "--service", "bridge", "--target", target, "--plan-file", str(plan))
         assert result.returncode == 0, result.stderr
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data", "--health-url", health)
+        if sys.platform != "linux":
+            assert result.returncode == 2
+            assert "music index verification NOT TESTED on non-Linux" in result.stderr
+            return
         assert result.returncode == 0, result.stderr
         with urlopen(f"http://127.0.0.1:{port}/api/settings", timeout=5) as response:
             assert json.load(response)["library"]["linked"] is True

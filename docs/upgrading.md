@@ -93,6 +93,8 @@ python3 scripts/upgrade.py verify \
 
 Use the same `--health-url` if you supplied one during apply. The music check attempts a SQLite online snapshot in a network-isolated helper with the source mounted recursively read-only. It returns **NOT TESTED** if the Docker version, kernel, filesystem, database state, or permissions do not support that operation. Offline backup verification is separate. A **NOT TESTED** result is not a pass. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
 
+Docker Desktop on macOS or Windows is not a supported host for the live SQLite snapshot or ownership-preserving data restoration. The tool fails closed there: it does not finalize the reviewed image selection when the live check is **NOT TESTED**, and full data restoration requires a suitable Linux Docker host. Use a Linux Docker host for a completed supported upgrade, or keep the backup and follow the printed recovery instructions.
+
 If replacement passed but the image selection was interrupted, preserve the backup and review the printed recovery instructions. Once the service and backup have been inspected, retry selection with:
 
 ```sh

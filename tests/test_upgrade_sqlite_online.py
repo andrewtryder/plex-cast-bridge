@@ -17,6 +17,10 @@ def test_readonly_online_snapshot_preserves_live_wal_files(tmp_path):
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
         pytest.skip("bind mount test must run on the Docker daemon host")
     image = os.environ["PCB_TEST_SQLITE_IMAGE"]
+    if sys.platform != "linux":
+        with pytest.raises(RuntimeError, match="NOT TESTED on non-Linux"):
+            upgrade._readonly_online_music_snapshot(tmp_path, image)
+        return
     tmp_path.chmod(0o777)
     path = tmp_path / "music_index.sqlite3"
     db = sqlite3.connect(path)
@@ -63,6 +67,10 @@ def test_snapshot_with_writer_in_docker(tmp_path):
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
         pytest.skip("bind mount test must run on the Docker daemon host")
     image = os.environ["PCB_TEST_SQLITE_IMAGE"]
+    if sys.platform != "linux":
+        with pytest.raises(RuntimeError, match="NOT TESTED on non-Linux"):
+            upgrade._readonly_online_music_snapshot(tmp_path, image)
+        return
     tmp_path.chmod(0o777)
     code = '''import sqlite3, time
 db=sqlite3.connect("/data/music_index.sqlite3")

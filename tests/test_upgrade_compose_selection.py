@@ -187,7 +187,9 @@ def test_selection_survives_restart_recreation_and_successive_switches(tmp_path,
         "restart": "unless-stopped"}}}))
     original = base.read_bytes()
     def compose(*args):
-        return subprocess.run(["docker", "compose", *args], cwd=tmp_path, capture_output=True, text=True, check=True, timeout=120)
+        result = subprocess.run(["docker", "compose", *args], cwd=tmp_path, capture_output=True, text=True, check=False, timeout=120)
+        assert result.returncode == 0, result.stderr
+        return result
     def image_id(ref):
         return subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
                               capture_output=True, text=True, check=True).stdout.strip()

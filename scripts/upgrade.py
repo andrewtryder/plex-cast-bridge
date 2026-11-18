@@ -673,6 +673,12 @@ def _music_snapshot(path: Path) -> dict[str, Any] | None:
 
 def _readonly_online_music_snapshot(source: Path, image: str) -> dict[str, Any] | None:
     """Snapshot through SQLite with the entire source mount enforced read-only."""
+    # Docker Desktop's file-sharing layer does not provide the Linux recursive
+    # read-only bind-mount guarantee needed for SQLite's shared-memory sidecar.
+    # Refusing this optional live check is safer than risking a mutation of an
+    # active WAL's -shm file; offline backup verification remains available.
+    if sys.platform != "linux":
+        raise RuntimeError("music index verification NOT TESTED on non-Linux Docker hosts")
     code = '''import json, pathlib, sqlite3
 p = pathlib.Path("/source/music_index.sqlite3")
 if p.is_symlink():

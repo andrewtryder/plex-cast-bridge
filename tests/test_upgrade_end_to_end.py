@@ -83,6 +83,11 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
         result = cli("plan", "--compose-file", str(compose), "--compose-file", str(managed), "--target", first_target, "--plan-file", str(plan))
         assert result.returncode == 0, result.stderr
         result = cli("apply", "--plan-file", str(plan), "--confirm-exclusive-data", "--health-url", health)
+        if sys.platform != "linux":
+            assert result.returncode == 2
+            assert "music index verification NOT TESTED on non-Linux" in result.stderr
+            assert compose.read_bytes() == original_compose
+            return
         assert result.returncode == 0, result.stderr
         assert {item["id"] for item in json.loads(catalog.read_text())["speakers"]} == {item["id"] for item in speakers}
         assert json.loads((data / "plex_connection.json").read_text())["client_identifier"] == "id-1"
@@ -133,6 +138,10 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
             return
         result = cli("restore-data", "--plan-file", str(plan), "--confirm-overwrite-data",
                      "--confirm-exclusive-data", "--health-url", health)
+        if sys.platform != "linux":
+            assert result.returncode == 2
+            assert "cannot preserve backup ownership" in result.stderr
+            return
         assert result.returncode == 0, result.stderr
         assert not (data / "new-user-data.json").exists()
         journal = json.loads((plan.with_suffix(".backup") / "data-restore-journal.json").read_text())

@@ -335,6 +335,7 @@ def test_online_snapshot_fails_closed_if_readonly_helper_is_unavailable(tmp_path
         calls.append(command)
         return SimpleNamespace(returncode=1, stdout="", stderr="private output")
     monkeypatch.setattr(upgrade.subprocess, "run", fail)
+    monkeypatch.setattr(upgrade.sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="NOT TESTED") as exc:
         upgrade._readonly_online_music_snapshot(tmp_path, "image")
     assert "private output" not in str(exc.value)
