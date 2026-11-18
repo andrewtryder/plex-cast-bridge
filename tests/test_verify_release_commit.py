@@ -53,6 +53,12 @@ def test_validate_release_version_requires_manifest_or_pyproject(tmp_path: Path)
         validate_release_version(tmp_path, "0.3.0")
 
 
+def test_validate_release_version_rejects_pyproject_without_version(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "test"\n')
+    with pytest.raises(ValueError, match="Could not find version field"):
+        validate_release_version(tmp_path, "0.3.0")
+
+
 def test_validate_commit_ancestry_accepts_ancestor_and_rejects_unmerged(tmp_path: Path):
     _init_git_repo(tmp_path)
     (tmp_path / "file.txt").write_text("initial")

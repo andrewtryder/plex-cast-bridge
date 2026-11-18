@@ -12,6 +12,11 @@ on:
         required: true
         default: main
         type: string
+      promote_latest_only:
+        description: Recover a partially failed run by re-verifying and promoting latest for an existing release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -44,23 +49,33 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          python scripts/verify_release_commit.py \
+          python3 scripts/verify_release_commit.py \
             --version "$RELEASE_VERSION" \
             --ref "${{ inputs.ref }}" \
             --main-ref origin/main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Refuse an existing release tag
+      - name: Check release tag status
         env:
           RELEASE_TAG: v${{ inputs.version }}
+          PROMOTE_LATEST_ONLY: ${{ inputs.promote_latest_only }}
         run: |
-          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" && {
-            echo "Release tag already exists: $RELEASE_TAG" >&2
-            exit 1
-          } || status=$?
-          [[ "$status" == 2 ]] || exit "$status"
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ "$PROMOTE_LATEST_ONLY" != "true" ]; then
+              echo "Release tag already exists: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            echo "Release tag exists as expected for promote-latest recovery"
+          else
+            if [ "$PROMOTE_LATEST_ONLY" = "true" ]; then
+              echo "Release tag does not exist for promote-latest recovery: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            echo "Release tag does not exist yet (clean release)"
+          fi
 
       - name: Set up QEMU
+        if: ${{ !inputs.promote_latest_only }}
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -73,17 +88,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse an existing versioned image
+      - name: Check versioned image status
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          PROMOTE_LATEST_ONLY: ${{ inputs.promote_latest_only }}
         run: |
           if docker buildx imagetools inspect \
               "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" >/dev/null 2>&1; then
-            echo "Versioned image already exists: ${RELEASE_VERSION}" >&2
-            exit 1
+            if [ "$PROMOTE_LATEST_ONLY" != "true" ]; then
+              echo "Versioned image already exists: ${RELEASE_VERSION}" >&2
+              exit 1
+            fi
+            echo "Versioned image exists as expected for promote-latest recovery"
+          else
+            if [ "$PROMOTE_LATEST_ONLY" = "true" ]; then
+              echo "Versioned image does not exist for promote-latest recovery: ${RELEASE_VERSION}" >&2
+              exit 1
+            fi
+            echo "Versioned image does not exist yet (clean release)"
           fi
 
       - name: Extract Docker metadata
+        if: ${{ !inputs.promote_latest_only }}
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -91,8 +117,12 @@ jobs:
           tags: |
             type=raw,value=${{ inputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
 
-      - name: Build and push multi-architecture release image
+      - name: Build and push candidate multi-architecture image
+        if: ${{ !inputs.promote_latest_only }}
         id: build
         uses: docker/build-push-action@v7
         with:
@@ -100,23 +130,45 @@ jobs:
           file: deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ghcr.io/${{ github.repository }}:candidate-${{ inputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify immutable artifact and OCI metadata
+      - name: Verify candidate artifact and OCI metadata
+        if: ${{ !inputs.promote_latest_only }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          python scripts/verify_release_artifact.py \
-            --image "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" \
+          python3 scripts/verify_release_artifact.py \
+            --image "ghcr.io/${GITHUB_REPOSITORY}:candidate-${RELEASE_VERSION}" \
             --expected-digest "$IMAGE_DIGEST" \
             --expected-version "$RELEASE_VERSION" \
             --expected-revision "${{ steps.revision.outputs.sha }}"
 
+      - name: Publish verified versioned tags to GHCR
+        if: ${{ !inputs.promote_latest_only }}
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS+=(--tag "$tag")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create "${TAG_ARGS[@]}" \
+              "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
+          echo "Failed to publish versioned tags after 3 attempts" >&2
+          exit 1
+
       - name: Create the tag and GitHub release
+        if: ${{ !inputs.promote_latest_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ inputs.version }}
@@ -124,13 +176,40 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
-          git push origin "$RELEASE_TAG"
+          for attempt in 1 2 3; do
+            if git push origin "$RELEASE_TAG"; then
+              break
+            fi
+            echo "Git push attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
           gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
+
+      - name: Verify existing versioned artifact for promotion
+        if: ${{ inputs.promote_latest_only }}
+        id: recovery_verify
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          OUTPUT=$(python3 scripts/verify_release_artifact.py \
+            --image "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-revision "${{ steps.revision.outputs.sha }}")
+          DIGEST=$(echo "$OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['digest'])")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Promote the verified digest to latest
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.recovery_verify.outputs.digest }}
         run: |
-          docker buildx imagetools create \
-            --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
-            "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
+              "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
+          echo "Failed to promote digest to latest after 3 attempts" >&2
+          exit 1

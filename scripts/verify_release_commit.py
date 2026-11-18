@@ -82,6 +82,8 @@ def validate_release_version(repo_dir: Path, expected_version: str) -> None:
                     f"Release version {expected_version!r} does not match "
                     f"pyproject.toml ({pyproject_version!r})"
                 )
+        else:
+            raise ValueError(f"Could not find version field in {pyproject_path}")
 
     if not found_any:
         raise ValueError("Neither .release-please-manifest.json nor pyproject.toml found to verify version")

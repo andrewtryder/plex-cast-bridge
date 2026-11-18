@@ -21,9 +21,14 @@ def inspect_raw(reference: str) -> bytes:
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Unable to inspect the published OCI image") from exc
+        raise RuntimeError(f"Unable to inspect the published OCI image: {exc}") from exc
     if result.returncode:
-        raise RuntimeError("Published image tag could not be resolved")
+        err = (
+            result.stderr.decode(errors="replace").strip()
+            if isinstance(result.stderr, bytes)
+            else str(result.stderr).strip()
+        )
+        raise RuntimeError(f"Published image tag could not be resolved: {err}")
     return result.stdout
 
 
@@ -35,11 +40,16 @@ def inspect_details(reference: str) -> dict[str, Any]:
             capture_output=True,
             timeout=60,
         )
+        if result.returncode:
+            err = (
+                result.stderr.decode(errors="replace").strip()
+                if isinstance(result.stderr, bytes)
+                else str(result.stderr).strip()
+            )
+            raise RuntimeError(f"Published image metadata could not be resolved: {err}")
         return json.loads(result.stdout)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        raise RuntimeError("Unable to inspect published OCI metadata") from exc
-    if result.returncode:
-        raise RuntimeError("Published image metadata could not be resolved")
+        raise RuntimeError(f"Unable to inspect published OCI metadata: {exc}") from exc
 
 
 def validate_manifest(raw: bytes, expected_digest: str | None = None) -> dict[str, Any]:
@@ -60,7 +70,9 @@ def validate_manifest(raw: bytes, expected_digest: str | None = None) -> dict[st
         raise ValueError(f"Published image is missing required platform(s): {rendered}")
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     if expected_digest and digest != expected_digest:
-        raise ValueError("Published image digest does not match the build result")
+        raise ValueError(
+            f"Published image digest does not match the build result: expected {expected_digest}, got {digest}"
+        )
     return {"digest": digest, "platforms": sorted(f"{os}/{arch}" for os, arch in platforms)}
 
 
@@ -73,10 +85,18 @@ def validate_labels(details: dict[str, Any], *, version: str, revision: str) -> 
         labels = images.get(platform, {}).get("config", {}).get("Labels")
         if not isinstance(labels, dict):
             raise ValueError(f"Published image is missing OCI labels for {platform}")
-        if labels.get("org.opencontainers.image.version") != version:
-            raise ValueError(f"Published image has an incorrect OCI version label for {platform}")
-        if labels.get("org.opencontainers.image.revision") != revision:
-            raise ValueError(f"Published image has an incorrect OCI revision label for {platform}")
+        actual_version = labels.get("org.opencontainers.image.version")
+        if actual_version != version:
+            raise ValueError(
+                f"Published image has an incorrect OCI version label for {platform}: "
+                f"expected {version!r}, got {actual_version!r}"
+            )
+        actual_revision = labels.get("org.opencontainers.image.revision")
+        if actual_revision != revision:
+            raise ValueError(
+                f"Published image has an incorrect OCI revision label for {platform}: "
+                f"expected {revision!r}, got {actual_revision!r}"
+            )
 
 
 def main() -> None:

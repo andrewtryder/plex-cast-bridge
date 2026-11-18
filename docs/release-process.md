@@ -10,9 +10,9 @@ before announcing a release.
 1. Merge only reviewed changes and let Release Please update its release PR.
    Release Please prepares the version and changelog, but does **not** create a
    tag or GitHub release.
-2. Run the full Linux CI matrix and the disposable Docker upgrade suite on the
-   exact reviewed commit. A Docker Desktop result of **NOT TESTED** is not a
-   substitute for Linux Docker acceptance.
+2. Run the full Linux CI suite (Python 3.14) and the disposable Docker upgrade
+   suite on the exact reviewed commit. A Docker Desktop result of **NOT TESTED**
+   is not a substitute for Linux Docker acceptance.
 3. Collect private local-upgrade evidence using `release_acceptance.py` and
    confirm the before/after comparison, backup, image-only rollback, and
    Compose recreation checks. A real Proxmox Docker-in-LXC test remains a
@@ -28,20 +28,26 @@ Release** from GitHub Actions with the numeric semver version and the reviewed
 commit or `main` ref. The workflow:
 
 1. verifies that the selected revision is merged into `main` and matches the release version;
-2. refuses an existing tag or versioned GHCR image;
-3. builds and pushes only the versioned and major/minor GHCR tags;
-4. resolves the immutable digest and requires `linux/amd64` and `linux/arm64`;
+2. refuses an existing tag or versioned GHCR image (unless recovering via `promote_latest_only`);
+3. builds and pushes a candidate multi-architecture GHCR image (`candidate-VERSION`);
+4. resolves the immutable digest and requires `linux/amd64` and `linux/arm64` manifests;
 5. requires OCI version and revision labels for both platforms;
-6. creates `vVERSION` and the GitHub release only after those checks pass;
-7. promotes that verified digest to `latest`.
+6. publishes verified version and major/minor tags (`VERSION`, `MAJOR.MINOR`) from the verified digest;
+7. creates `vVERSION` and the GitHub release only after those checks pass;
+8. promotes that verified digest to `latest`.
 
 The older Docker workflow is a manual build diagnostic only; it cannot publish
 GHCR tags. Do not restore automatic `main` or tag publishing, because that can
 move `latest` to an unreviewed commit or bypass these checks.
 
-If image build or verification fails, do not create a substitute GitHub release
-and do not tell users to use `latest`. Preserve the workflow logs and fix the
-publication failure before retrying with a new reviewed release process.
+If image build or verification fails, no versioned image, Git tag, or GitHub
+release is created or published. Users never see unverified candidate images,
+and the workflow can be safely retried once the failure is resolved.
+
+If GitHub release creation succeeds but the subsequent `latest` promotion step
+fails, the workflow supports recovery: dispatch **Publish Verified Release**
+with `promote_latest_only` enabled. It re-verifies the published versioned
+image and commit ancestry before updating `latest`.
 
 ## Historical artifact limitation
 
