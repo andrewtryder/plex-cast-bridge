@@ -11,12 +11,21 @@ TARGET_IMAGE="${TARGET_IMAGE:-}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 DIAG_URL="${DIAG_URL:-http://127.0.0.1:8000/api/diagnostics}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP_DIR="$BACKUP_ROOT/$STAMP"
-VERIFY_ROLLBACK="${VERIFY_ROLLBACK:-1}"
+BACKUP_DIR="${PCB_BACKUP_DIR:-$BACKUP_ROOT/$STAMP}"
 CONFIG_HMAC_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-upgrade}"
-DRIFT_MODULE="$APP_DIR/src/plex_cast_bridge/config_drift.py"
+DRIFT_MODULE="${PCB_DRIFT_MODULE:-$APP_DIR/src/plex_cast_bridge/config_drift.py}"
+COMPOSE=(docker compose)
+if [[ -n "${PCB_COMPOSE_FILES_JSON:-}" ]]; then
+  compose_files="$(python3 -c 'import json,sys
+v=json.loads(sys.argv[1]); assert isinstance(v,list) and v and all(isinstance(p,str) and "\n" not in p for p in v)
+print("\n".join(v))' "$PCB_COMPOSE_FILES_JSON")" || { echo "ERROR: invalid Compose file list" >&2; exit 1; }
+  while IFS= read -r path; do COMPOSE+=(-f "$path"); done <<< "$compose_files"
+else
+  COMPOSE+=(-f "$COMPOSE_FILE")
+fi
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -38,16 +47,16 @@ resolve_google_creds() {
 }
 
 protected_config_fingerprint() {
-  PROTECTED_CONFIG_HMAC_KEY="$CONFIG_HMAC_KEY" python3 - "$APP_DIR" "$COMPOSE_FILE" "${1:-}" <<'PY'
+  PROTECTED_CONFIG_HMAC_KEY="$CONFIG_HMAC_KEY" python3 - "$APP_DIR" "$COMPOSE_FILE" "${1:-}" "${DATA_SOURCE:-$APP_DIR/data}" <<'PY'
 import hashlib, hmac, json, os, pathlib, sys
-app_dir, compose_file, credential_file = map(pathlib.Path, sys.argv[1:])
+app_dir, compose_file, credential_file, data_dir = map(pathlib.Path, sys.argv[1:])
 items = {}
 for label, path in (("env", app_dir / ".env"), ("compose", compose_file), ("google_credentials", credential_file)):
     if str(path) and path.is_file():
         items[label] = hashlib.sha256(path.read_bytes()).hexdigest()
     else:
         items[label] = None
-sync_file = app_dir / "data" / "google_home_sync.json"
+sync_file = data_dir / "google_home_sync.json"
 try:
     sync = json.loads(sync_file.read_text(encoding="utf-8"))
     gateway = (sync.get("cloud_gateway_url") or "").strip()
@@ -59,7 +68,7 @@ key = bytes.fromhex(os.environ["PROTECTED_CONFIG_HMAC_KEY"])
 items["gateway_url_fingerprint"] = hashlib.sha256(gateway.encode()).hexdigest() if gateway else None
 items["catalog_write_key_fingerprint"] = hmac.new(key, catalog_key.encode(), hashlib.sha256).hexdigest() if catalog_key else None
 try:
-    catalog = json.loads((app_dir / "data" / "catalog.json").read_text(encoding="utf-8"))
+    catalog = json.loads((data_dir / "catalog.json").read_text(encoding="utf-8"))
     device_ids = sorted(
         s.get("google_home_device_id") or s.get("id") or ""
         for s in catalog.get("speakers", []) if isinstance(s, dict)
@@ -80,11 +89,9 @@ verify_rollback() {
     echo "ERROR: rollback directory does not exist: $dir" >&2
     return 1
   fi
-  if [[ -f "$dir/data.tgz" ]]; then
-    tar -tzf "$dir/data.tgz" >/dev/null || {
-      echo "ERROR: backup data.tgz is corrupted" >&2
-      return 1
-    }
+  if [[ ! -f "$dir/data.tgz" ]] || ! python3 "$SCRIPT_DIR/upgrade_backup.py" verify "$dir/data.tgz"; then
+    echo "ERROR: backup archive cannot be restored and verified" >&2
+    return 1
   fi
   if [[ ! -f "$dir/docker-compose.yml" ]]; then
     echo "ERROR: backup is missing compose configuration" >&2
@@ -97,7 +104,7 @@ verify_rollback() {
   local prev_img rollback_img
   prev_img="$(cat "$dir/previous_image.txt")"
   rollback_img="$(cat "$dir/previous_image_digest.txt")"
-  rollback_img="${rollback_img:-$prev_img}"
+  rollback_img="${prev_img:-$rollback_img}"
   if [[ -z "$rollback_img" ]]; then
     echo "ERROR: backup has no previous image digest or image ID" >&2
     return 1
@@ -110,9 +117,43 @@ verify_rollback() {
   return 0
 }
 
+print_recovery_command() {
+  printf '  python3 %q rollback --plan-file %q --confirm-image-rollback --health-url %q\n' \
+    "$SCRIPT_DIR/upgrade.py" "$PCB_REVIEW_PLAN" "$HEALTH_URL" >&2
+}
+
+write_image_override() {
+  python3 - "$SERVICE_NAME" "$1" "$2" <<'PYCODE'
+import json, os, pathlib, sys
+service, image, name = sys.argv[1:]
+path = pathlib.Path(name)
+content = json.dumps({"services": {service: {"image": image}}}, sort_keys=True) + "\n"
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    if path.read_text(encoding="utf-8") != content:
+        raise RuntimeError("existing image override differs")
+else:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(content)
+PYCODE
+}
+
+recover_reviewed_image() {
+  echo "Attempting reviewed image-only recovery; current data and credentials will not be restored." >&2
+  if python3 "$SCRIPT_DIR/upgrade.py" rollback --plan-file "$PCB_REVIEW_PLAN" \
+      --confirm-image-rollback --health-url "$HEALTH_URL"; then
+    echo "Previous image recovered; the upgrade did not complete." >&2
+  else
+    echo "ERROR: automatic image recovery could not be proven safe or did not complete." >&2
+    echo "Preserve current data and the backup at $BACKUP_DIR. After resolving the reported issue, retry:" >&2
+    print_recovery_command
+  fi
+}
+
 rollback() {
   local target_backup="${1:-$BACKUP_DIR}"
-  echo "Attempting rollback using $target_backup…" >&2
+  echo "Attempting rollback using ${target_backup}…" >&2
 
   local prev_img=""
   local prev_dig=""
@@ -123,48 +164,27 @@ rollback() {
     prev_dig="$(cat "$target_backup/previous_image_digest.txt")"
   fi
 
-  local restore_image="${prev_dig:-$prev_img}"
-  if [[ -n "$restore_image" ]]; then
-    local svc_image
-    svc_image="$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null | head -n1 || true)"
-    if [[ -n "$svc_image" ]]; then
-      echo "Retagging previous image: $restore_image -> $svc_image" >&2
-      docker tag "$restore_image" "$svc_image" 2>/dev/null || true
-    fi
+  local restore_image="${prev_img:-$prev_dig}"
+  if [[ -z "$restore_image" ]]; then
+    echo "ERROR: previous image is unavailable." >&2; return 1
   fi
+  local override="$target_backup/rollback-image-override.json"
+  write_image_override "$restore_image" "$override"
 
-  if [[ -f "$target_backup/docker-compose.yml" ]]; then
-    cp -a "$target_backup/docker-compose.yml" "$COMPOSE_FILE"
-    echo "Restored docker-compose.yml" >&2
-  fi
+  # A failed candidate may have already written newer user data. Automatic
+  # recovery must never overlay the archive, credentials, or configuration.
+  # The verified archive remains available for an explicit offline restore.
+  echo "Preserving current data and configuration; backup is available for manual offline recovery." >&2
 
-  if [[ -f "$target_backup/.env" ]]; then
-    cp -a "$target_backup/.env" "$APP_DIR/.env"
-    echo "Restored .env" >&2
-  fi
-
-  local gcp_creds
-  gcp_creds="$(resolve_google_creds)"
-  local gcp_target="${gcp_creds:-$APP_DIR/gcp-credentials.json}"
-  if [[ -f "$target_backup/gcp-credentials.json" ]]; then
-    cp -a "$target_backup/gcp-credentials.json" "$gcp_target"
-    echo "Restored gcp-credentials.json" >&2
-  fi
-
-  if [[ -f "$target_backup/data.tgz" ]]; then
-    tar xzf "$target_backup/data.tgz" -C "$APP_DIR"
-    echo "Restored data/" >&2
-  fi
-
-  docker compose -f "$COMPOSE_FILE" up -d --force-recreate || true
-  echo "Rollback attempted using $target_backup." >&2
+  "${COMPOSE[@]}" -f "$override" up -d --no-deps --pull never --force-recreate "$SERVICE_NAME"
+  echo "Image rollback attempted using $target_backup." >&2
 }
 
 # Run the candidate diagnostic in the existing container, including on older images.
 # Source arrives on stdin; the running container supplies its actual environment and /data.
 configuration_drift() {
   [[ -r "$DRIFT_MODULE" ]] || { echo "ERROR: configuration diagnostic source unavailable: $DRIFT_MODULE" >&2; return 1; }
-  docker compose -f "$COMPOSE_FILE" exec -T "$SERVICE_NAME" python -c \
+  "${COMPOSE[@]}" exec -T "$SERVICE_NAME" python -c \
     'import sys; __package__="plex_cast_bridge"; exec(compile(sys.stdin.read(), "config_drift.py", "exec"))' < "$DRIFT_MODULE"
 }
 
@@ -201,6 +221,15 @@ if [[ "$ACTION" == "rollback" ]]; then
     echo "ERROR: no backup directory found to rollback" >&2
     exit 1
   fi
+  if [[ -z "${PCB_RECOVERY_PLAN:-}" ]]; then
+    echo "ERROR: direct rollback cannot verify the reviewed Compose configuration and mounts." >&2
+    echo "Use: python3 $SCRIPT_DIR/upgrade.py rollback --plan-file <reviewed-plan.json> --confirm-image-rollback" >&2
+    exit 1
+  fi
+  python3 "$SCRIPT_DIR/upgrade.py" check-recovery --plan-file "$PCB_RECOVERY_PLAN" --backup-dir "$target" || {
+    echo "ERROR: recovery safety checks failed; preserve current data and the backup." >&2
+    exit 1
+  }
   verify_rollback "$target"
   rollback "$target"
   echo "Waiting for /health after manual rollback…"
@@ -231,7 +260,13 @@ if [[ "$ACTION" == "verify-rollback" ]]; then
     exit 1
   fi
   verify_rollback "$target"
+  echo "Backup and image checks do not verify the current Compose configuration or mounts; use the reviewed-plan rollback command for recovery."
   exit 0
+fi
+
+if [[ -z "${PCB_REVIEW_PLAN:-}" ]]; then
+  echo "ERROR: use upgrade.py plan and apply a reviewed plan; direct upgrades are disabled." >&2
+  exit 1
 fi
 
 echo "== plex-cast-bridge proxmox upgrade =="
@@ -265,8 +300,8 @@ printf '%s\n' "$DRIFT_BEFORE" > "$BACKUP_DIR/config_drift_before.json"
 echo "Capturing current image id and digest…"
 PREV_IMAGE=""
 PREV_DIGEST=""
-if docker compose -f "$COMPOSE_FILE" ps -q "$SERVICE_NAME" >/dev/null 2>&1; then
-  cid="$(docker compose -f "$COMPOSE_FILE" ps -q "$SERVICE_NAME" | head -n1 || true)"
+if "${COMPOSE[@]}" ps -q "$SERVICE_NAME" >/dev/null 2>&1; then
+  cid="$("${COMPOSE[@]}" ps -q "$SERVICE_NAME" | head -n1 || true)"
   if [[ -n "${cid:-}" ]]; then
     PREV_IMAGE="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
     if [[ -n "$PREV_IMAGE" ]]; then
@@ -274,16 +309,77 @@ if docker compose -f "$COMPOSE_FILE" ps -q "$SERVICE_NAME" >/dev/null 2>&1; then
     fi
   fi
 fi
+if [[ -z "${cid:-}" || -z "$PREV_IMAGE" ]]; then
+  echo "ERROR: running service and previous image could not be identified; upgrade stopped." >&2; exit 1
+fi
 printf '%s\n' "$PREV_IMAGE" >"$BACKUP_DIR/previous_image.txt"
 printf '%s\n' "$PREV_DIGEST" >"$BACKUP_DIR/previous_image_digest.txt"
 echo "previous_image=$PREV_IMAGE"
 echo "previous_image_digest=$PREV_DIGEST"
 
-# Back up data/
-if [[ -d "$APP_DIR/data" ]]; then
-  tar czf "$BACKUP_DIR/data.tgz" -C "$APP_DIR" data
-  echo "Backed up data/ -> $BACKUP_DIR/data.tgz"
+echo "Validating compose and immutable target…"
+"${COMPOSE[@]}" config >/dev/null
+COMPOSE_IMAGE="$("${COMPOSE[@]}" config --format json | python3 -c \
+  'import json,sys; d=json.load(sys.stdin); print(d["services"][sys.argv[1]].get("image", ""))' "$SERVICE_NAME")"
+INTENDED_IMAGE="$TARGET_IMAGE"
+if [[ ! "$INTENDED_IMAGE" =~ ^.+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "ERROR: set TARGET_IMAGE to a reviewed immutable image digest before upgrading." >&2; exit 1
 fi
+if [[ -z "$COMPOSE_IMAGE" ]]; then
+  echo "ERROR: Compose service has no configured image." >&2; exit 1
+fi
+# A registry failure must not interrupt the running service.
+echo "Pulling the reviewed image before stopping the service…"
+docker pull "$INTENDED_IMAGE"
+
+# Recheck the reviewed configuration after the potentially slow image pull.
+if [[ -n "${PCB_REVIEW_PLAN:-}" ]]; then
+  python3 "$SCRIPT_DIR/upgrade.py" check-plan --plan-file "$PCB_REVIEW_PLAN" --target "$INTENDED_IMAGE" --backup-dir "$BACKUP_DIR" --config-backup "$BACKUP_DIR/configuration.tgz" || {
+    echo "ERROR: reviewed plan no longer matches; upgrade stopped." >&2; exit 1;
+  }
+fi
+
+# Identify the actual data mount while the old container is still running.
+# Reject nested mounts and other running containers that can write the same tree.
+mapfile_output="$(python3 "$SCRIPT_DIR/upgrade_mounts.py" "$cid")" || {
+  echo "ERROR: cannot establish exclusive persistent data mount; upgrade stopped." >&2; exit 1;
+}
+DATA_SOURCE="$(printf '%s\n' "$mapfile_output" | sed -n '1p')"
+DATA_CONTAINER_PATH="$(printf '%s\n' "$mapfile_output" | sed -n '2p')"
+if [[ -z "$DATA_SOURCE" || -z "$DATA_CONTAINER_PATH" ]]; then
+  echo "ERROR: could not resolve persistent data mount." >&2; exit 1
+fi
+
+echo "Stopping the bridge to create a consistent backup…"
+STOPPED_FOR_BACKUP=1
+resume_after_backup_failure() {
+  if [[ "${STOPPED_FOR_BACKUP:-0}" == "1" ]]; then
+    echo "Upgrade interrupted before replacement; restarting the existing container." >&2
+    "${COMPOSE[@]}" start "$SERVICE_NAME" >&2 || true
+  fi
+  if [[ "${REPLACEMENT_IN_PROGRESS:-0}" == "1" ]]; then
+    echo "Replacement was interrupted or did not complete. Preserve data and $BACKUP_DIR; after inspecting the failure, recover with:" >&2
+    print_recovery_command
+  fi
+}
+trap resume_after_backup_failure EXIT
+"${COMPOSE[@]}" stop "$SERVICE_NAME"
+if [[ "$(docker inspect -f '{{.State.Running}}' "$cid")" != "false" ]]; then
+  echo "ERROR: bridge did not stop; no backup was attempted." >&2; exit 1
+fi
+rechecked="$(python3 "$SCRIPT_DIR/upgrade_mounts.py" "$cid" --data-dir "$DATA_CONTAINER_PATH")" || {
+  echo "ERROR: a concurrent writer or changed mount was detected." >&2; exit 1;
+}
+if [[ "$(printf '%s\n' "$rechecked" | sed -n '1p')" != "$DATA_SOURCE" ]]; then
+  echo "ERROR: persistent data mount changed during preflight." >&2; exit 1
+fi
+python3 "$SCRIPT_DIR/upgrade_docker_backup.py" create --image "$PREV_IMAGE" --source "$DATA_SOURCE" --backup-dir "$BACKUP_DIR"
+python3 "$SCRIPT_DIR/upgrade_backup.py" verify "$BACKUP_DIR/data.tgz"
+echo "Restored and verified an isolated copy of the quiesced data backup."
+python3 "$SCRIPT_DIR/upgrade.py" check-backup --plan-file "$PCB_REVIEW_PLAN" --backup-dir "$BACKUP_DIR" --container "$cid" || {
+  echo "ERROR: quiesced backup differs from the reviewed plan; the original container will be restarted." >&2
+  exit 1
+}
 
 # Back up .env
 if [[ -f "$APP_DIR/.env" ]]; then
@@ -307,32 +403,22 @@ CONFIG_FINGERPRINT_BEFORE="$(protected_config_fingerprint "$GCP_CREDS")"
 printf '%s\n' "$CONFIG_FINGERPRINT_BEFORE" >"$BACKUP_DIR/protected_config_fingerprint.txt"
 echo "Protected configuration fingerprint recorded (keyed, non-reversible)."
 
-# Verify rollback before relying on it
-if [[ "$VERIFY_ROLLBACK" == "1" ]]; then
-  verify_rollback "$BACKUP_DIR"
-fi
+# A verified archive and locally available previous image are mandatory.
+verify_rollback "$BACKUP_DIR"
 
-echo "Validating compose…"
-docker compose -f "$COMPOSE_FILE" config >/dev/null
-
-# Pull the intended published image explicitly
-COMPOSE_IMAGE="$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null | head -n1 || true)"
-INTENDED_IMAGE="${TARGET_IMAGE:-$COMPOSE_IMAGE}"
-if [[ -z "$INTENDED_IMAGE" ]]; then
-  INTENDED_IMAGE="ghcr.io/andrewtryder/plex-cast-bridge:latest"
-fi
-
-echo "Explicitly pulling intended published image: $INTENDED_IMAGE…"
-docker pull "$INTENDED_IMAGE"
-
-# If an explicit tag was supplied that differs from compose image, tag it to match
-if [[ -n "$COMPOSE_IMAGE" && "$INTENDED_IMAGE" != "$COMPOSE_IMAGE" ]]; then
-  echo "Tagging $INTENDED_IMAGE as $COMPOSE_IMAGE for compose…"
-  docker tag "$INTENDED_IMAGE" "$COMPOSE_IMAGE"
-fi
+# Add an image-only override in the private backup directory. Do not retag a
+# shared image tag or edit an existing Compose file.
+IMAGE_OVERRIDE="$BACKUP_DIR/upgrade-image-override.json"
+write_image_override "$INTENDED_IMAGE" "$IMAGE_OVERRIDE"
 
 echo "Recreating container with published image…"
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate
+STOPPED_FOR_BACKUP=0
+REPLACEMENT_IN_PROGRESS=1
+"${COMPOSE[@]}" -f "$IMAGE_OVERRIDE" up -d --no-deps --pull never --force-recreate "$SERVICE_NAME" || {
+  echo "ERROR: candidate container could not be created or started." >&2
+  recover_reviewed_image
+  exit 2
+}
 
 echo "Waiting for /health…"
 ok=0
@@ -345,30 +431,15 @@ for _ in $(seq 1 40); do
 done
 
 if [[ "$ok" -ne 1 ]]; then
-  echo "ERROR: health check failed. Executing rollback…" >&2
-  rollback "$BACKUP_DIR"
-  echo "Waiting for /health to recover after rollback…" >&2
-  for _ in $(seq 1 40); do
-    if curl -sf "$HEALTH_URL" >/dev/null; then
-      echo "Service restored after rollback." >&2
-      exit 2
-    fi
-    sleep 1
-  done
-  echo "FATAL: service did not recover after rollback." >&2
+  echo "ERROR: health check failed." >&2
+  recover_reviewed_image
   exit 2
 fi
 
 CONFIG_FINGERPRINT_AFTER="$(protected_config_fingerprint "$GCP_CREDS")"
 if [[ "$CONFIG_FINGERPRINT_AFTER" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
-  echo "ERROR: protected configuration fingerprint changed during upgrade; rolling back." >&2
-  rollback "$BACKUP_DIR"
-  CONFIG_FINGERPRINT_ROLLED_BACK="$(protected_config_fingerprint "$GCP_CREDS")"
-  if [[ "$CONFIG_FINGERPRINT_ROLLED_BACK" != "$CONFIG_FINGERPRINT_BEFORE" ]]; then
-    echo "FATAL: protected configuration fingerprint did not return to its backed-up value." >&2
-    exit 3
-  fi
-  echo "Protected configuration fingerprint verified after rollback." >&2
+  echo "ERROR: protected configuration fingerprint changed during upgrade; review is required." >&2
+  recover_reviewed_image
   exit 2
 fi
 echo "Protected configuration fingerprint verified after upgrade."
@@ -392,5 +463,6 @@ fi
 curl -sS "$HEALTH_URL" || true
 echo
 echo "Upgrade complete. Backup at $BACKUP_DIR (layered_diag=$diag_ok)"
+REPLACEMENT_IN_PROGRESS=0
 echo "Manual rollback if needed:"
-echo "  bash $0 rollback $BACKUP_DIR"
+print_recovery_command

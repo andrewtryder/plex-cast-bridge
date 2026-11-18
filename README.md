@@ -50,6 +50,10 @@ Google Home / Cloud Run voice control is **optional** and documented separately:
 
 ---
 
+## Upgrading
+
+See [Upgrading Plex Cast Bridge](docs/upgrading.md) for the draft reviewed upgrade and recovery workflow.
+
 ## Features
 
 - **Artist-first & station streaming:** Play an artist strictly from your library, or build Gemini-assisted radio / theme mixes.

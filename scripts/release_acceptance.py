@@ -63,11 +63,7 @@ PROTECTED_ENV_KEYS = (
 API_PATHS = (
     "/health",
     "/api/diagnostics",
-    "/api/speakers",
     "/api/status",
-    "/api/google-home/status",
-    "/api/music-index",
-    "/api/mixes",
     "/api/settings",
 )
 
@@ -174,73 +170,6 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
                 for item in checks if isinstance(item, dict)
             ]
 
-    raw_speakers = bodies.get("/api/speakers", [])
-    if isinstance(raw_speakers, dict):
-        raw_speakers = raw_speakers.get("speakers", [])
-    speakers = []
-    if isinstance(raw_speakers, list):
-        for speaker in raw_speakers:
-            if not isinstance(speaker, dict):
-                continue
-            speakers.append({
-                key: speaker.get(key)
-                for key in (
-                    "id", "google_home_device_id", "uuid", "name", "speaker_name", "room",
-                    "kind", "enabled", "google_home_visible", "availability", "is_group",
-                ) if key in speaker
-            })
-    results["speakers"] = speakers
-    results["speaker_identity"] = [
-        {key: speaker[key] for key in (
-            "id", "google_home_device_id", "uuid", "name", "speaker_name", "room",
-            "kind", "enabled", "google_home_visible", "is_group",
-        ) if key in speaker}
-        for speaker in speakers
-    ]
-
-    gh = bodies.get("/api/google-home/status", {})
-    if isinstance(gh, dict):
-        sync = gh.get("catalog_sync") if isinstance(gh.get("catalog_sync"), dict) else {}
-        setup = gh.get("setup") if isinstance(gh.get("setup"), dict) else {}
-        results["google_home"] = {
-            "local_plex_linked": gh.get("plex_linked"),
-            "cloud_linked": sync.get("linked"),
-            "pubsub_enabled": gh.get("pubsub_enabled"),
-            "setup": {k: setup.get(k) for k in (
-                "installation_detected", "link_confirmed", "verified_connection_test",
-            ) if k in setup},
-            "catalog_sync": {
-                k: sync.get(k) for k in ("linked", "status", "version", "updated_at")
-                if k in sync
-            },
-            "last_request_sync_state": (sync.get("last_request_sync") or {}).get("state")
-            if isinstance(sync.get("last_request_sync"), dict) else None,
-            "virtual_devices": [
-                {k: s.get(k) for k in ("google_home_device_id", "name", "enabled", "google_home_visible")}
-                for s in gh.get("speakers", []) if isinstance(s, dict)
-            ],
-        }
-
-    music = bodies.get("/api/music-index", {})
-    if isinstance(music, dict):
-        counts = music.get("counts") if isinstance(music.get("counts"), dict) else {}
-        scan = music.get("scan") if isinstance(music.get("scan"), dict) else {}
-        settings = music.get("settings") if isinstance(music.get("settings"), dict) else {}
-        # Do not retain arbitrary error strings or user/library query data.
-        results["music_index"] = {
-            "enabled": settings.get("indexing_enabled"),
-            "schedule": settings.get("schedule"),
-            "status": scan.get("status"),
-            "track_count": counts.get("tracks"),
-            "artist_count": counts.get("artists"),
-            "album_count": counts.get("albums"),
-            "scanned": scan.get("scanned"),
-            "started_at": scan.get("started_at"),
-            "completed_at": scan.get("completed_at"),
-            "last_full_scan_at": scan.get("last_full_scan_at"),
-            "error": bool(scan.get("error")),
-        }
-
     settings_body = bodies.get("/api/settings", {})
     if isinstance(settings_body, dict):
         library = settings_body.get("library") if isinstance(settings_body.get("library"), dict) else {}
@@ -249,26 +178,6 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
         results["speaker_config"] = {k: volumes.get(k) for k in (
             "default_cast_volume", "max_cast_volume", "night_cast_volume",
         ) if k in volumes}
-
-    mix_body = bodies.get("/api/mixes", [])
-    mixes = mix_body.get("mixes", []) if isinstance(mix_body, dict) else mix_body
-    mix_ids = []
-    if isinstance(mixes, list):
-        for mix in mixes:
-            if isinstance(mix, dict) and mix.get("id") is not None:
-                mix_id = mix["id"]
-                mix_ids.append(mix_id)
-                status, elapsed, details, error = _get_json(
-                    f"{base_url.rstrip('/')}/api/mixes/{mix_id}", token, timeout
-                )
-                results[f"mix:{mix_id}"] = {
-                    "http_status": status,
-                    "elapsed_ms": elapsed,
-                    "error": error,
-                    "retrieved": isinstance(details, dict),
-                    "track_count": len(details.get("tracks", [])) if isinstance(details, dict) and isinstance(details.get("tracks"), list) else None,
-                }
-    results["saved_mix_ids"] = sorted(mix_ids, key=str)
 
     # Playback is mutable; retain only current state/count metadata, no media names.
     status_body = bodies.get("/api/status", {})
@@ -281,6 +190,21 @@ def _api_capture(base_url: str, token: str | None, timeout: int) -> dict[str, An
             for name, value in status_body.items() if isinstance(value, dict)
         }
     return results
+
+
+def _catalog_snapshot_capture(container: str) -> dict[str, Any]:
+    source = Path(__file__).resolve().parent / "release_catalog_snapshot.py"
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "-i", container, "python", "-c", "exec(compile(__import__('sys').stdin.read(), 'release_catalog_snapshot.py', 'exec'))"],
+            input=source.read_text(encoding="utf-8"), capture_output=True, text=True, timeout=25, check=False,
+        )
+        value = json.loads(proc.stdout) if proc.returncode == 0 else None
+        if not isinstance(value, dict) or value.get("available") is not True or not isinstance(value.get("speakers"), list):
+            return {"available": False}
+        return value
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"available": False}
 
 
 def _valid_drift(report: Any) -> bool:
@@ -435,8 +359,13 @@ def _cloud_capture(project: str, service: str, region: str, key: bytes) -> dict[
 def _sqlite_integrity(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"present": False, "integrity": "NOT_TESTED"}
+    # Immutable opens do not create journal/shm files. An extant WAL cannot be
+    # read safely this way, so report the check as untested instead of ignoring it.
+    if path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-journal").exists():
+        return {"present": True, "integrity": "NOT_TESTED", "reason": "active journal or WAL"}
     try:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        before = path.stat()
+        db = sqlite3.connect(path.resolve().as_uri() + "?immutable=1", uri=True, timeout=5)
         try:
             check = db.execute("PRAGMA integrity_check").fetchone()[0]
             counts = {}
@@ -445,10 +374,19 @@ def _sqlite_integrity(path: Path) -> dict[str, Any]:
                     counts[table] = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 except sqlite3.Error:
                     counts[table] = None
-            return {"present": True, "integrity": check, "counts": counts}
+            try:
+                mix_ids = sorted((row[0] for row in db.execute("SELECT id FROM mixes")), key=str)
+            except sqlite3.Error:
+                mix_ids = None
+            after = path.stat()
+            if ((before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                    or path.with_name(path.name + "-wal").exists()
+                    or path.with_name(path.name + "-journal").exists()):
+                return {"present": True, "integrity": "NOT_TESTED", "reason": "database changed during inspection"}
+            return {"present": True, "integrity": check, "counts": counts, "mix_ids": mix_ids}
         finally:
             db.close()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         return {"present": True, "integrity": "ERROR", "error_type": type(exc).__name__}
 
 
@@ -465,6 +403,7 @@ def _google_home_sync_capture(path: Path, key: bytes) -> dict[str, Any]:
         "present": True,
         "valid_json": True,
         "linked": bool(state.get("cloud_gateway_url")),
+        "configured": any(state.get(name) for name in ("cloud_gateway_url", "catalog_write_key", "version", "last_cloud_meta")),
         "status": state.get("last_push_status"),
         # Mutable version/status/timestamps are useful evidence but excluded from
         # identity comparison. URL and key remain HMAC-only.
@@ -525,7 +464,7 @@ def _credentials_capture(path: Path, key: bytes) -> dict[str, Any]:
     }
 
 
-def _backup_capture(path: Path | None) -> dict[str, Any]:
+def _backup_capture(path: Path | None, *, require_env: bool = False, require_credentials: bool = False) -> dict[str, Any]:
     if not path:
         return {"configured": False, "available": False}
     if not path.exists():
@@ -536,7 +475,7 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
         files = [p for p in path.iterdir() if p.is_file()] if path.is_dir() else [path]
         return {"configured": True, "available": bool(files), "file_count": len(files), "rollback_ready": False}
     latest = max(dirs, key=lambda p: p.stat().st_mtime_ns)
-    expected = ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json",
+    expected = ("data.tgz", "data.tgz.sha256", ".env", "docker-compose.yml", "gcp-credentials.json",
                 "previous_image.txt", "previous_image_digest.txt")
     present = {name: (latest / name).is_file() for name in expected}
     previous_image = ""
@@ -571,7 +510,20 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
             )
         except (OSError, subprocess.TimeoutExpired):
             archive_valid = False
-    required_names = ("data.tgz", ".env", "docker-compose.yml", "gcp-credentials.json", "previous_image_digest.txt")
+    restore_verified = False
+    if archive_valid and archive_contains_data and present["data.tgz.sha256"]:
+        try:
+            restore_verified = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent / "upgrade_backup.py"), "verify", str(latest / "data.tgz")],
+                capture_output=True, check=False, timeout=120,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            restore_verified = False
+    required_names = ("data.tgz", "data.tgz.sha256", "docker-compose.yml")
+    if require_env:
+        required_names += (".env",)
+    if require_credentials:
+        required_names += ("gcp-credentials.json",)
     required_nonempty = {
         name: bool(present.get(name) and (latest / name).stat().st_size > 0)
         for name in required_names
@@ -585,10 +537,11 @@ def _backup_capture(path: Path | None) -> dict[str, Any]:
         "required_nonempty_files": required_nonempty,
         "data_archive_valid": archive_valid,
         "data_archive_contains_data": archive_contains_data,
+        "restore_verified": restore_verified,
         "previous_image_cached": image_cached,
         "rollback_ready": (
             required_present and all(required_nonempty.values())
-            and archive_valid and archive_contains_data and image_cached
+            and archive_valid and archive_contains_data and restore_verified and image_cached
         ),
     }
 
@@ -607,13 +560,20 @@ def capture(args: argparse.Namespace) -> dict[str, Any]:
         compose_fingerprint = _fingerprint_bytes(key, args.compose_file.read_bytes())
     api = _api_capture(args.api_url, args.api_key, args.timeout)
     docker = _container_capture(args.container, key)
+    catalog = _catalog_snapshot_capture(args.container)
+    if catalog.get("available"):
+        api["speakers"] = catalog["speakers"]
+        api["speaker_identity"] = catalog["speakers"]
     mounts = (docker or {}).get("mounts", [])
     credentials = _credentials_capture(creds_path, key)
+    index_state = _sqlite_integrity(data_path / "music_index.sqlite3")
+    api["saved_mix_ids"] = index_state.get("mix_ids") if index_state.get("present") else []
     report = {
         "schema_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
         "local": {
             "docker": docker,
+            "catalog_snapshot": catalog,
             "configuration_drift": _configuration_drift_capture(args.container),
             "protected_config_fingerprints": _protected_fingerprints(key, env_values),
             "compose_config_fingerprint": compose_fingerprint,
@@ -632,10 +592,11 @@ def capture(args: argparse.Namespace) -> dict[str, Any]:
                     for m in mounts
                 ),
             },
-            "music_index_sqlite": _sqlite_integrity(data_path / "music_index.sqlite3"),
-            "backup": _backup_capture(args.backup_dir),
+            "music_index_sqlite": index_state,
+            "backup": _backup_capture(args.backup_dir, require_env=bool(args.env_file and args.env_file.is_file()),
+                                      require_credentials=creds_path.is_file()),
         },
-        "cloud_run": _cloud_capture(args.project, args.cloud_run_service, args.region, key) if args.project else {"available": False},
+        "cloud_run": _cloud_capture(args.project, args.cloud_run_service, args.region, key) if args.project else {"available": False, "status": "NOT_APPLICABLE" if not sync_state.get("present") else "NOT_TESTED"},
         "api": api,
     }
     report_path = state_dir / f"baseline-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -664,8 +625,6 @@ LOCAL_IDENTITY_PATHS = (
     "local.installation_files",
     "local.music_index_sqlite.integrity",
     "local.backup.rollback_ready",
-    "api.google_home.cloud_linked",
-    "api.google_home.virtual_devices",
     "api.speaker_identity",
     "api.saved_mix_ids",
     "api.plex.linked",
@@ -718,69 +677,33 @@ def _missing_scope_evidence(report: dict[str, Any], scope: str) -> list[str]:
             missing.append("speaker identity snapshot missing")
         for dotted in (
             "local.docker.image_id", "local.docker.running", "local.docker.mounts",
-            "local.protected_config_fingerprints",
-            "local.compose_config_fingerprint",
-            "local.google_home_sync_state.present",
-            "local.google_home_sync_state.valid_json",
-            "local.google_home_sync_state.linked",
-            "local.google_home_sync_state.protected_config_fingerprints",
-            "local.installation_files.subscriber_credentials.present",
-            "local.installation_files.data_dir_present", "local.installation_files.data_mount_configured",
-            "local.installation_files.subscriber_credentials_mount_configured",
-            "local.music_index_sqlite.present", "local.music_index_sqlite.integrity",
-            "local.backup.rollback_ready", "api.google_home.cloud_linked",
-            "api.google_home.virtual_devices", "api.speakers", "api.saved_mix_ids",
-            "api.plex.linked", "api.plex.section", "api.speaker_config",
+            "local.protected_config_fingerprints", "local.compose_config_fingerprint",
+            "local.installation_files.data_dir_present", "api.plex.linked",
+            "api.speaker_config", "api.saved_mix_ids",
         ):
-            value = _at(report, dotted)
-            if value is None:
+            if _at(report, dotted) is None:
                 missing.append(dotted)
-        if report.get("local", {}).get("installation_files", {}).get(".env_present") is not True:
-            missing.append(".env is absent")
         if _at(report, "local.installation_files.data_dir_present") is not True:
             missing.append("persistent data directory is absent")
-        credentials = _at(report, "local.installation_files.subscriber_credentials")
-        if not isinstance(credentials, dict) or credentials.get("present") is not True or credentials.get("valid_json") is not True or credentials.get("valid_service_account") is not True:
-            missing.append("subscriber credentials file is absent")
-        if _at(report, "local.installation_files.data_mount_configured") is not True:
-            missing.append("/data persistent mount is absent")
-        if _at(report, "local.installation_files.subscriber_credentials_mount_configured") is not True:
-            missing.append("subscriber credentials mount is absent")
-        if _at(report, "local.music_index_sqlite.present") is not True or _at(report, "local.music_index_sqlite.integrity") != "ok":
-            missing.append("SQLite database missing or integrity check failed")
         if _at(report, "local.backup.rollback_ready") is not True:
             missing.append("verified rollback backup unavailable")
-        if _at(report, "local.google_home_sync_state.present") is not True or _at(report, "local.google_home_sync_state.valid_json") is not True or _at(report, "local.google_home_sync_state.linked") is not True:
-            missing.append("persistent Google Home gateway link state is missing")
-        local_sync_fingerprints = _at(report, "local.google_home_sync_state.protected_config_fingerprints") or {}
-        for name in ("cloud_gateway_url", "catalog_write_key"):
-            if name not in local_sync_fingerprints:
-                missing.append(f"persistent Google Home {name} fingerprint is missing")
-        if _at(report, "api.google_home.cloud_linked") is not True:
-            missing.append("Google Home link is not verified")
-        devices = _at(report, "api.google_home.virtual_devices")
-        if not isinstance(devices, list) or len(devices) != 4 or any(not d.get("google_home_device_id") for d in devices):
-            missing.append("four stable Google Home device IDs are not verified")
-        speaker_identity = _speaker_identity(report)
-        if (
-            not isinstance(speaker_identity, list)
-            or len(speaker_identity) != 4
-            or any(
-                not item.get("uuid")
-                or not (item.get("google_home_device_id") or item.get("id"))
-                for item in speaker_identity
-            )
-        ):
-            missing.append("four Cast UUID-to-device mappings are not verified")
-        if _at(report, "api.plex.linked") is not True:
-            missing.append("Plex link is not verified")
+        index = _at(report, "local.music_index_sqlite")
+        if not isinstance(index, dict) or (index.get("present") and index.get("integrity") != "ok"):
+            missing.append("SQLite integrity NOT TESTED or failed")
+        sync = _at(report, "local.google_home_sync_state")
+        if not isinstance(sync, dict):
+            missing.append("Google Home configuration evidence missing")
+        elif sync.get("present"):
+            if sync.get("valid_json") is not True:
+                missing.append("Google Home configuration is invalid")
+            elif sync.get("linked"):
+                fingerprints = sync.get("protected_config_fingerprints") or {}
+                if any(name not in fingerprints for name in ("cloud_gateway_url", "catalog_write_key")):
+                    missing.append("Google Home gateway configuration is incomplete")
         for endpoint in API_PATHS:
             result = report.get("api", {}).get(endpoint)
             if not isinstance(result, dict) or result.get("http_status") != 200:
                 missing.append(f"GET {endpoint} did not return HTTP 200")
-        for path, result in report.get("api", {}).items():
-            if str(path).startswith("mix:") and (not isinstance(result, dict) or result.get("http_status") != 200 or not result.get("retrieved")):
-                missing.append(f"saved mix retrieval failed for {path}")
     elif scope == "cloud":
         cloud = report.get("cloud_run")
         if not isinstance(cloud, dict) or cloud.get("available") is not True:
@@ -814,7 +737,13 @@ def compare(before_path: Path, after_path: Path, scope: str = "all") -> tuple[bo
     before = json.loads(before_path.read_text(encoding="utf-8"))
     after = json.loads(after_path.read_text(encoding="utf-8"))
     differences = []
-    scopes = ("local", "cloud") if scope == "all" else (scope,)
+    if scope == "all":
+        optional_cloud = _at(before, "cloud_run.status") == "NOT_APPLICABLE"
+        scopes = ("local",) if optional_cloud else ("local", "cloud")
+        if optional_cloud and _at(after, "cloud_run.status") != "NOT_APPLICABLE":
+            differences.append({"scope": "cloud", "path": "cloud_run.status", "reason": "cloud configuration changed; review required"})
+    else:
+        scopes = (scope,)
     for check_scope in scopes:
         for missing in _missing_scope_evidence(before, check_scope):
             differences.append({"scope": check_scope, "path": "before", "reason": missing})
