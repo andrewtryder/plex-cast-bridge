@@ -154,6 +154,7 @@ This repo targets personal / test integrations. Public Google certification is o
 ## Production Deployment
 
 - **Docker / Proxmox:** [docs/install-docker.md](docs/install-docker.md) and [docs/proxmox-deployment.md](docs/proxmox-deployment.md)
+- **Maintainer release gates:** [docs/release-process.md](docs/release-process.md)
 - **Image:** `ghcr.io/andrewtryder/plex-cast-bridge:latest` (and version tags from GitHub Releases). The package must be marked **Public** in GHCR package settings for anonymous pulls.
 - **Systemd:** `deploy/plex-cast-bridge.service`
 
