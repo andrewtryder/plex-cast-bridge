@@ -21,6 +21,7 @@ from upgrade_inputs import create_inputs_backup, verify_inputs_backup
 from upgrade_restore import restore_offline
 from upgrade_backup import restored_tree, restore_to_new_directory, verify as verify_backup
 from upgrade_docker_backup import _mount, docker_backup, read_host_file
+from upgrade_compose_selection import create_migration, migration_preview
 from release_catalog_snapshot import snapshot as catalog_snapshot
 
 
@@ -989,6 +990,13 @@ def stage_restore(plan_path: Path, destination: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
+    prepare_migration = sub.add_parser("prepare-compose-migration", help="Review preparation of a managed Compose override")
+    prepare_migration.add_argument("--compose-file", required=True, type=Path)
+    prepare_migration.add_argument("--service", required=True)
+    prepare_migration.add_argument("--review-file", required=True, type=Path)
+    migrate = sub.add_parser("migrate-compose", help="Create the reviewed override without changing the running image")
+    migrate.add_argument("--review-file", required=True, type=Path)
+    migrate.add_argument("--confirm", action="store_true")
     for action in ("doctor", "plan"):
         command = sub.add_parser(action)
         command.add_argument("--compose-file", required=True, type=Path, action="append", help="Compose file; repeat for overrides")
@@ -1029,6 +1037,28 @@ def main(argv: list[str] | None = None) -> int:
     stage.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.action == "prepare-compose-migration":
+            preview = migration_preview(args.compose_file, args.service)
+            args.review_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(args.review_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(preview, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            print(json.dumps(preview, indent=2))
+            print("Preparation only: upgrades do not yet update this override; continue using your existing workflow.")
+            return 0
+        if args.action == "migrate-compose":
+            if not args.confirm:
+                raise ValueError("Review the migration file and confirm creation of the override")
+            if args.review_file.is_symlink() or args.review_file.stat().st_mode & 0o077:
+                raise ValueError("Migration review file must be a private regular file")
+            preview = json.loads(args.review_file.read_text(encoding="utf-8"))
+            path = create_migration(preview)
+            print(f"Created {path}; the running image was not changed.")
+            print("Preparation only: upgrades do not yet update this override; continue using your existing workflow.")
+            return 0
         if args.action == "restore-data":
             return restore_data(args.plan_file, confirm_overwrite=args.confirm_overwrite_data,
                                 confirm_exclusive=args.confirm_exclusive_data, health_url=args.health_url)

@@ -90,13 +90,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Verify packaged diagnostic against production image
-        run: uv run --dev pytest -q tests/test_config_drift_image.py tests/test_config_drift_legacy_image.py tests/test_upgrade_backup_image.py tests/test_upgrade_docker_backup_image.py tests/test_upgrade_doctor_image.py tests/test_upgrade_end_to_end.py tests/test_upgrade_real_bridge.py tests/test_upgrade_sqlite_online.py
+        run: uv run --dev pytest -q tests/test_config_drift_image.py tests/test_config_drift_legacy_image.py tests/test_upgrade_backup_image.py tests/test_upgrade_docker_backup_image.py tests/test_upgrade_doctor_image.py tests/test_upgrade_end_to_end.py tests/test_upgrade_real_bridge.py tests/test_upgrade_sqlite_online.py tests/test_upgrade_compose_selection.py
         env:
           PCB_TEST_DOCKER_IMAGE: "1"
           PCB_TEST_UPGRADE_E2E: "1"
           PCB_TEST_UPGRADE_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:ed8c8d78bc58e704f875e4b9618259009916db498c93587b3d274fed9c719757
           PCB_TEST_SQLITE_ONLINE: "1"
           PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
+          PCB_TEST_COMPOSE_RECREATE: "1"
 
       - name: Verify upgrade from the official older image
         run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
