@@ -1,6 +1,6 @@
 [Unit]
 Description=Plex Cast Bridge - Smart Radio Bridge for Plex and Google Cast
-Documentation=https://github.com/your-username/plex-cast-bridge
+Documentation=https://github.com/andrewtryder/plex-cast-bridge
 After=network-online.target avahi-daemon.service
 Wants=network-online.target
 
@@ -11,6 +11,7 @@ User=plexbridge
 Group=plexbridge
 
 WorkingDirectory=/opt/plex-cast-bridge
+Environment="DATA_DIR=/opt/plex-cast-bridge/data"
 EnvironmentFile=/opt/plex-cast-bridge/.env
 Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/plex-cast-bridge/gcp-credentials.json"
 Environment="PYTHONUNBUFFERED=1"
