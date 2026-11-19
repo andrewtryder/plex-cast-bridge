@@ -259,7 +259,11 @@ def main() -> int:
         or os.getenv("PCB_DATA_DIR")
         or file_vals.get("DATA_DIR")
         or os.getenv("DATA_DIR")
-        or (PROJECT_ROOT / "data")
+        or (
+            "/data"
+            if Path("/data").is_dir()
+            else (PROJECT_ROOT / "data" if (PROJECT_ROOT / "data").is_dir() else PROJECT_ROOT)
+        )
     )
     data_dir = Path(raw_data_dir).resolve()
     require_existing = (

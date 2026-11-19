@@ -11,7 +11,7 @@ User=plexbridge
 Group=plexbridge
 
 WorkingDirectory=/opt/plex-cast-bridge
-Environment="DATA_DIR=/opt/plex-cast-bridge/data"
+# Optional: DATA_DIR can be configured in /opt/plex-cast-bridge/.env (defaulting to legacy precedence: /data, data/, or repository root)
 EnvironmentFile=/opt/plex-cast-bridge/.env
 Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/plex-cast-bridge/gcp-credentials.json"
 Environment="PYTHONUNBUFFERED=1"

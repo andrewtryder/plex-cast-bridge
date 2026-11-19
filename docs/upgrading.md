@@ -215,7 +215,7 @@ For host installations managed via systemd (`deploy/plex-cast-bridge.service`):
 3. Synchronize Python runtime and dependencies with uv: `uv sync`.
    - If the previous installation was on Python 3.12 or 3.13, `uv sync` automatically migrates `.venv` to Python 3.14 without requiring manual virtualenv deletion or system Python modifications.
 4. Restart the service: `sudo systemctl restart plex-cast-bridge`.
-   - The service preserves `EnvironmentFile=/opt/plex-cast-bridge/.env` and persistent state in `DATA_DIR` (defaulting safely to `/opt/plex-cast-bridge/data` or your custom external data directory).
+   - The service preserves `EnvironmentFile=/opt/plex-cast-bridge/.env` and existing persistent state (preserving legacy location precedence across `/data`, `data/`, or the repository root, or any custom external `DATA_DIR` configured in `.env`).
 
 ---
 

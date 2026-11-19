@@ -275,7 +275,10 @@ def test_systemd_service_environment_and_external_data_dir(tmp_path: Path):
     # Verify unit structure
     assert "Documentation=https://github.com/andrewtryder/plex-cast-bridge" in content
     assert "WorkingDirectory=/opt/plex-cast-bridge" in content
-    assert 'Environment="DATA_DIR=/opt/plex-cast-bridge/data"' in content
+    assert 'Environment="DATA_DIR=' not in content, (
+        "deploy/plex-cast-bridge.service must not hardcode DATA_DIR so that legacy native data-location "
+        "precedence (/data, data/, or repository root) and .env overrides are preserved"
+    )
     assert "EnvironmentFile=/opt/plex-cast-bridge/.env" in content
     assert "ExecStart=/opt/plex-cast-bridge/.venv/bin/uvicorn plex_cast_bridge.main:app" in content
 
@@ -307,6 +310,145 @@ def test_systemd_service_environment_and_external_data_dir(tmp_path: Path):
     assert res.returncode == 0, f"Preflight failed on external data directory:\n{res.stderr}\n{res.stdout}"
     assert f"Found existing data files in {external_data}" in res.stdout
     _verify_synthetic_data(external_data, expected)
+
+
+# ---------------------------------------------------------------------------
+# Test 3b: Legacy native data-location precedence and custom external DATA_DIR
+# ---------------------------------------------------------------------------
+def test_legacy_native_data_location_precedence_and_custom_override(tmp_path: Path):
+    """Verify data directory resolution follows legacy native precedence when DATA_DIR is unset:
+    1. /data (if directory exists)
+    2. PROJECT_ROOT / "data" (if directory exists)
+    3. PROJECT_ROOT (fallback)
+    And verifies explicit custom external DATA_DIR takes precedence over all defaults.
+    """
+    fake_project = tmp_path / "fake-pcb"
+    fake_project.mkdir()
+    fake_data_subdir = fake_project / "data"
+
+    test_resolver_code = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "project_root = Path(sys.argv[1])\n"
+        "resolved = Path(\n"
+        "    os.getenv('DATA_DIR')\n"
+        "    or (\n"
+        "        '/data'\n"
+        "        if Path('/data').is_dir()\n"
+        "        else (project_root / 'data' if (project_root / 'data').is_dir() else project_root)\n"
+        "    )\n"
+        ")\n"
+        "print(resolved)\n"
+    )
+    resolver_script = tmp_path / "resolver.py"
+    resolver_script.write_text(test_resolver_code)
+
+    # 1. Explicit custom external DATA_DIR
+    custom_dir = tmp_path / "custom-storage"
+    custom_dir.mkdir()
+    res_custom = subprocess.run(
+        [sys.executable, str(resolver_script), str(fake_project)],
+        env={**os.environ, "DATA_DIR": str(custom_dir)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res_custom.stdout.strip() == str(custom_dir)
+
+    # 2. When DATA_DIR is unset:
+    clean_env = {k: v for k, v in os.environ.items() if k != "DATA_DIR"}
+
+    # Case A: fake_data_subdir does NOT exist
+    res_fallback = subprocess.run(
+        [sys.executable, str(resolver_script), str(fake_project)],
+        env=clean_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if Path("/data").is_dir():
+        assert res_fallback.stdout.strip() == "/data"
+    else:
+        assert res_fallback.stdout.strip() == str(fake_project)
+
+    # Case B: fake_data_subdir DOES exist
+    fake_data_subdir.mkdir()
+    res_subdir = subprocess.run(
+        [sys.executable, str(resolver_script), str(fake_project)],
+        env=clean_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if Path("/data").is_dir():
+        assert res_subdir.stdout.strip() == "/data"
+    else:
+        assert res_subdir.stdout.strip() == str(fake_data_subdir)
+
+    # 3. Test preflight detection with legacy data stored in project root
+    legacy_root_project = tmp_path / "legacy-root-install"
+    legacy_root_project.mkdir()
+    (legacy_root_project / "scripts").mkdir()
+    shutil.copy(ROOT / "scripts" / "preflight.py", legacy_root_project / "scripts" / "preflight.py")
+    expected = _seed_synthetic_data(legacy_root_project)
+
+    env_file = legacy_root_project / ".env"
+    env_file.write_text(
+        "PLEX_URL=http://192.168.1.150:32400\n"
+        "PLEX_TOKEN=test-token\n"
+        "ENABLE_PUBSUB_LISTENER=false\n"
+    )
+
+    # If /data does not exist on host (or if we explicitly point to legacy root), preflight succeeds
+    if not Path("/data").is_dir():
+        res_legacy_preflight = subprocess.run(
+            [
+                sys.executable,
+                str(legacy_root_project / "scripts" / "preflight.py"),
+                "--env-file", str(env_file),
+                "--skip-plex",
+                "--require-existing-data",
+            ],
+            cwd=legacy_root_project,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+        )
+        assert res_legacy_preflight.returncode == 0, (
+            f"Legacy root preflight failed:\n{res_legacy_preflight.stderr}\n{res_legacy_preflight.stdout}"
+        )
+        assert f"Found existing data files in {legacy_root_project}" in res_legacy_preflight.stdout
+        _verify_synthetic_data(legacy_root_project, expected)
+
+    # 4. Test preflight detection with custom external DATA_DIR in .env
+    custom_env_data = tmp_path / "custom-env-data"
+    expected_custom = _seed_synthetic_data(custom_env_data)
+    env_file_custom = tmp_path / "custom.env"
+    env_file_custom.write_text(
+        f"DATA_DIR={custom_env_data}\n"
+        "PLEX_URL=http://192.168.1.150:32400\n"
+        "PLEX_TOKEN=test-token\n"
+        "ENABLE_PUBSUB_LISTENER=false\n"
+    )
+
+    res_custom_preflight = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "preflight.py"),
+            "--env-file", str(env_file_custom),
+            "--skip-plex",
+            "--require-existing-data",
+        ],
+        cwd=ROOT,
+        env=clean_env,
+        capture_output=True,
+        text=True,
+    )
+    assert res_custom_preflight.returncode == 0, (
+        f"Custom DATA_DIR in .env preflight failed:\n{res_custom_preflight.stderr}\n{res_custom_preflight.stdout}"
+    )
+    assert f"Found existing data files in {custom_env_data}" in res_custom_preflight.stdout
+    _verify_synthetic_data(custom_env_data, expected_custom)
 
 
 # ---------------------------------------------------------------------------
