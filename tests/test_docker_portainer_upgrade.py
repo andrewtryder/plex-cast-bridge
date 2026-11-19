@@ -118,31 +118,39 @@ def _seed_synthetic_data(data_dir: Path) -> dict:
     with sqlite3.connect(db_path) as db:
         db.executescript(
             """
-            CREATE TABLE IF NOT EXISTS tracks (
-                server_id TEXT, library_id TEXT, rating_key TEXT PRIMARY KEY,
-                title TEXT, artist TEXT, album TEXT
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE scan_state (
+                id INTEGER PRIMARY KEY CHECK (id=1), status TEXT NOT NULL DEFAULT 'idle',
+                server_id TEXT, library_id TEXT, started_at TEXT, completed_at TEXT,
+                scanned INTEGER NOT NULL DEFAULT 0, error TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS mixes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                prompt TEXT,
-                track_count INTEGER DEFAULT 0,
-                created_at TEXT
+            INSERT INTO scan_state (id) VALUES (1);
+            CREATE TABLE tracks (
+                server_id TEXT NOT NULL, library_id TEXT NOT NULL, rating_key TEXT NOT NULL,
+                title TEXT NOT NULL, artist TEXT, artist_key TEXT, album TEXT, album_key TEXT,
+                year INTEGER, duration_ms INTEGER, genres TEXT NOT NULL DEFAULT '[]',
+                moods TEXT NOT NULL DEFAULT '[]', updated_at TEXT, play_count INTEGER,
+                PRIMARY KEY(server_id, library_id, rating_key)
             );
-            CREATE TABLE IF NOT EXISTS mix_tracks (
-                mix_id INTEGER NOT NULL,
-                position INTEGER NOT NULL,
-                rating_key TEXT NOT NULL,
-                PRIMARY KEY (mix_id, position)
+            CREATE TABLE mixes (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, server_id TEXT NOT NULL,
+                library_id TEXT NOT NULL, created_at TEXT NOT NULL, provenance TEXT NOT NULL DEFAULT '{}'
             );
+            CREATE TABLE mix_tracks (
+                mix_id INTEGER NOT NULL REFERENCES mixes(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL, rating_key TEXT NOT NULL,
+                PRIMARY KEY(mix_id, position)
+            );
+            PRAGMA user_version = 3;
+
             INSERT INTO tracks (server_id, library_id, rating_key, title, artist, album)
             VALUES
                 ('srv1', 'lib1', 'trk-1001', 'Midnight City', 'M83', 'Hurry Up, We Are Dreaming'),
                 ('srv1', 'lib1', 'trk-1002', 'Reckoner', 'Radiohead', 'In Rainbows'),
                 ('srv1', 'lib1', 'trk-1003', 'Time', 'Pink Floyd', 'Dark Side of the Moon');
 
-            INSERT INTO mixes (id, name, prompt, track_count, created_at)
-            VALUES (1, 'Evening Chill', 'Relaxing electronic and rock', 2, '2026-11-18T12:00:00Z');
+            INSERT INTO mixes (id, name, server_id, library_id, created_at)
+            VALUES (1, 'Evening Chill', 'srv1', 'lib1', '2026-11-18T12:00:00Z');
 
             INSERT INTO mix_tracks (mix_id, position, rating_key)
             VALUES (1, 0, 'trk-1001'), (1, 1, 'trk-1002');
@@ -390,7 +398,7 @@ def test_compose_configuration_resolution(tmp_path: Path):
     assert svc_c["environment"]["PLEX_URL"] == "http://customenv:32400"
     assert str(custom_data) in [v["source"] for v in svc_c.get("volumes", [])]
 
-    # Case D: Build override adds build section
+    # Case D: Build override adds build section and separates custom image name from official release
     res_d = subprocess.run(
         ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.build.yml", "config", "--format", "json"],
         cwd=str(deploy_dir),
@@ -401,6 +409,20 @@ def test_compose_configuration_resolution(tmp_path: Path):
     )
     cfg_d = json.loads(res_d.stdout)
     assert "build" in cfg_d["services"]["plex-cast-bridge"]
+    assert cfg_d["services"]["plex-cast-bridge"]["image"] == "plex-cast-bridge:local"
+    assert cfg_d["services"]["plex-cast-bridge"]["image"] != "ghcr.io/andrewtryder/plex-cast-bridge:latest"
+
+    # Case D2: Configurable custom image for forks
+    res_d2 = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.build.yml", "config", "--format", "json"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env={**base_env, "PCB_CUSTOM_IMAGE": "ghcr.io/myfork/plex-cast-bridge:custom"},
+        check=True,
+    )
+    cfg_d2 = json.loads(res_d2.stdout)
+    assert cfg_d2["services"]["plex-cast-bridge"]["image"] == "ghcr.io/myfork/plex-cast-bridge:custom"
 
     # Case E: Portainer template requires PCB_DATA_DIR and forwards stack variables
     res_e_fail = subprocess.run(
@@ -424,6 +446,12 @@ def test_compose_configuration_resolution(tmp_path: Path):
             "PLEX_URL": "http://portainer-stack:32400",
             "PLEX_TOKEN": "portainer-token",
             "GEMINI_API_KEY": "portainer-gemini",
+            "ENABLE_PUBSUB_LISTENER": "true",
+            "GCP_PROJECT_ID": "portainer-project-123",
+            "GCP_PUBSUB_SUBSCRIPTION_ID": "portainer-sub-123",
+            "CLOUD_GATEWAY_URL": "https://gateway.example.com",
+            "CATALOG_WRITE_KEY": "writekey-123",
+            "PCB_REQUIRE_EXISTING_DATA": "true",
         },
         check=True,
     )
@@ -432,6 +460,12 @@ def test_compose_configuration_resolution(tmp_path: Path):
     assert svc_e["environment"]["PLEX_URL"] == "http://portainer-stack:32400"
     assert svc_e["environment"]["PLEX_TOKEN"] == "portainer-token"
     assert svc_e["environment"]["GEMINI_API_KEY"] == "portainer-gemini"
+    assert svc_e["environment"]["ENABLE_PUBSUB_LISTENER"] == "true"
+    assert svc_e["environment"]["GCP_PROJECT_ID"] == "portainer-project-123"
+    assert svc_e["environment"]["GCP_PUBSUB_SUBSCRIPTION_ID"] == "portainer-sub-123"
+    assert svc_e["environment"]["CLOUD_GATEWAY_URL"] == "https://gateway.example.com"
+    assert svc_e["environment"]["CATALOG_WRITE_KEY"] == "writekey-123"
+    assert svc_e["environment"]["PCB_REQUIRE_EXISTING_DATA"] == "true"
     assert str(custom_data) in [v["source"] for v in svc_e.get("volumes", [])]
 
 
@@ -669,3 +703,169 @@ def test_failure_behavior_changed_mount_target_isolation(tmp_path: Path):
     _verify_synthetic_data(orig_data, expected)
     assert not (new_data / "plex_connection.json").exists()
     assert not (new_data / "catalog.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Storage Safety: Missing, Wrong, and Unexpectedly Empty Data Paths
+# ---------------------------------------------------------------------------
+def test_storage_safety_preflight_validation(tmp_path: Path):
+    """Preflight check explicitly detects missing, wrong, and unexpectedly empty data paths."""
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import preflight
+
+    # Case 1: Missing data directory
+    missing_dir = tmp_path / "nonexistent_dir"
+    assert not preflight.check_data_dir(missing_dir, require_existing=False)
+    assert not preflight.check_data_dir(missing_dir, require_existing=True)
+
+    # Case 2: Empty data directory for initial install -> PASS
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+    assert preflight.check_data_dir(empty_dir, require_existing=False)
+
+    # Case 3: Empty data directory for upgrade (require_existing=True) -> FAIL
+    assert not preflight.check_data_dir(empty_dir, require_existing=True)
+
+    # Case 4: Wrong data directory (has unrelated files only) for upgrade -> FAIL
+    wrong_dir = tmp_path / "wrong_dir"
+    wrong_dir.mkdir()
+    (wrong_dir / "unrelated.txt").write_text("some other app")
+    assert not preflight.check_data_dir(wrong_dir, require_existing=True)
+
+    # Case 5: Valid existing data directory for upgrade -> PASS
+    valid_dir = tmp_path / "valid_dir"
+    _seed_synthetic_data(valid_dir)
+    assert preflight.check_data_dir(valid_dir, require_existing=True)
+
+
+def test_storage_safety_unexpectedly_empty_data_rejected_in_container(tmp_path: Path):
+    """When PCB_REQUIRE_EXISTING_DATA is set, starting with an empty data directory fails fast."""
+    if not _docker_available():
+        pytest.skip("Docker daemon required for container storage safety test")
+    _ensure_candidate_image()
+
+    empty_dir = tmp_path / "empty_data"
+    empty_dir.mkdir()
+
+    cid = f"pcb-empty-{uuid.uuid4().hex[:8]}"
+    try:
+        res = subprocess.run(
+            [
+                "docker", "run", "--name", cid,
+                "-v", f"{empty_dir}:/data",
+                "-e", "DATA_DIR=/data",
+                "-e", "PCB_REQUIRE_EXISTING_DATA=1",
+                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
+                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
+                CANDIDATE_TAG,
+            ],
+            capture_output=True, text=True,
+        )
+        assert res.returncode != 0, "Container with PCB_REQUIRE_EXISTING_DATA=1 must refuse empty /data"
+        assert "CRITICAL: PCB_REQUIRE_EXISTING_DATA is set" in res.stderr
+        assert "does not contain existing Plex Cast Bridge configuration" in res.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+
+def test_storage_safety_wrong_data_path_rejected_in_container(tmp_path: Path):
+    """When PCB_REQUIRE_EXISTING_DATA is set, pointing to wrong directory fails fast."""
+    if not _docker_available():
+        pytest.skip("Docker daemon required for container storage safety test")
+    _ensure_candidate_image()
+
+    wrong_dir = tmp_path / "wrong_data"
+    wrong_dir.mkdir()
+    (wrong_dir / "other_app.json").write_text("{}")
+
+    cid = f"pcb-wrong-{uuid.uuid4().hex[:8]}"
+    try:
+        res = subprocess.run(
+            [
+                "docker", "run", "--name", cid,
+                "-v", f"{wrong_dir}:/data",
+                "-e", "DATA_DIR=/data",
+                "-e", "PCB_REQUIRE_EXISTING_DATA=1",
+                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
+                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
+                CANDIDATE_TAG,
+            ],
+            capture_output=True, text=True,
+        )
+        assert res.returncode != 0, "Container with PCB_REQUIRE_EXISTING_DATA=1 must refuse wrong directory"
+        assert "CRITICAL: PCB_REQUIRE_EXISTING_DATA is set" in res.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Google Home Credential Compatibility & Placeholder Safety
+# ---------------------------------------------------------------------------
+def test_google_home_credentials_placeholder_rejected_when_pubsub_enabled(tmp_path: Path):
+    """When ENABLE_PUBSUB_LISTENER=true, /dev/null or empty credential placeholder fails fast."""
+    if not _docker_available():
+        pytest.skip("Docker daemon required for credentials safety test")
+    _ensure_candidate_image()
+
+    data_dir = tmp_path / "data"
+    _seed_synthetic_data(data_dir)
+
+    cid = f"pcb-gcp-null-{uuid.uuid4().hex[:8]}"
+    try:
+        res = subprocess.run(
+            [
+                "docker", "run", "--name", cid,
+                "-v", f"{data_dir}:/data",
+                "-v", "/dev/null:/app/gcp-credentials.json:ro",
+                "-e", "DATA_DIR=/data",
+                "-e", "GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json",
+                "-e", "ENABLE_PUBSUB_LISTENER=true",
+                "-e", "GCP_PROJECT_ID=synthetic-project",
+                "-e", "GCP_PUBSUB_SUBSCRIPTION_ID=synthetic-sub",
+                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
+                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
+                CANDIDATE_TAG,
+            ],
+            capture_output=True, text=True,
+        )
+        assert res.returncode != 0, "Must fail fast when ENABLE_PUBSUB_LISTENER=true has /dev/null credentials"
+        assert "CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS" in res.stderr
+        assert "unmounted placeholder (/dev/null)" in res.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+
+def test_google_home_dashboard_only_allows_dev_null_placeholder(tmp_path: Path):
+    """Dashboard-only installation (ENABLE_PUBSUB_LISTENER unset/false) starts cleanly with /dev/null."""
+    if not _docker_available():
+        pytest.skip("Docker daemon required for dashboard-only test")
+    _ensure_candidate_image()
+
+    data_dir = tmp_path / "data"
+    _seed_synthetic_data(data_dir)
+
+    cid = f"pcb-dash-only-{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(
+            [
+                "docker", "run", "-d", "--name", cid,
+                "-v", f"{data_dir}:/data",
+                "-v", "/dev/null:/app/gcp-credentials.json:ro",
+                "-e", "DATA_DIR=/data",
+                "-e", "GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json",
+                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
+                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
+                CANDIDATE_TAG,
+            ],
+            check=True, capture_output=True,
+        )
+        time.sleep(2)
+
+        inspect_res = subprocess.run(
+            ["docker", "inspect", cid, "--format", "{{.State.Running}}"],
+            capture_output=True, text=True, check=True,
+        )
+        assert inspect_res.stdout.strip() == "true", "Dashboard-only bridge should be running"
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)

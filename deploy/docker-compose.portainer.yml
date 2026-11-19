@@ -18,6 +18,12 @@ services:
       - MAX_CAST_VOLUME
       - DEFAULT_SPEAKER_HOST
       - ENABLE_PUBSUB_LISTENER
+      - GCP_PROJECT_ID
+      - GCP_PUBSUB_SUBSCRIPTION_ID
+      - CLOUD_GATEWAY_URL
+      - CATALOG_WRITE_KEY
+      - PCB_REQUIRE_EXISTING_DATA
+      - PCB_ALLOW_EPHEMERAL_DATA
     volumes:
       # Optional Pub/Sub credentials (defaults to /dev/null if unconfigured)
       - ${PCB_GCP_CREDENTIALS:-/dev/null}:/app/gcp-credentials.json:ro

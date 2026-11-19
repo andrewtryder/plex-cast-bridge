@@ -99,6 +99,33 @@ async def lifespan(app: FastAPI):
             "or set PCB_ALLOW_EPHEMERAL_DATA=1 if stateless execution is intended."
         )
 
+    # Validate persistent data state during upgrades / existing installations
+    require_existing = os.environ.get("PCB_REQUIRE_EXISTING_DATA", "").strip().lower() in {"1", "true", "yes"} or \
+                       os.environ.get("PCB_UPGRADE", "").strip().lower() in {"1", "true", "yes"}
+    has_existing_data = any(
+        (DATA_DIR / f).exists()
+        for f in (
+            "catalog.json",
+            "plex_connection.json",
+            "music_index.sqlite3",
+            "app_settings.json",
+            "google_home_sync.json",
+            "google_home_setup.json",
+        )
+    )
+    if require_existing and not has_existing_data:
+        raise RuntimeError(
+            f"CRITICAL: PCB_REQUIRE_EXISTING_DATA is set, but {DATA_DIR} does not contain existing "
+            "Plex Cast Bridge configuration (no catalog.json, plex_connection.json, music_index.sqlite3, "
+            "app_settings.json, or google_home_sync.json found). "
+            "Refusing to start to prevent data loss from an incorrect or empty mount path."
+        )
+
+    if has_existing_data:
+        log.info("Mounted persistent data directory at %s with existing configuration", DATA_DIR)
+    else:
+        log.info("Mounted persistent data directory at %s (empty; initial setup)", DATA_DIR)
+
     # Skip automatic mDNS / slow Plex retries during pytest TestClient lifespan.
     skip_auto_discovery = os.environ.get("PCB_DISABLE_BACKGROUND_DISCOVERY", "").strip().lower() in {
         "1",
@@ -226,6 +253,15 @@ async def lifespan(app: FastAPI):
     reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
     if settings.enable_pubsub_listener:
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if creds_path:
+            p = Path(creds_path)
+            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+                raise RuntimeError(
+                    f"CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS ({creds_path}) "
+                    "points to an unmounted placeholder (/dev/null), missing file, or empty key. "
+                    "Provide a valid Google Cloud service account key via PCB_GCP_CREDENTIALS to enable Google Home voice control."
+                )
 
         async def dispatch(data):
             if data["action"] == "play":

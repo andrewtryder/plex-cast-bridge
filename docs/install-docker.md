@@ -73,6 +73,8 @@ If you are modifying source code locally or maintaining a fork, include the buil
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
 ```
 
+When building with the override, the image is tagged as `plex-cast-bridge:local` by default to avoid colliding with or accidentally overwriting the official GHCR image (`ghcr.io/andrewtryder/plex-cast-bridge:latest`). Forks can set `PCB_CUSTOM_IMAGE` (e.g. `PCB_CUSTOM_IMAGE=ghcr.io/myfork/plex-cast-bridge:latest`) to customize the resulting image tag.
+
 ---
 
 ## Alternative: Portainer Deployment
@@ -88,6 +90,19 @@ Plex Cast Bridge is fully compatible with Portainer. You can deploy it either as
 5. Set **Compose path**: `deploy/docker-compose.portainer.yml`
 6. In **Environment variables**, define:
    - `PCB_DATA_DIR`: **(Required)** a stable host path, e.g. `/opt/plex-cast-bridge/data` or `/var/lib/plex-cast-bridge/data`
+   - `PCB_REQUIRE_EXISTING_DATA`: Set to `true` when upgrading an existing stack. Fails closed if the data path is empty or points to the wrong directory, preventing accidental data loss from typos.
+   - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `PLEX_MUSIC_SECTION`, `GEMINI_API_KEY`, etc.
+   - (For Google Home voice control):
+     - `ENABLE_PUBSUB_LISTENER=true`
+     - `PCB_GCP_CREDENTIALS=/path/to/gcp-credentials.json`
+     - `GCP_PROJECT_ID=your-project-id`
+     - `GCP_PUBSUB_SUBSCRIPTION_ID=your-subscription-id`
+     - `CLOUD_GATEWAY_URL=https://your-gateway.run.app`
+     - `CATALOG_WRITE_KEY=your-catalog-key`
+
+> [!NOTE]
+> **Dashboard-only vs Google Home installations:**
+> Installations that only use the local web dashboard and Smart DJ do not require Google Cloud credentials. `PCB_GCP_CREDENTIALS` defaults safely to `/dev/null` in `docker-compose.portainer.yml`. If `ENABLE_PUBSUB_LISTENER=true` is enabled, the bridge enforces that `PCB_GCP_CREDENTIALS` points to a real service account key and refuses to start with `/dev/null`.
    - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `PLEX_MUSIC_SECTION`, `GEMINI_API_KEY`, etc.
 
 > [!IMPORTANT]

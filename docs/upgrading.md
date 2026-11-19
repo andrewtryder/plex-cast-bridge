@@ -81,6 +81,9 @@ If you deployed the stack using Portainer's **Repository** option:
 > **Portainer Git-stack persistent storage requirement:**
 > Ensure your Git stack defines `PCB_DATA_DIR` in its **Environment variables** pointing to a permanent host path (e.g. `PCB_DATA_DIR=/opt/plex-cast-bridge/data`).
 > Portainer clones Git repositories to an internal directory (`/data/compose/<id>/`) that can be wiped or replaced upon Git pull or stack update. The supported `deploy/docker-compose.portainer.yml` template explicitly requires `PCB_DATA_DIR` and will refuse to deploy without it, ensuring settings survive Git stack updates.
+>
+> **Fail-closed upgrade protection (`PCB_REQUIRE_EXISTING_DATA`):**
+> When upgrading an existing Portainer stack, add `PCB_REQUIRE_EXISTING_DATA=true` to your stack environment variables. If an operator accidentally provides an invalid path or a typo (e.g. `/opt/pcb/data` instead of `/opt/plex-cast-bridge/data`), the container will fail fast on startup with a descriptive error instead of silently initializing with blank defaults.
 
 ---
 
@@ -193,7 +196,8 @@ To avoid unexpected data loss during updates, avoid these configurations:
   ```bash
   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
   ```
-- **Custom GHCR images / Forks**: Set `image:` in your Compose file to your custom repository (e.g. `ghcr.io/yourusername/plex-cast-bridge:latest`). The image-only deployment works identically with any compliant container image.
+  Local builds are tagged as `plex-cast-bridge:local` by default to prevent colliding with or overwriting the official release image.
+- **Custom GHCR images / Forks**: Set `PCB_CUSTOM_IMAGE` (or `image:` in your Compose file) to your custom repository (e.g. `PCB_CUSTOM_IMAGE=ghcr.io/yourusername/plex-cast-bridge:latest`). The image-only deployment works identically with any compliant container image.
 
 ---
 

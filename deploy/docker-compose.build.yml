@@ -4,9 +4,11 @@
 #   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
 #
 # When this override file is included, Compose builds the local image from source
-# instead of pulling the official release from GHCR.
+# and tags it as plex-cast-bridge:local (or PCB_CUSTOM_IMAGE if set) instead of
+# pulling or overwriting the official release from GHCR.
 services:
   plex-cast-bridge:
+    image: ${PCB_CUSTOM_IMAGE:-plex-cast-bridge:local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
