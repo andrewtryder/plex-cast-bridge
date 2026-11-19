@@ -54,8 +54,23 @@ def detect_installation_operation() -> str:
         from . import catalog_sync
 
         state = catalog_sync.load_sync_state()
-        if not (state.get("cloud_gateway_url") or "").strip():
+        # Treat any durable gateway/sync footprint as an existing installation.
+        # A missing URL can mean local state was partially restored or edited; it
+        # is not safe evidence that the remote Home integration is unlinked.
+        has_gateway_footprint = any(
+            (
+                (state.get("cloud_gateway_url") or "").strip(),
+                (state.get("catalog_write_key") or "").strip(),
+                int(state.get("version") or 0) > 0,
+                state.get("last_catalog_upload") not in (None, "", "idle", "not_configured"),
+                state.get("last_push_status") not in (None, "", "idle", "not_configured"),
+                bool(state.get("last_error")),
+            )
+        )
+        if not has_gateway_footprint:
             return "first_time_installation"
+        if not (state.get("cloud_gateway_url") or "").strip():
+            return "existing_installation_recovery"
         if state.get("last_push_status") == "failed" or state.get("last_error"):
             return "existing_installation_recovery"
         return "application_upgrade"

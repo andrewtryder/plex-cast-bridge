@@ -18,6 +18,10 @@ DOCUMENT = "oauth_refresh_state"
 OPAQUE_PREFIX = "pcb1."
 
 
+class RefreshTokenConflict(RuntimeError):
+    """An authorization-code retry no longer matches the active exchange."""
+
+
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -60,6 +64,26 @@ class MemoryRefreshTokenStore:
         self.activate(token, "opaque-v1")
         return token
 
+    def issue_for_code(
+        self, token: str, code_jti: str, exchange_order: int, *, allow_replace: bool
+    ) -> None:
+        active_jti = self.state.get("exchange_jti")
+        if active_jti == code_jti:
+            if self.is_active(token, "opaque-v1"):
+                return
+            raise RefreshTokenConflict("Authorization exchange token is no longer active")
+        active_order = self.state.get("exchange_order", self.state.get("exchange_issued_at_us"))
+        if active_order is not None and exchange_order <= int(active_order):
+            raise RefreshTokenConflict("Authorization code predates the active exchange")
+        if active_jti and not allow_replace:
+            raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
+        self.activate(token, "opaque-v1")
+        self.state["exchange_jti"] = code_jti
+        self.state["exchange_order"] = exchange_order
+        # Older overlapping revisions compare this field; preserve compatibility
+        # by storing the monotonic order in its legacy timestamp slot as well.
+        self.state["exchange_issued_at_us"] = exchange_order
+
     def revoke_current(self) -> None:
         if self.state:
             self.state["revoked_at"] = datetime.now(UTC).isoformat()
@@ -71,6 +95,7 @@ class FirestoreRefreshTokenStore:
     def __init__(self, client: Any):
         if client is None:
             raise RuntimeError("Firestore is required for durable OAuth refresh tokens")
+        self._client = client
         self._document = client.collection(COLLECTION).document(DOCUMENT)
 
     @staticmethod
@@ -119,6 +144,45 @@ class FirestoreRefreshTokenStore:
         token = OPAQUE_PREFIX + secrets.token_urlsafe(48)
         self.activate(token, "opaque-v1")
         return token
+
+    def issue_for_code(
+        self, token: str, code_jti: str, exchange_order: int, *, allow_replace: bool
+    ) -> None:
+        from google.cloud import firestore
+
+        token_hash = _token_hash(token)
+
+        @firestore.transactional
+        def apply(transaction):
+            snapshot = self._document.get(transaction=transaction)
+            state = snapshot.to_dict() if snapshot.exists else {}
+            active_jti = state.get("exchange_jti")
+            if active_jti == code_jti:
+                if (
+                    state.get("token_hash") == token_hash
+                    and state.get("token_format") == "opaque-v1"
+                    and not state.get("revoked_at")
+                ):
+                    return
+                raise RefreshTokenConflict("Authorization exchange token is no longer active")
+            active_order = state.get("exchange_order", state.get("exchange_issued_at_us"))
+            if active_order is not None and exchange_order <= int(active_order):
+                raise RefreshTokenConflict("Authorization code predates the active exchange")
+            if active_jti and not allow_replace:
+                raise RefreshTokenConflict("Authorization code was superseded by a newer exchange")
+            transaction.set(self._document, {
+                "token_hash": token_hash,
+                "token_format": "opaque-v1",
+                "created_at": self._now(),
+                "revoked_at": None,
+                "exchange_jti": code_jti,
+                "exchange_order": exchange_order,
+                # Older overlapping revisions compare this field; preserve
+                # compatibility while traffic is moved to the new revision.
+                "exchange_issued_at_us": exchange_order,
+            })
+
+        apply(self._client.transaction())
 
     def revoke_current(self) -> None:
         snapshot = self._document.get()
