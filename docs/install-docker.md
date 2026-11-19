@@ -85,14 +85,14 @@ Plex Cast Bridge is fully compatible with Portainer. You can deploy it either as
 2. Select **Repository**.
 3. Set **Repository URL**: `https://github.com/andrewtryder/plex-cast-bridge.git`
 4. Set **Repository reference**: `refs/heads/main` (or a release tag)
-5. Set **Compose path**: `deploy/docker-compose.yml`
-6. In **Environment variables**, set:
-   - `PCB_DATA_DIR`: a stable host path, e.g. `/opt/plex-cast-bridge/data` or `/var/lib/plex-cast-bridge/data`
-   - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `GEMINI_API_KEY`, etc.
+5. Set **Compose path**: `deploy/docker-compose.portainer.yml`
+6. In **Environment variables**, define:
+   - `PCB_DATA_DIR`: **(Required)** a stable host path, e.g. `/opt/plex-cast-bridge/data` or `/var/lib/plex-cast-bridge/data`
+   - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `PLEX_MUSIC_SECTION`, `GEMINI_API_KEY`, etc.
 
 > [!IMPORTANT]
 > **Why `PCB_DATA_DIR` is required for Portainer Git Stacks:**
-> Portainer clones Git repositories into an internal ephemeral directory (`/data/compose/<id>/`). If persistent storage defaults to relative paths within the checkout, redeploying the stack, pulling a newer commit, or modifying stack settings can wipe or detach the checkout directory. Setting `PCB_DATA_DIR` to a stable host path ensures your Plex authentication, speaker IDs, Google Home sync state, settings, and saved mixes remain safe and persistent across stack redeployments.
+> Portainer clones Git repositories into an internal ephemeral directory (`/data/compose/<id>/`). If persistent storage defaults to relative paths within the checkout, redeploying the stack, pulling a newer commit, or modifying stack settings will wipe or detach the checkout directory. The supported `deploy/docker-compose.portainer.yml` template explicitly requires `PCB_DATA_DIR` and refuses to deploy without a stable host path, ensuring your Plex authentication, speaker IDs, Google Home sync state, settings, and saved mixes remain safe and persistent across stack redeployments.
 
 Make sure the host data directory exists and is accessible before deploying:
 ```bash

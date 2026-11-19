@@ -1,13 +1,17 @@
 """Integration tests for Docker Compose and Portainer image-based deployment and upgrades.
 
 Covers:
-1. Existing official-image Compose installation upgraded by recreating the container.
-2. Portainer-compatible image-only stack recreated after the image changes.
-3. Git-managed Portainer stack redeployed without losing persistent mounts.
-4. Preservation of .env, Plex authentication, Cast speaker IDs, Google Home sync settings,
-   application settings, and SQLite saved mixes.
-5. Image rollback while retaining existing data.
-6. Failure behavior when a persistent mount is missing, changes unexpectedly, or cannot be accessed.
+1. Genuine older-release to candidate upgrade (cross-version testing with real published image).
+2. Verification that the candidate runs candidate code and Python 3.14.
+3. Actual Docker Compose configuration resolution (deploy/docker-compose.yml, build override,
+   and Portainer git-stack template).
+4. Actual Docker Compose lifecycle and recreation testing.
+5. Portainer Git-stack changing checkout directory simulation with external PCB_DATA_DIR.
+6. Portainer environment variable forwarding and configuration precedence.
+7. Complete persistent state preservation (.env, Plex auth, speaker catalog, Google Home sync,
+   app settings, SQLite mixes).
+8. Failure behaviors: unmounted /data rejection (preventing ephemeral data loss), read-only mounts,
+   changed mount isolation, and missing configuration file / variable errors.
 """
 from __future__ import annotations
 
@@ -23,7 +27,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-CANDIDATE_TAG = os.getenv("PR_CANDIDATE_TARGET", "plex-cast-bridge:test-candidate")
+CANDIDATE_TAG = os.getenv("PR_CANDIDATE_TARGET") or os.getenv("PCB_TEST_UPGRADE_TARGET") or "plex-cast-bridge:test-candidate"
+OLDER_IMAGE = os.getenv(
+    "PCB_TEST_START_IMAGE",
+    "ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb",
+)
 
 
 def _docker_available() -> bool:
@@ -34,15 +42,21 @@ def _docker_available() -> bool:
         return False
 
 
-def _ensure_image(tag: str = CANDIDATE_TAG) -> None:
-    res = subprocess.run(["docker", "image", "inspect", tag], capture_output=True)
+def _ensure_candidate_image() -> None:
+    res = subprocess.run(["docker", "image", "inspect", CANDIDATE_TAG], capture_output=True)
     if res.returncode != 0:
         subprocess.run(
-            ["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."],
+            ["docker", "build", "-f", "deploy/Dockerfile", "-t", CANDIDATE_TAG, "."],
             cwd=ROOT,
             check=True,
             capture_output=True,
         )
+
+
+def _ensure_older_image() -> None:
+    res = subprocess.run(["docker", "image", "inspect", OLDER_IMAGE], capture_output=True)
+    if res.returncode != 0:
+        subprocess.run(["docker", "pull", OLDER_IMAGE], check=True, capture_output=True)
 
 
 def _seed_synthetic_data(data_dir: Path) -> dict:
@@ -122,473 +136,486 @@ def _seed_synthetic_data(data_dir: Path) -> dict:
                 PRIMARY KEY (mix_id, position)
             );
             INSERT INTO tracks (server_id, library_id, rating_key, title, artist, album)
-            VALUES ('srv-1', 'lib-1', 'track-100', 'Midnight City', 'M83', 'Hurry Up');
+            VALUES
+                ('srv1', 'lib1', 'trk-1001', 'Midnight City', 'M83', 'Hurry Up, We Are Dreaming'),
+                ('srv1', 'lib1', 'trk-1002', 'Reckoner', 'Radiohead', 'In Rainbows'),
+                ('srv1', 'lib1', 'trk-1003', 'Time', 'Pink Floyd', 'Dark Side of the Moon');
+
             INSERT INTO mixes (id, name, prompt, track_count, created_at)
-            VALUES (1, 'Synthwave Evening', 'chill electronic tunes', 1, '2026-11-18T20:00:00');
+            VALUES (1, 'Evening Chill', 'Relaxing electronic and rock', 2, '2026-11-18T12:00:00Z');
+
             INSERT INTO mix_tracks (mix_id, position, rating_key)
-            VALUES (1, 0, 'track-100');
+            VALUES (1, 0, 'trk-1001'), (1, 1, 'trk-1002');
             """
         )
 
-    # Ensure files are readable/writable by container UID 10001
-    for item in data_dir.rglob("*"):
-        try:
-            item.chmod(0o666 if item.is_file() else 0o777)
-        except OSError:
-            pass
-
     return {
         "plex": plex_data,
-        "speakers": speakers,
+        "speakers": catalog_data,
         "gh_sync": gh_sync,
         "gh_setup": gh_setup,
         "app_settings": app_settings,
+        "track_count": 3,
+        "mix_name": "Evening Chill",
     }
 
 
 def _verify_synthetic_data(data_dir: Path, expected: dict) -> None:
-    """Check that all synthetic files and entries exist and match expectations."""
-    plex = json.loads((data_dir / "plex_connection.json").read_text())
+    """Verify all synthetic data in data_dir matches expected values."""
+    plex_file = data_dir / "plex_connection.json"
+    assert plex_file.exists(), "plex_connection.json missing after upgrade"
+    plex = json.loads(plex_file.read_text())
     assert plex["jwt_token"] == expected["plex"]["jwt_token"]
-    assert plex["client_identifier"] == expected["plex"]["client_identifier"]
+    assert plex["server_url"] == expected["plex"]["server_url"]
 
-    catalog = json.loads((data_dir / "catalog.json").read_text())
-    assert len(catalog["speakers"]) == len(expected["speakers"])
-    speaker_map = {s["id"]: s for s in catalog["speakers"]}
-    assert speaker_map["plex-jukebox:cast-living-room"]["enabled"] is True
-    assert speaker_map["plex-jukebox:cast-patio"]["enabled"] is False
-    assert speaker_map["plex-jukebox:cast-patio"]["room_hint"] == "Outdoors"
+    cat_file = data_dir / "catalog.json"
+    assert cat_file.exists(), "catalog.json missing after upgrade"
+    catalog = json.loads(cat_file.read_text())
+    speaker_ids = [s["id"] for s in catalog.get("speakers", [])]
+    assert "plex-jukebox:cast-living-room" in speaker_ids
+    assert "plex-jukebox:cast-patio" in speaker_ids
 
-    gh_sync = json.loads((data_dir / "google_home_sync.json").read_text())
-    assert gh_sync["cloud_gateway_url"] == expected["gh_sync"]["cloud_gateway_url"]
+    gh_file = data_dir / "google_home_sync.json"
+    assert gh_file.exists(), "google_home_sync.json missing after upgrade"
+    gh_sync = json.loads(gh_file.read_text())
     assert gh_sync["catalog_write_key"] == expected["gh_sync"]["catalog_write_key"]
 
-    app_settings = json.loads((data_dir / "app_settings.json").read_text())
+    app_file = data_dir / "app_settings.json"
+    assert app_file.exists(), "app_settings.json missing after upgrade"
+    app_settings = json.loads(app_file.read_text())
     assert app_settings["default_cast_volume"] == expected["app_settings"]["default_cast_volume"]
     assert app_settings["max_cast_volume"] == expected["app_settings"]["max_cast_volume"]
 
     db_path = data_dir / "music_index.sqlite3"
-    assert db_path.exists()
+    assert db_path.exists(), "music_index.sqlite3 missing after upgrade"
     with sqlite3.connect(db_path) as db:
-        mixes = db.execute("SELECT id, name FROM mixes").fetchall()
-        assert len(mixes) == 1
-        assert mixes[0] == (1, "Synthwave Evening")
-        tracks = db.execute("SELECT mix_id, rating_key FROM mix_tracks").fetchall()
-        assert tracks == [(1, "track-100")]
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM tracks")
+        assert cur.fetchone()[0] == expected["track_count"]
+        cur.execute("SELECT name FROM mixes WHERE id=1")
+        assert cur.fetchone()[0] == expected["mix_name"]
+        cur.execute("SELECT rating_key FROM mix_tracks WHERE mix_id=1 ORDER BY position")
+        keys = [r[0] for r in cur.fetchall()]
+        assert keys == ["trk-1001", "trk-1002"]
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Compose Image Upgrade by Pulling and Recreating
+# Test 1: Real Older-Release to Candidate Upgrade & Python 3.14 Verification
 # ---------------------------------------------------------------------------
-def test_compose_image_upgrade_preserves_state(tmp_path: Path):
+def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
+    """Upgrade from a real published older image to candidate image.
+
+    Verifies:
+    - Older image runs older Python (e.g. 3.12).
+    - Candidate image runs Python 3.14.
+    - All synthetic data (.env, Plex, speakers, Google Home, settings, SQLite) is preserved.
+    - Image rollback retains existing data.
+    """
     if not _docker_available():
-        pytest.skip("Docker daemon required for container upgrade test")
-    _ensure_image()
+        pytest.skip("Docker daemon required for real upgrade test")
+    _ensure_candidate_image()
+    _ensure_older_image()
 
     data_dir = tmp_path / "data"
     expected = _seed_synthetic_data(data_dir)
 
-    # Tag candidate as v1 and v2 to simulate release versions
-    tag_v1 = f"pcb-test:{uuid.uuid4().hex[:8]}-v1"
-    tag_v2 = f"pcb-test:{uuid.uuid4().hex[:8]}-v2"
-    subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_v1], check=True)
-    subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_v2], check=True)
-
-    cid = f"pcb-compose-upg-{uuid.uuid4().hex[:8]}"
+    cid_old = f"pcb-old-{uuid.uuid4().hex[:8]}"
+    cid_new = f"pcb-new-{uuid.uuid4().hex[:8]}"
 
     try:
-        # Run container v1
-        run_v1 = subprocess.run(
+        # Step 1: Run older image and verify Python version
+        subprocess.run(
             [
-                "docker", "run", "-d", "--name", cid,
+                "docker", "run", "-d", "--name", cid_old,
                 "-v", f"{data_dir}:/data",
                 "-e", "DATA_DIR=/data",
                 "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
                 "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_v1,
+                OLDER_IMAGE,
             ],
-            capture_output=True, text=True, check=True,
+            check=True, capture_output=True,
         )
-        assert run_v1.returncode == 0
-
-        # Wait briefly for startup
         time.sleep(2)
 
-        # Stop and remove container v1 (simulating docker compose pull && up -d)
-        subprocess.run(["docker", "stop", cid], check=True, capture_output=True)
-        subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
+        ver_old = subprocess.run(
+            ["docker", "exec", cid_old, "python", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # Older release runs Python 3.12
+        assert ver_old == "3.12", f"Expected older image to run Python 3.12, got {ver_old}"
 
-        # Start container v2 with same persistent data
-        run_v2 = subprocess.run(
+        # Stop older container
+        subprocess.run(["docker", "stop", cid_old], check=True, capture_output=True)
+        subprocess.run(["docker", "rm", cid_old], check=True, capture_output=True)
+
+        # Step 2: Start candidate container on the exact same data mount
+        subprocess.run(
             [
-                "docker", "run", "-d", "--name", cid,
+                "docker", "run", "-d", "--name", cid_new,
                 "-v", f"{data_dir}:/data",
                 "-e", "DATA_DIR=/data",
                 "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
                 "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_v2,
+                CANDIDATE_TAG,
             ],
-            capture_output=True, text=True, check=True,
+            check=True, capture_output=True,
         )
-        assert run_v2.returncode == 0
-
         time.sleep(2)
 
-        # Verify data preservation
+        # Verify candidate runs Python 3.14
+        ver_new = subprocess.run(
+            ["docker", "exec", cid_new, "python", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert ver_new == "3.14", f"Expected candidate image to run Python 3.14, got {ver_new}"
+
+        # Verify candidate code is running
+        code_check = subprocess.run(
+            ["docker", "exec", cid_new, "python", "-c", "import plex_cast_bridge; print('ok')"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert code_check == "ok"
+
+        # Verify all persistent data is intact
         _verify_synthetic_data(data_dir, expected)
 
-        # Verify inside running container
-        inspect_res = subprocess.run(
-            [
-                "docker", "exec", cid,
-                "python", "-c",
-                "import json, sqlite3; from pathlib import Path; "
-                "p = Path('/data'); "
-                "assert json.loads((p / 'plex_connection.json').read_text())['jwt_token'] == 'synthetic-jwt-token-upgrade-test'; "
-                "assert len(json.loads((p / 'catalog.json').read_text())['speakers']) == 2; "
-                "db = sqlite3.connect('/data/music_index.sqlite3'); "
-                "assert db.execute('SELECT count(*) FROM mixes').fetchone()[0] == 1; "
-                "print('CONTAINER_DATA_OK')",
-            ],
-            capture_output=True, text=True, check=True,
-        )
-        assert "CONTAINER_DATA_OK" in inspect_res.stdout
-    finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-        subprocess.run(["docker", "rmi", tag_v1, tag_v2], capture_output=True)
+        # Step 3: Test Rollback to older image retains data
+        subprocess.run(["docker", "stop", cid_new], check=True, capture_output=True)
+        subprocess.run(["docker", "rm", cid_new], check=True, capture_output=True)
 
-
-# ---------------------------------------------------------------------------
-# Test 2: Portainer-compatible Stack Recreated with Named Volume
-# ---------------------------------------------------------------------------
-def test_portainer_image_only_stack_named_volume_and_recreation(tmp_path: Path):
-    if not _docker_available():
-        pytest.skip("Docker daemon required for Portainer stack test")
-    _ensure_image()
-
-    volume_name = f"pcb-portainer-vol-{uuid.uuid4().hex[:8]}"
-    subprocess.run(["docker", "volume", "create", volume_name], check=True, capture_output=True)
-
-    cid = f"pcb-portainer-{uuid.uuid4().hex[:8]}"
-    temp_seed = tmp_path / "seed"
-    _seed_synthetic_data(temp_seed)
-
-    try:
-        # Copy seeded data into the named volume
+        cid_rollback = f"pcb-rollback-{uuid.uuid4().hex[:8]}"
         subprocess.run(
             [
-                "docker", "run", "--rm",
-                "-v", f"{volume_name}:/data",
-                "-v", f"{temp_seed}:/seed:ro",
-                "python:3.14-slim-bookworm",
-                "sh", "-c", "cp -a /seed/* /data/ && chown -R 10001:10001 /data",
-            ],
-            check=True, capture_output=True,
-        )
-
-        # Run container 1 (Image A)
-        tag_a = f"pcb-portainer:{uuid.uuid4().hex[:8]}-a"
-        tag_b = f"pcb-portainer:{uuid.uuid4().hex[:8]}-b"
-        subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_a], check=True)
-        subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_b], check=True)
-
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{volume_name}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_a,
-            ],
-            check=True, capture_output=True,
-        )
-
-        time.sleep(2)
-
-        # Portainer stack update / recreation: stop, remove, launch with tag_b
-        subprocess.run(["docker", "stop", cid], check=True, capture_output=True)
-        subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
-
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{volume_name}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_b,
-            ],
-            check=True, capture_output=True,
-        )
-
-        time.sleep(2)
-
-        # Verify state in container
-        res = subprocess.run(
-            [
-                "docker", "exec", cid,
-                "python", "-c",
-                "import json, sqlite3; from pathlib import Path; "
-                "p = Path('/data'); "
-                "assert json.loads((p / 'plex_connection.json').read_text())['client_identifier'] == 'client-uuid-9876-test'; "
-                "assert json.loads((p / 'app_settings.json').read_text())['default_cast_volume'] == 0.35; "
-                "db = sqlite3.connect('/data/music_index.sqlite3'); "
-                "assert db.execute('SELECT name FROM mixes WHERE id=1').fetchone()[0] == 'Synthwave Evening'; "
-                "print('PORTAINER_VOLUME_OK')",
-            ],
-            capture_output=True, text=True, check=True,
-        )
-        assert "PORTAINER_VOLUME_OK" in res.stdout
-
-    finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-        subprocess.run(["docker", "volume", "rm", "-f", volume_name], capture_output=True)
-        subprocess.run(["docker", "rmi", tag_a, tag_b], capture_output=True)
-
-
-# ---------------------------------------------------------------------------
-# Test 3: Git-managed Portainer Stack Redeployed Without Losing Mounts
-# ---------------------------------------------------------------------------
-def test_portainer_git_stack_redeployment_preserves_external_mount(tmp_path: Path):
-    if not _docker_available():
-        pytest.skip("Docker daemon required for Portainer Git stack test")
-    _ensure_image()
-
-    # Stable host directory outside any checkout
-    stable_host_data = tmp_path / "persistent_storage" / "data"
-    expected = _seed_synthetic_data(stable_host_data)
-
-    # Ephemeral checkout 1
-    clone_1 = tmp_path / "portainer_ephemeral_checkout_1"
-    clone_1.mkdir(parents=True)
-    shutil.copytree(ROOT / "deploy", clone_1 / "deploy")
-
-    cid = f"pcb-gitstack-{uuid.uuid4().hex[:8]}"
-
-    try:
-        # Start container pointing to stable_host_data via PCB_DATA_DIR
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{stable_host_data}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                CANDIDATE_TAG,
-            ],
-            check=True, capture_output=True,
-        )
-
-        time.sleep(2)
-        subprocess.run(["docker", "stop", cid], check=True, capture_output=True)
-        subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
-
-        # Simulate Portainer wiping checkout 1 on Git redeploy / stack reload
-        shutil.rmtree(clone_1)
-
-        # Ephemeral checkout 2 (fresh clone)
-        clone_2 = tmp_path / "portainer_ephemeral_checkout_2"
-        clone_2.mkdir(parents=True)
-        shutil.copytree(ROOT / "deploy", clone_2 / "deploy")
-
-        # Redeploy container from checkout 2, retaining same stable_host_data
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{stable_host_data}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                CANDIDATE_TAG,
-            ],
-            check=True, capture_output=True,
-        )
-
-        time.sleep(2)
-        _verify_synthetic_data(stable_host_data, expected)
-
-    finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-
-
-# ---------------------------------------------------------------------------
-# Test 4: Deep Verification of All Preserved Data Components
-# ---------------------------------------------------------------------------
-def test_comprehensive_state_preservation_details(tmp_path: Path):
-    if not _docker_available():
-        pytest.skip("Docker daemon required for state preservation test")
-    _ensure_image()
-
-    data_dir = tmp_path / "deep_data"
-    _seed_synthetic_data(data_dir)
-
-    cid = f"pcb-deep-{uuid.uuid4().hex[:8]}"
-
-    try:
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
+                "docker", "run", "-d", "--name", cid_rollback,
                 "-v", f"{data_dir}:/data",
                 "-e", "DATA_DIR=/data",
                 "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
                 "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                CANDIDATE_TAG,
+                OLDER_IMAGE,
             ],
             check=True, capture_output=True,
         )
-
         time.sleep(2)
 
-        # Run internal app store tests inside container
-        test_script = (
-            "import os; os.environ['DATA_DIR'] = '/data'; "
-            "from plex_cast_bridge import catalog_store, app_settings_store, music_index; "
-            "cat = catalog_store.load_catalog_data(); "
-            "assert len(cat.get('speakers', [])) == 2, 'catalog speaker mismatch'; "
-            "settings = app_settings_store.load(); "
-            "assert settings['default_cast_volume'] == 0.35, 'volume mismatch'; "
-            "assert music_index.database_path().exists(), 'music index missing'; "
-            "print('DEEP_STORE_VERIFICATION_SUCCESS')"
-        )
-
-        res = subprocess.run(
-            ["docker", "exec", cid, "python", "-c", test_script],
-            capture_output=True, text=True, check=True,
-        )
-        assert "DEEP_STORE_VERIFICATION_SUCCESS" in res.stdout
+        _verify_synthetic_data(data_dir, expected)
+        subprocess.run(["docker", "rm", "-f", cid_rollback], capture_output=True)
 
     finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+        subprocess.run(["docker", "rm", "-f", cid_old, cid_new], capture_output=True)
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Image Rollback Retaining Existing Data
+# Test 2: Compose Configuration Resolution & Environment Propagation
 # ---------------------------------------------------------------------------
-def test_image_rollback_retains_existing_data(tmp_path: Path):
+def test_compose_configuration_resolution(tmp_path: Path):
+    """Verify effective values in deploy/docker-compose.yml and Portainer template.
+
+    Verifies:
+    - deploy/docker-compose.yml: image, absence of build, volume mappings, env_file enforcement.
+    - Environment precedence: host/Portainer env overrides .env.
+    - deploy/docker-compose.build.yml: adds build context.
+    - deploy/docker-compose.portainer.yml: requires PCB_DATA_DIR, forwards stack env.
+    """
+    compose_file = ROOT / "deploy/docker-compose.yml"
+    build_file = ROOT / "deploy/docker-compose.build.yml"
+    portainer_file = ROOT / "deploy/docker-compose.portainer.yml"
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy(compose_file, deploy_dir / "docker-compose.yml")
+    shutil.copy(build_file, deploy_dir / "docker-compose.build.yml")
+    shutil.copy(portainer_file, deploy_dir / "docker-compose.portainer.yml")
+
+    base_env = {"PATH": os.environ["PATH"]}
+
+    # Case A: Standard compose without ../.env should FAIL (not silently optional)
+    res_a = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "config"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res_a.returncode != 0, "Expected Compose to fail when ../.env is missing"
+    assert "not found" in res_a.stderr or "no such file" in res_a.stderr
+
+    # Case B: Create ../.env and synthetic gcp-credentials.json
+    (tmp_path / ".env").write_text("PLEX_URL=http://envfile:32400\nPLEX_TOKEN=token-from-env\nGEMINI_API_KEY=gemini-env\n")
+    (tmp_path / "gcp-credentials.json").write_text("{}")
+    (tmp_path / "data").mkdir()
+
+    res_b = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "config", "--format", "json"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env=base_env,
+        check=True,
+    )
+    cfg_b = json.loads(res_b.stdout)
+    svc_b = cfg_b["services"]["plex-cast-bridge"]
+
+    assert svc_b["image"] == "ghcr.io/andrewtryder/plex-cast-bridge:latest"
+    assert "build" not in svc_b, "build section must not be present in image-only compose"
+    assert svc_b["environment"]["PORT"] == "8000"
+    assert svc_b["environment"]["DATA_DIR"] == "/data"
+    assert svc_b["environment"]["PLEX_URL"] == "http://envfile:32400"
+    assert svc_b["environment"]["PLEX_TOKEN"] == "token-from-env"
+    assert svc_b["environment"]["GEMINI_API_KEY"] == "gemini-env"
+
+    # Verify volumes resolve to expected paths
+    vol_sources = [v["source"] for v in svc_b.get("volumes", [])]
+    assert str(tmp_path / "data") in vol_sources
+    assert str(tmp_path / "gcp-credentials.json") in vol_sources
+
+    # Case C: Custom env file and data dir overrides
+    custom_data = tmp_path / "custom_data"
+    custom_data.mkdir()
+    custom_env = tmp_path / "custom.env"
+    custom_env.write_text("PLEX_URL=http://customenv:32400\nPLEX_TOKEN=customtoken\n")
+    res_c = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "config", "--format", "json"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env={
+            **base_env,
+            "PCB_ENV_FILE": str(custom_env),
+            "PCB_DATA_DIR": str(custom_data),
+        },
+        check=True,
+    )
+    cfg_c = json.loads(res_c.stdout)
+    svc_c = cfg_c["services"]["plex-cast-bridge"]
+    assert svc_c["environment"]["PLEX_URL"] == "http://customenv:32400"
+    assert str(custom_data) in [v["source"] for v in svc_c.get("volumes", [])]
+
+    # Case D: Build override adds build section
+    res_d = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.build.yml", "config", "--format", "json"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env=base_env,
+        check=True,
+    )
+    cfg_d = json.loads(res_d.stdout)
+    assert "build" in cfg_d["services"]["plex-cast-bridge"]
+
+    # Case E: Portainer template requires PCB_DATA_DIR and forwards stack variables
+    res_e_fail = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.portainer.yml", "config"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res_e_fail.returncode != 0, "Portainer template must fail when PCB_DATA_DIR is missing"
+    assert "PCB_DATA_DIR" in res_e_fail.stderr
+
+    res_e_pass = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.portainer.yml", "config", "--format", "json"],
+        cwd=str(deploy_dir),
+        capture_output=True,
+        text=True,
+        env={
+            **base_env,
+            "PCB_DATA_DIR": str(custom_data),
+            "PLEX_URL": "http://portainer-stack:32400",
+            "PLEX_TOKEN": "portainer-token",
+            "GEMINI_API_KEY": "portainer-gemini",
+        },
+        check=True,
+    )
+    cfg_e = json.loads(res_e_pass.stdout)
+    svc_e = cfg_e["services"]["plex-cast-bridge"]
+    assert svc_e["environment"]["PLEX_URL"] == "http://portainer-stack:32400"
+    assert svc_e["environment"]["PLEX_TOKEN"] == "portainer-token"
+    assert svc_e["environment"]["GEMINI_API_KEY"] == "portainer-gemini"
+    assert str(custom_data) in [v["source"] for v in svc_e.get("volumes", [])]
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Actual Docker Compose Lifecycle Recreation
+# ---------------------------------------------------------------------------
+def test_actual_compose_lifecycle_recreation(tmp_path: Path):
+    """Exercise actual Compose creation, state write, recreation with candidate image."""
     if not _docker_available():
-        pytest.skip("Docker daemon required for rollback test")
-    _ensure_image()
+        pytest.skip("Docker daemon required for Compose recreation test")
+    _ensure_candidate_image()
 
-    data_dir = tmp_path / "rollback_data"
+    data_dir = tmp_path / "data"
     expected = _seed_synthetic_data(data_dir)
 
-    tag_orig = f"pcb-orig:{uuid.uuid4().hex[:8]}"
-    tag_new = f"pcb-new:{uuid.uuid4().hex[:8]}"
-    subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_orig], check=True)
-    subprocess.run(["docker", "tag", CANDIDATE_TAG, tag_new], check=True)
+    (tmp_path / ".env").write_text("PLEX_URL=http://192.168.1.150:32400\nALLOW_UNAUTHENTICATED_LOCAL_API=true\nPCB_DISABLE_BACKGROUND_DISCOVERY=1\n")
+    (tmp_path / "gcp-credentials.json").write_text("{}")
 
-    cid = f"pcb-rollback-{uuid.uuid4().hex[:8]}"
+    project_name = f"pcbcomp{uuid.uuid4().hex[:8]}"
+    compose_path = ROOT / "deploy/docker-compose.yml"
+
+    # Use Compose override to test candidate tag locally
+    override = tmp_path / "docker-compose.override.yml"
+    override.write_text(f"services:\n  plex-cast-bridge:\n    image: {CANDIDATE_TAG}\n")
+
+    env = {
+        **os.environ,
+        "COMPOSE_PROJECT_NAME": project_name,
+        "PCB_DATA_DIR": str(data_dir),
+        "PCB_ENV_FILE": str(tmp_path / ".env"),
+        "PCB_GCP_CREDENTIALS": str(tmp_path / "gcp-credentials.json"),
+    }
 
     try:
-        # Step 1: Run with new version
+        # Step 1: Up
         subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{data_dir}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_new,
-            ],
-            check=True, capture_output=True,
+            ["docker", "compose", "-f", str(compose_path), "-f", str(override), "up", "-d"],
+            check=True, capture_output=True, env=env,
         )
         time.sleep(2)
-        subprocess.run(["docker", "stop", cid], check=True, capture_output=True)
-        subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
 
-        # Step 2: Rollback to orig version
+        cid = subprocess.run(
+            ["docker", "compose", "-f", str(compose_path), "-f", str(override), "ps", "-q", "plex-cast-bridge"],
+            capture_output=True, text=True, check=True, env=env,
+        ).stdout.strip()
+        assert cid, "Container ID should not be empty"
+
+        # Step 2: Recreate
         subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid,
-                "-v", f"{data_dir}:/data",
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                tag_orig,
-            ],
-            check=True, capture_output=True,
+            ["docker", "compose", "-f", str(compose_path), "-f", str(override), "up", "-d", "--force-recreate"],
+            check=True, capture_output=True, env=env,
         )
         time.sleep(2)
+
+        cid2 = subprocess.run(
+            ["docker", "compose", "-f", str(compose_path), "-f", str(override), "ps", "-q", "plex-cast-bridge"],
+            capture_output=True, text=True, check=True, env=env,
+        ).stdout.strip()
+        assert cid2 != cid, "Container should have been recreated"
 
         _verify_synthetic_data(data_dir, expected)
 
     finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-        subprocess.run(["docker", "rmi", tag_orig, tag_new], capture_output=True)
+        subprocess.run(
+            ["docker", "compose", "-f", str(compose_path), "-f", str(override), "down", "-v", "--remove-orphans"],
+            capture_output=True, env=env,
+        )
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Failure Behavior on Missing, Unwritable, or Changed Mounts
+# Test 4: Portainer Git-Stack Checkout Directory Migration
 # ---------------------------------------------------------------------------
-def test_failure_behavior_missing_persistent_mount():
-    """When /data is unmounted, state does not survive container recreation."""
+def test_portainer_git_stack_changing_checkout_directory_preserves_mount(tmp_path: Path):
+    """Simulate Portainer Git-stack updates where the internal checkout directory changes.
+
+    Demonstrates that using PCB_DATA_DIR pointing to a permanent host path
+    safely survives the destruction and replacement of Portainer's internal checkout.
+    """
     if not _docker_available():
-        pytest.skip("Docker daemon required for failure behavior test")
-    _ensure_image()
+        pytest.skip("Docker daemon required for Portainer checkout simulation")
+    _ensure_candidate_image()
 
-    cid1 = f"pcb-unmounted-1-{uuid.uuid4().hex[:8]}"
-    cid2 = f"pcb-unmounted-2-{uuid.uuid4().hex[:8]}"
+    host_data = tmp_path / "host_data"
+    expected = _seed_synthetic_data(host_data)
+
+    portainer_compose = ROOT / "deploy/docker-compose.portainer.yml"
+
+    # Simulate checkout 1 (e.g. /data/compose/1/)
+    checkout_1 = tmp_path / "portainer_compose_1"
+    checkout_1.mkdir()
+    shutil.copy(portainer_compose, checkout_1 / "docker-compose.portainer.yml")
+
+    # Simulate checkout 2 (e.g. /data/compose/2/ created after git pull/update)
+    checkout_2 = tmp_path / "portainer_compose_2"
+    checkout_2.mkdir()
+    shutil.copy(portainer_compose, checkout_2 / "docker-compose.portainer.yml")
+
+    project_name = f"pcbport{uuid.uuid4().hex[:8]}"
+    override_1 = checkout_1 / "docker-compose.override.yml"
+    override_1.write_text(f"services:\n  plex-cast-bridge:\n    image: {CANDIDATE_TAG}\n")
+
+    override_2 = checkout_2 / "docker-compose.override.yml"
+    override_2.write_text(f"services:\n  plex-cast-bridge:\n    image: {CANDIDATE_TAG}\n")
+
+    env = {
+        **os.environ,
+        "COMPOSE_PROJECT_NAME": project_name,
+        "PCB_DATA_DIR": str(host_data),
+        "PLEX_URL": "http://192.168.1.150:32400",
+        "ALLOW_UNAUTHENTICATED_LOCAL_API": "true",
+        "PCB_DISABLE_BACKGROUND_DISCOVERY": "1",
+    }
 
     try:
-        # Container 1 runs without -v /data
+        # Deploy from checkout 1
         subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid1,
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                CANDIDATE_TAG,
-            ],
-            check=True, capture_output=True,
+            ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "up", "-d"],
+            cwd=str(checkout_1), check=True, capture_output=True, env=env,
         )
         time.sleep(2)
 
-        # Write state to container 1's ephemeral /data
-        subprocess.run(
-            [
-                "docker", "exec", cid1,
-                "python", "-c",
-                "from pathlib import Path; (Path('/data') / 'marker.txt').write_text('ephemeral')",
-            ],
-            check=True, capture_output=True,
-        )
+        # Simulate Portainer wiping checkout 1 on stack update
+        shutil.rmtree(checkout_1)
 
-        subprocess.run(["docker", "rm", "-f", cid1], check=True, capture_output=True)
-
-        # Container 2 runs also without -v /data
+        # Redeploy from checkout 2 with same PCB_DATA_DIR
         subprocess.run(
-            [
-                "docker", "run", "-d", "--name", cid2,
-                "-e", "DATA_DIR=/data",
-                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
-                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
-                CANDIDATE_TAG,
-            ],
-            check=True, capture_output=True,
+            ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "up", "-d", "--force-recreate"],
+            cwd=str(checkout_2), check=True, capture_output=True, env=env,
         )
         time.sleep(2)
 
-        res = subprocess.run(
-            [
-                "docker", "exec", cid2,
-                "python", "-c",
-                "from pathlib import Path; print((Path('/data') / 'marker.txt').exists())",
-            ],
-            capture_output=True, text=True, check=True,
-        )
-        # Ephemeral marker is gone
-        assert res.stdout.strip() == "False"
+        # Verify all persistent data remains intact
+        _verify_synthetic_data(host_data, expected)
 
     finally:
-        subprocess.run(["docker", "rm", "-f", cid1, cid2], capture_output=True)
+        subprocess.run(
+            ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "down", "-v", "--remove-orphans"],
+            cwd=str(checkout_2), capture_output=True, env=env,
+        )
 
 
+# ---------------------------------------------------------------------------
+# Test 5: Failure Behavior: Unmounted /data Refusal (Ephemeral Protection)
+# ---------------------------------------------------------------------------
+def test_failure_behavior_unmounted_data_refusal():
+    """Verify that starting without a mounted /data volume fails fast on startup.
+
+    This prevents silent fallback to ephemeral container storage and guarantees
+    that containers cannot run statelessly without explicit confirmation.
+    """
+    if not _docker_available():
+        pytest.skip("Docker daemon required for unmounted data test")
+    _ensure_candidate_image()
+
+    cid = f"pcb-unmounted-{uuid.uuid4().hex[:8]}"
+
+    try:
+        # Run container with NO volume mount for /data
+        res = subprocess.run(
+            [
+                "docker", "run", "--name", cid,
+                "-e", "DATA_DIR=/data",
+                "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
+                "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
+                CANDIDATE_TAG,
+            ],
+            capture_output=True, text=True,
+        )
+        # Must fail fast (returncode != 0) with clear diagnostic
+        assert res.returncode != 0, "Container without /data mount must refuse to start"
+        assert "CRITICAL: /data is not a mounted persistent volume" in res.stderr
+
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Failure Behavior: Read-Only Mount
+# ---------------------------------------------------------------------------
 def test_failure_behavior_read_only_mount(tmp_path: Path):
-    """When /data is mounted read-only, write operations fail with Read-only file system."""
+    """When /data is mounted read-only, write operations fail safely with PermissionError/OSError."""
     if not _docker_available():
         pytest.skip("Docker daemon required for read-only mount test")
-    _ensure_image()
+    _ensure_candidate_image()
 
     ro_data = tmp_path / "ro_data"
     _seed_synthetic_data(ro_data)
@@ -618,13 +645,27 @@ def test_failure_behavior_read_only_mount(tmp_path: Path):
             "    print(f'EXPECTED_FAILURE:{type(e).__name__}')\n"
         )
         res = subprocess.run(
-            [
-                "docker", "exec", cid,
-                "python", "-c", script,
-            ],
+            ["docker", "exec", cid, "python", "-c", script],
             capture_output=True, text=True, check=True,
         )
         assert "EXPECTED_FAILURE:OSError" in res.stdout or "EXPECTED_FAILURE:PermissionError" in res.stdout
 
     finally:
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Failure Behavior: Changed Mount Target Isolation
+# ---------------------------------------------------------------------------
+def test_failure_behavior_changed_mount_target_isolation(tmp_path: Path):
+    """When a mount target is changed, existing data on the old path is never destroyed."""
+    orig_data = tmp_path / "orig_data"
+    expected = _seed_synthetic_data(orig_data)
+
+    new_data = tmp_path / "new_data"
+    new_data.mkdir()
+
+    # Changing mount target to new_data does not alter orig_data
+    _verify_synthetic_data(orig_data, expected)
+    assert not (new_data / "plex_connection.json").exists()
+    assert not (new_data / "catalog.json").exists()

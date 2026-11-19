@@ -84,6 +84,21 @@ async def _init_plex_flexible(settings: Settings, auth: PlexAuthService):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Refuse to run with ephemeral state if /data is unmounted in container environments
+    from .catalog_store import DATA_DIR
+    if (
+        DATA_DIR == Path("/data")
+        and (Path("/.dockerenv").exists() or os.getenv("DOCKER_CONTAINER") == "1")
+        and not os.path.ismount(DATA_DIR)
+        and os.environ.get("PCB_ALLOW_EPHEMERAL_DATA", "").strip().lower() not in {"1", "true", "yes"}
+    ):
+        raise RuntimeError(
+            "CRITICAL: /data is not a mounted persistent volume. "
+            "Plex Cast Bridge requires a persistent mount for /data to prevent data loss across updates. "
+            "Mount a host directory or named volume (e.g. -v /path/to/data:/data), "
+            "or set PCB_ALLOW_EPHEMERAL_DATA=1 if stateless execution is intended."
+        )
+
     # Skip automatic mDNS / slow Plex retries during pytest TestClient lifespan.
     skip_auto_discovery = os.environ.get("PCB_DISABLE_BACKGROUND_DISCOVERY", "").strip().lower() in {
         "1",

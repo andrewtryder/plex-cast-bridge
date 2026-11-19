@@ -101,6 +101,7 @@ jobs:
         env:
           PCB_TEST_DOCKER_IMAGE: "1"
           PCB_TEST_UPGRADE_E2E: "1"
+          PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
           PCB_TEST_UPGRADE_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:ed8c8d78bc58e704f875e4b9618259009916db498c93587b3d274fed9c719757
           PCB_TEST_FIRST_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:b0db066ed210255039515602dbe3759f697203f42b2b2a39214835dbc2b83422
           PCB_TEST_SQLITE_ONLINE: "1"
