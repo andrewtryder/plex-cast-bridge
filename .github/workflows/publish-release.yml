@@ -1,0 +1,224 @@
+name: Publish Verified Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without a v prefix (for example 0.3.0)
+        required: true
+        type: string
+      ref:
+        description: Reviewed commit or branch to release
+        required: true
+        default: main
+        type: string
+      allow_recovery:
+        description: Safely resume publication if a previous run partially failed (re-verifies existing artifacts)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate requested version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Version must be numeric semver without a v prefix" >&2
+            exit 2
+          }
+
+      - name: Checkout reviewed release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Fetch origin main
+        run: git fetch origin main --tags
+
+      - name: Validate release commit is on main
+        id: revision
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python3 scripts/verify_release_commit.py \
+            --version "$RELEASE_VERSION" \
+            --ref "${{ inputs.ref }}" \
+            --main-ref origin/main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check release tag status
+        id: tag_status
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+          ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release tag $RELEASE_TAG already exists on remote"
+            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            python3 scripts/verify_release_commit.py \
+              --version "${{ inputs.version }}" \
+              --ref "${{ inputs.ref }}" \
+              --verify-tag "$RELEASE_TAG"
+            if [ "$ALLOW_RECOVERY" != "true" ]; then
+              echo "Release tag already exists: $RELEASE_TAG; set allow_recovery to true to resume" >&2
+              exit 1
+            fi
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release tag does not exist yet (clean release or tag required)"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check versioned image status
+        id: image_status
+        env:
+          RELEASE_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+          ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
+        run: |
+          if docker buildx imagetools inspect "$RELEASE_IMAGE" >/dev/null 2>&1; then
+            echo "Versioned image $RELEASE_IMAGE already exists on GHCR"
+            if [ "$ALLOW_RECOVERY" != "true" ]; then
+              echo "Versioned image already exists: $RELEASE_IMAGE; set allow_recovery to true to resume" >&2
+              exit 1
+            fi
+            echo "Verifying existing image artifact for recovery..."
+            OUTPUT=$(python3 scripts/verify_release_artifact.py \
+              --image "$RELEASE_IMAGE" \
+              --expected-version "$RELEASE_VERSION" \
+              --expected-revision "$EXPECTED_SHA")
+            DIGEST=$(echo "$OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['digest'])")
+            echo "Existing image verified with digest $DIGEST"
+            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versioned image does not exist yet (clean release or image build required)"
+            echo "image_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract Docker metadata
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
+
+      - name: Build and push candidate multi-architecture image
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:candidate-${{ inputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify candidate artifact and OCI metadata
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python3 scripts/verify_release_artifact.py \
+            --image "ghcr.io/${GITHUB_REPOSITORY}:candidate-${RELEASE_VERSION}" \
+            --expected-digest "$IMAGE_DIGEST" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-revision "${{ steps.revision.outputs.sha }}"
+
+      - name: Publish verified versioned tags to GHCR
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS+=(--tag "$tag")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create "${TAG_ARGS[@]}" \
+              "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
+          echo "Failed to publish versioned tags after 3 attempts" >&2
+          exit 1
+
+      - name: Create release tag
+        if: ${{ steps.tag_status.outputs.tag_exists != 'true' }}
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          for attempt in 1 2 3; do
+            if git push origin "$RELEASE_TAG"; then
+              break
+            fi
+            echo "Git push attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists"
+          else
+            echo "Creating GitHub release $RELEASE_TAG..."
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
+
+      - name: Promote the verified digest to latest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.image_status.outputs.digest }}
+        run: |
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
+              "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 5s..." >&2
+            sleep 5
+          done
+          echo "Failed to promote digest to latest after 3 attempts" >&2
+          exit 1

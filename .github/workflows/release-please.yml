@@ -18,3 +18,6 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # The dedicated publish workflow validates the image before creating
+          # a tag or public GitHub release.
+          skip-github-release: true
