@@ -12,8 +12,8 @@ on:
         required: true
         default: main
         type: string
-      promote_latest_only:
-        description: Recover a partially failed run by re-verifying and promoting latest for an existing release
+      allow_recovery:
+        description: Safely resume publication if a previous run partially failed (re-verifies existing artifacts)
         required: false
         default: false
         type: boolean
@@ -56,26 +56,30 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check release tag status
+        id: tag_status
         env:
           RELEASE_TAG: v${{ inputs.version }}
-          PROMOTE_LATEST_ONLY: ${{ inputs.promote_latest_only }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+          ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            if [ "$PROMOTE_LATEST_ONLY" != "true" ]; then
-              echo "Release tag already exists: $RELEASE_TAG" >&2
+            echo "Release tag $RELEASE_TAG already exists on remote"
+            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            python3 scripts/verify_release_commit.py \
+              --version "${{ inputs.version }}" \
+              --ref "${{ inputs.ref }}" \
+              --verify-tag "$RELEASE_TAG"
+            if [ "$ALLOW_RECOVERY" != "true" ]; then
+              echo "Release tag already exists: $RELEASE_TAG; set allow_recovery to true to resume" >&2
               exit 1
             fi
-            echo "Release tag exists as expected for promote-latest recovery"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            if [ "$PROMOTE_LATEST_ONLY" = "true" ]; then
-              echo "Release tag does not exist for promote-latest recovery: $RELEASE_TAG" >&2
-              exit 1
-            fi
-            echo "Release tag does not exist yet (clean release)"
+            echo "Release tag does not exist yet (clean release or tag required)"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up QEMU
-        if: ${{ !inputs.promote_latest_only }}
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -89,27 +93,35 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check versioned image status
+        id: image_status
         env:
+          RELEASE_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.version }}
           RELEASE_VERSION: ${{ inputs.version }}
-          PROMOTE_LATEST_ONLY: ${{ inputs.promote_latest_only }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+          ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
         run: |
-          if docker buildx imagetools inspect \
-              "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" >/dev/null 2>&1; then
-            if [ "$PROMOTE_LATEST_ONLY" != "true" ]; then
-              echo "Versioned image already exists: ${RELEASE_VERSION}" >&2
+          if docker buildx imagetools inspect "$RELEASE_IMAGE" >/dev/null 2>&1; then
+            echo "Versioned image $RELEASE_IMAGE already exists on GHCR"
+            if [ "$ALLOW_RECOVERY" != "true" ]; then
+              echo "Versioned image already exists: $RELEASE_IMAGE; set allow_recovery to true to resume" >&2
               exit 1
             fi
-            echo "Versioned image exists as expected for promote-latest recovery"
+            echo "Verifying existing image artifact for recovery..."
+            OUTPUT=$(python3 scripts/verify_release_artifact.py \
+              --image "$RELEASE_IMAGE" \
+              --expected-version "$RELEASE_VERSION" \
+              --expected-revision "$EXPECTED_SHA")
+            DIGEST=$(echo "$OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['digest'])")
+            echo "Existing image verified with digest $DIGEST"
+            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           else
-            if [ "$PROMOTE_LATEST_ONLY" = "true" ]; then
-              echo "Versioned image does not exist for promote-latest recovery: ${RELEASE_VERSION}" >&2
-              exit 1
-            fi
-            echo "Versioned image does not exist yet (clean release)"
+            echo "Versioned image does not exist yet (clean release or image build required)"
+            echo "image_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Extract Docker metadata
-        if: ${{ !inputs.promote_latest_only }}
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -122,7 +134,7 @@ jobs:
             org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
 
       - name: Build and push candidate multi-architecture image
-        if: ${{ !inputs.promote_latest_only }}
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
         id: build
         uses: docker/build-push-action@v7
         with:
@@ -136,7 +148,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify candidate artifact and OCI metadata
-        if: ${{ !inputs.promote_latest_only }}
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -148,7 +160,7 @@ jobs:
             --expected-revision "${{ steps.revision.outputs.sha }}"
 
       - name: Publish verified versioned tags to GHCR
-        if: ${{ !inputs.promote_latest_only }}
+        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -167,10 +179,9 @@ jobs:
           echo "Failed to publish versioned tags after 3 attempts" >&2
           exit 1
 
-      - name: Create the tag and GitHub release
-        if: ${{ !inputs.promote_latest_only }}
+      - name: Create release tag
+        if: ${{ steps.tag_status.outputs.tag_exists != 'true' }}
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ inputs.version }}
         run: |
           git config user.name github-actions[bot]
@@ -183,24 +194,22 @@ jobs:
             echo "Git push attempt $attempt failed; retrying in 5s..." >&2
             sleep 5
           done
-          gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
 
-      - name: Verify existing versioned artifact for promotion
-        if: ${{ inputs.promote_latest_only }}
-        id: recovery_verify
+      - name: Create GitHub release
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ inputs.version }}
         run: |
-          OUTPUT=$(python3 scripts/verify_release_artifact.py \
-            --image "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" \
-            --expected-version "$RELEASE_VERSION" \
-            --expected-revision "${{ steps.revision.outputs.sha }}")
-          DIGEST=$(echo "$OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['digest'])")
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists"
+          else
+            echo "Creating GitHub release $RELEASE_TAG..."
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
 
       - name: Promote the verified digest to latest
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.recovery_verify.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.image_status.outputs.digest }}
         run: |
           for attempt in 1 2 3; do
             if docker buildx imagetools create \

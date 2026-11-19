@@ -28,7 +28,7 @@ Release** from GitHub Actions with the numeric semver version and the reviewed
 commit or `main` ref. The workflow:
 
 1. verifies that the selected revision is merged into `main` and matches the release version;
-2. refuses an existing tag or versioned GHCR image (unless recovering via `promote_latest_only`);
+2. checks whether an existing Git tag or GHCR versioned image already exists (refusing by default unless `allow_recovery` is enabled);
 3. builds and pushes a candidate multi-architecture GHCR image (`candidate-VERSION`);
 4. resolves the immutable digest and requires `linux/amd64` and `linux/arm64` manifests;
 5. requires OCI version and revision labels for both platforms;
@@ -40,14 +40,30 @@ The older Docker workflow is a manual build diagnostic only; it cannot publish
 GHCR tags. Do not restore automatic `main` or tag publishing, because that can
 move `latest` to an unreviewed commit or bypass these checks.
 
-If image build or verification fails, no versioned image, Git tag, or GitHub
-release is created or published. Users never see unverified candidate images,
-and the workflow can be safely retried once the failure is resolved.
+## Partial-publication recovery procedure
 
-If GitHub release creation succeeds but the subsequent `latest` promotion step
-fails, the workflow supports recovery: dispatch **Publish Verified Release**
-with `promote_latest_only` enabled. It re-verifies the published versioned
-image and commit ancestry before updating `latest`.
+If a publication workflow run fails partway through, the release process is fully
+recoverable without risk of releasing unverified code or overwriting unrelated commits:
+
+1. **Candidate image verification failure (before stable tags exist)**:
+   No public image, Git tag, or GitHub release was created. Fix the failure on `main`
+   and dispatch **Publish Verified Release** normally.
+2. **Versioned GHCR image exists but Git tag creation failed**:
+   Dispatch with `allow_recovery: true`. The workflow verifies that the existing GHCR
+   image contains both required platforms, the expected version, and the exact commit
+   revision, skips image rebuild, creates the missing Git tag and GitHub release, and
+   promotes `latest`.
+3. **Git tag exists but GitHub release creation failed**:
+   Dispatch with `allow_recovery: true`. The workflow validates that the existing Git
+   tag resolves to the exact reviewed commit on `main`, verifies the GHCR image, creates
+   the missing GitHub release, and promotes `latest`.
+4. **GitHub release exists but `latest` promotion failed**:
+   Dispatch with `allow_recovery: true`. The workflow re-verifies the Git tag and image
+   integrity, skips release creation, and promotes the verified digest to `latest`.
+5. **Mismatched artifact protection**:
+   If an existing Git tag points to a different commit, or an existing GHCR image has a
+   mismatched OCI revision, version label, or platforms, the workflow **hard fails**
+   and refuses to proceed. It never silently overwrites an existing published release.
 
 ## Historical artifact limitation
 

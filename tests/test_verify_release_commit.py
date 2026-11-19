@@ -12,6 +12,7 @@ from verify_release_commit import (
     validate_commit_ancestry,
     validate_release_commit,
     validate_release_version,
+    verify_release_tag,
 )
 
 
@@ -106,3 +107,35 @@ def test_validate_release_commit_verifies_head_and_expected_ref(tmp_path: Path):
     # When expected ref cannot be resolved
     with pytest.raises(ValueError, match="Unable to resolve git reference"):
         validate_release_commit(tmp_path, "0.3.0", main_ref="main", expected_ref="nonexistent-ref")
+
+
+def test_verify_release_tag_matching_commit(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "file.txt").write_text("v0.3.0 content")
+    commit_sha = _commit(tmp_path, "v0.3.0 commit")
+    subprocess.run(["git", "tag", "-a", "v0.3.0", "-m", "Release v0.3.0"], cwd=tmp_path, check=True, capture_output=True)
+
+    verified = verify_release_tag(tmp_path, "v0.3.0", commit_sha)
+    assert verified == commit_sha
+
+
+def test_verify_release_tag_mismatched_commit(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "file.txt").write_text("first")
+    _commit(tmp_path, "first commit")
+    subprocess.run(["git", "tag", "-a", "v0.3.0", "-m", "Release v0.3.0"], cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "file.txt").write_text("second")
+    commit2 = _commit(tmp_path, "second commit")
+
+    with pytest.raises(ValueError, match="points to commit .*, but expected"):
+        verify_release_tag(tmp_path, "v0.3.0", commit2)
+
+
+def test_verify_release_tag_nonexistent(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "file.txt").write_text("initial")
+    commit_sha = _commit(tmp_path, "initial")
+
+    with pytest.raises(ValueError, match="Unable to resolve git tag"):
+        verify_release_tag(tmp_path, "v0.3.0", commit_sha)

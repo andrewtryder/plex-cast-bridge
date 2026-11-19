@@ -110,11 +110,31 @@ def validate_release_commit(
     return head_sha
 
 
+def verify_release_tag(repo_dir: Path, tag_name: str, expected_sha: str) -> str:
+    for candidate in [f"refs/tags/{tag_name}^{{commit}}", f"{tag_name}^{{commit}}"]:
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", candidate],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            tag_sha = res.stdout.strip()
+            if tag_sha != expected_sha:
+                raise ValueError(
+                    f"Release tag {tag_name!r} points to commit {tag_sha}, but expected {expected_sha}"
+                )
+            return tag_sha
+    raise ValueError(f"Unable to resolve git tag {tag_name!r}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, help="Release version (e.g. 0.3.0)")
     parser.add_argument("--ref", default=None, help="Optional requested git ref to verify against HEAD")
     parser.add_argument("--main-ref", default="origin/main", help="Git reference for main (default: origin/main)")
+    parser.add_argument("--verify-tag", default=None, help="Verify that existing git tag resolves to release commit")
     parser.add_argument("--repo-dir", default=".", help="Path to repository root")
     args = parser.parse_args()
 
@@ -126,6 +146,13 @@ def main() -> None:
             expected_ref=args.ref,
         )
         print(f"Validated release commit {sha} for version {args.version} on {args.main_ref}")
+        if args.verify_tag:
+            verify_release_tag(
+                repo_dir=Path(args.repo_dir).resolve(),
+                tag_name=args.verify_tag,
+                expected_sha=sha,
+            )
+            print(f"Verified release tag {args.verify_tag} points to {sha}")
     except (ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
