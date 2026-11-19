@@ -49,7 +49,9 @@ uv run python scripts/preflight.py --require-docker
 
 Fix any `FAIL` lines before continuing.
 
-## 3. Start the bridge
+## 3. Start the bridge (Docker Compose)
+
+The default `deploy/docker-compose.yml` is an **image-only deployment** configured to pull the verified official GHCR release channel (`ghcr.io/andrewtryder/plex-cast-bridge:latest`) without building local source:
 
 ```bash
 docker compose -f deploy/docker-compose.yml pull
@@ -62,6 +64,113 @@ Host networking is used so Chromecast mDNS discovery works on your LAN.
 If `docker pull` fails with unauthorized / denied, the GHCR package may still be private. Package owners: open
 [plex-cast-bridge package settings](https://github.com/users/andrewtryder/packages/container/plex-cast-bridge/settings),
 set **Visibility → Public**, then retry the pull. A public GitHub repo does **not** automatically make its container package public.
+
+### Developers and forks (building from source)
+
+If you are modifying source code locally or maintaining a fork, include the build override:
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
+```
+
+When building with the override, the image is tagged as `plex-cast-bridge:local` by default to avoid colliding with or accidentally overwriting the official GHCR image (`ghcr.io/andrewtryder/plex-cast-bridge:latest`). Forks can set `PCB_CUSTOM_IMAGE` (e.g. `PCB_CUSTOM_IMAGE=ghcr.io/myfork/plex-cast-bridge:latest`) to customize the resulting image tag.
+
+---
+
+## Alternative: Portainer Deployment
+
+Plex Cast Bridge is fully compatible with Portainer. You can deploy it either as a **Git Repository Stack** or directly through the **Portainer Web Editor**.
+
+### Method A: Portainer Git Repository Stack
+
+1. In Portainer, navigate to **Stacks** → **Add stack**.
+2. Select **Repository**.
+3. Set **Repository URL**: `https://github.com/andrewtryder/plex-cast-bridge.git`
+4. Set **Repository reference**: `refs/heads/main` (or a release tag)
+5. Set **Compose path**: `deploy/docker-compose.portainer.yml`
+6. In **Environment variables**, define:
+   - `PCB_DATA_DIR`: **(Required)** a stable host path, e.g. `/opt/plex-cast-bridge/data` or `/var/lib/plex-cast-bridge/data`
+   - `PCB_REQUIRE_EXISTING_DATA`: Set to `true` when upgrading an existing stack. Fails closed if the data path is empty or points to the wrong directory, preventing accidental data loss from typos.
+   - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `PLEX_MUSIC_SECTION`, `GEMINI_API_KEY`, etc.
+   - (For Google Home voice control):
+     - `ENABLE_PUBSUB_LISTENER=true`
+     - `PCB_GCP_CREDENTIALS=/path/to/gcp-credentials.json`
+     - `GCP_PROJECT_ID=your-project-id`
+     - `GCP_PUBSUB_SUBSCRIPTION_ID=your-subscription-id`
+     - `CLOUD_GATEWAY_URL=https://your-gateway.run.app`
+     - `CATALOG_WRITE_KEY=your-catalog-key`
+
+> [!NOTE]
+> **Dashboard-only vs Google Home installations:**
+> Installations that only use the local web dashboard and Smart DJ do not require Google Cloud credentials. `PCB_GCP_CREDENTIALS` defaults safely to `/dev/null` in `docker-compose.portainer.yml`. If `ENABLE_PUBSUB_LISTENER=true` is enabled, the bridge enforces that `PCB_GCP_CREDENTIALS` points to a real service account key and refuses to start with `/dev/null`.
+   - (Optional) `PLEX_URL`, `PLEX_TOKEN`, `PLEX_MUSIC_SECTION`, `GEMINI_API_KEY`, etc.
+
+> [!IMPORTANT]
+> **Why `PCB_DATA_DIR` is required for Portainer Git Stacks:**
+> Portainer clones Git repositories into an internal ephemeral directory (`/data/compose/<id>/`). If persistent storage defaults to relative paths within the checkout, redeploying the stack, pulling a newer commit, or modifying stack settings will wipe or detach the checkout directory. The supported `deploy/docker-compose.portainer.yml` template explicitly requires `PCB_DATA_DIR` and refuses to deploy without a stable host path, ensuring your Plex authentication, speaker IDs, Google Home sync state, settings, and saved mixes remain safe and persistent across stack redeployments.
+
+Make sure the host data directory exists and is accessible before deploying:
+```bash
+sudo mkdir -p /opt/plex-cast-bridge/data
+sudo chown -R 10001:10001 /opt/plex-cast-bridge/data
+```
+
+7. Click **Deploy the stack**.
+
+### Method B: Portainer Web Editor (Stack or Custom Template)
+
+If you prefer not to connect Portainer to Git, you can paste the stack definition directly into the Portainer Web Editor:
+
+```yaml
+services:
+  plex-cast-bridge:
+    image: ghcr.io/andrewtryder/plex-cast-bridge:latest
+    container_name: plex-cast-bridge
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - PORT=8000
+      - DATA_DIR=/data
+      - PLEX_URL=http://192.168.1.50:32400
+      - PLEX_TOKEN=your-token-if-not-using-web-login
+      - PLEX_MUSIC_SECTION=Music
+    volumes:
+      # Stable persistent host bind mount (recommended for direct file access and simple backups):
+      - /opt/plex-cast-bridge/data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+#### Using Named Volumes in Portainer
+
+If you prefer Docker named volumes over host bind mounts:
+
+```yaml
+services:
+  plex-cast-bridge:
+    image: ghcr.io/andrewtryder/plex-cast-bridge:latest
+    container_name: plex-cast-bridge
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - PORT=8000
+      - DATA_DIR=/data
+    volumes:
+      - plex_cast_bridge_data:/data
+
+volumes:
+  plex_cast_bridge_data:
+    name: plex-cast-bridge-data
+```
+
+> [!WARNING]
+> **Preserve existing storage:**
+> Never change an existing installation from a host bind mount (`./data` or `/opt/...`) to a named volume without copying your existing data first! A new named volume starts completely empty, causing the bridge to start with unlinked defaults. Existing users should keep their existing data mount.
+
+---
 
 ## 4. Open the dashboard
 

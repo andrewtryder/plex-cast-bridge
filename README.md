@@ -25,9 +25,9 @@
 
 ---
 
-## Quick Start (Docker)
+## Quick Start (Docker & Portainer)
 
-The easiest path is the prebuilt multi-arch image (`linux/amd64` + `linux/arm64`):
+The easiest path is the prebuilt multi-arch image (`linux/amd64` + `linux/arm64`) from GHCR:
 
 ```bash
 git clone https://github.com/andrewtryder/plex-cast-bridge.git
@@ -40,9 +40,11 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
+For Portainer users, deploy via Git repository stack using `deploy/docker-compose.yml` or paste the stack directly in Portainer Web Editor. See the **[Docker & Portainer Install Guide](docs/install-docker.md)**.
+
 Open `http://<host>:8000/`, connect Plex, discover speakers, and play. The dashboard and local APIs have no login: anyone who can reach them can control playback and use local administrative actions. Restrict access with a firewall, VPN, or a secured reverse proxy; do not expose the service directly to the public Internet.
 
-Full steps, preflight checks, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
+Full steps, preflight checks, Portainer setup, and troubleshooting: **[docs/install-docker.md](docs/install-docker.md)**
 
 ![Dashboard](docs/setup/screenshots/dashboard.png)
 
@@ -52,7 +54,9 @@ Google Home / Cloud Run voice control is **optional** and documented separately:
 
 ## Upgrading
 
-See [Upgrading Plex Cast Bridge](docs/upgrading.md) for the draft reviewed upgrade and recovery workflow.
+Routine upgrades for Docker Compose, Portainer, and automatic update tools simply pull and recreate the container. All persistent state—including Plex authentication, Cast speaker IDs, Google Home sync state, custom volumes, and saved music mixes—is preserved across image updates.
+
+See **[Upgrading Plex Cast Bridge](docs/upgrading.md)** for upgrade guides, automatic update behavior, rollback procedures, and backup tips.
 
 ## Features
 

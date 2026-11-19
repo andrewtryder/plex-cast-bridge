@@ -145,6 +145,50 @@ def check_pubsub(file_vals: dict[str, str], creds_path: Path) -> bool:
     return ok
 
 
+KNOWN_DATA_FILES = (
+    "catalog.json",
+    "plex_connection.json",
+    "music_index.sqlite3",
+    "app_settings.json",
+    "google_home_sync.json",
+    "google_home_setup.json",
+)
+
+
+def check_data_dir(data_dir: Path, require_existing: bool = False) -> bool:
+    print("Persistent data directory")
+    if not data_dir.exists():
+        _fail(f"Data directory does not exist: {data_dir}")
+        return False
+    if not data_dir.is_dir():
+        _fail(f"Data path is not a directory: {data_dir}")
+        return False
+
+    try:
+        test_file = data_dir / ".pcb_preflight_write_test"
+        test_file.touch()
+        test_file.unlink()
+    except (PermissionError, OSError) as exc:
+        _fail(f"Data directory {data_dir} is not writable: {exc}")
+        return False
+
+    existing_files = [f for f in KNOWN_DATA_FILES if (data_dir / f).exists()]
+    if require_existing:
+        if not existing_files:
+            _fail(
+                f"Data directory {data_dir} contains no existing Plex Cast Bridge configuration "
+                f"(expected at least one of {', '.join(KNOWN_DATA_FILES[:4])}). Refusing upgrade preflight."
+            )
+            return False
+        _ok(f"Found existing data files in {data_dir} ({', '.join(existing_files)})")
+    else:
+        if existing_files:
+            _ok(f"Found existing data files in {data_dir} ({', '.join(existing_files)})")
+        else:
+            _ok(f"Data directory {data_dir} is empty (ready for initial setup)")
+    return True
+
+
 def check_docker(required: bool) -> bool:
     print("Docker")
     docker = shutil.which("docker")
@@ -182,6 +226,17 @@ def main() -> int:
         action="store_true",
         help="Skip live Plex connectivity probe",
     )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="Path to persistent data directory (default: PCB_DATA_DIR, DATA_DIR, or project data/)",
+    )
+    parser.add_argument(
+        "--require-existing-data",
+        action="store_true",
+        help="Fail preflight if data directory is empty or lacks existing configuration (recommended for upgrades)",
+    )
     args = parser.parse_args()
 
     print("Plex Cast Bridge preflight")
@@ -199,6 +254,20 @@ def main() -> int:
         print("Plex connectivity")
         _warn("Skipped (--skip-plex)")
     ok = check_pubsub(file_vals, args.credentials) and ok
+    raw_data_dir = (
+        args.data_dir
+        or os.getenv("PCB_DATA_DIR")
+        or file_vals.get("DATA_DIR")
+        or os.getenv("DATA_DIR")
+        or (PROJECT_ROOT / "data")
+    )
+    data_dir = Path(raw_data_dir).resolve()
+    require_existing = (
+        args.require_existing_data
+        or os.environ.get("PCB_REQUIRE_EXISTING_DATA", "").strip().lower() in {"1", "true", "yes"}
+        or os.environ.get("PCB_UPGRADE", "").strip().lower() in {"1", "true", "yes"}
+    )
+    ok = check_data_dir(data_dir, require_existing=require_existing) and ok
     ok = check_docker(args.require_docker) and ok
 
     print()

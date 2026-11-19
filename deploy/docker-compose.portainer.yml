@@ -1,0 +1,37 @@
+services:
+  plex-cast-bridge:
+    image: ghcr.io/andrewtryder/plex-cast-bridge:latest
+    container_name: plex-cast-bridge
+    restart: unless-stopped
+    # host networking is required for Chromecast mDNS discovery on the local subnet
+    network_mode: host
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
+      - PORT=8000
+      - DATA_DIR=/data
+      # Environment variables configured through Portainer stack settings
+      - PLEX_URL
+      - PLEX_TOKEN
+      - PLEX_MUSIC_SECTION
+      - GEMINI_API_KEY
+      - DEFAULT_CAST_VOLUME
+      - MAX_CAST_VOLUME
+      - DEFAULT_SPEAKER_HOST
+      - ENABLE_PUBSUB_LISTENER
+      - GCP_PROJECT_ID
+      - GCP_PUBSUB_SUBSCRIPTION_ID
+      - CLOUD_GATEWAY_URL
+      - CATALOG_WRITE_KEY
+      - PCB_REQUIRE_EXISTING_DATA
+      - PCB_ALLOW_EPHEMERAL_DATA
+    volumes:
+      # Optional Pub/Sub credentials (defaults to /dev/null if unconfigured)
+      - ${PCB_GCP_CREDENTIALS:-/dev/null}:/app/gcp-credentials.json:ro
+      # Required persistent host data directory.
+      # Fails immediately if PCB_DATA_DIR is not set, preventing ephemeral storage in Portainer's checkout.
+      - ${PCB_DATA_DIR:?PCB_DATA_DIR must be set to a stable host path (e.g. /opt/plex-cast-bridge/data)}:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
