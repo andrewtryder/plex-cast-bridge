@@ -1,6 +1,6 @@
 services:
   plex-cast-bridge:
-    image: ghcr.io/andrewtryder/plex-cast-bridge:latest
+    image: ${PCB_CUSTOM_IMAGE:-ghcr.io/andrewtryder/plex-cast-bridge:latest}
     container_name: plex-cast-bridge
     restart: unless-stopped
     # host networking is required for Chromecast mDNS discovery on the local subnet
