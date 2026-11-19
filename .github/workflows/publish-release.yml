@@ -3,14 +3,26 @@ name: Publish Verified Release
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Release mode: 'candidate' (build & verify candidate image, halt before promotion) or 'promote' (verify candidate digest and promote to version tags and latest)"
+        required: true
+        type: choice
+        options:
+          - candidate
+          - promote
+        default: candidate
       version:
-        description: Release version without a v prefix (for example 0.3.0)
+        description: Release version without a v prefix (for example 0.5.0)
         required: true
         type: string
       ref:
         description: Reviewed commit or branch to release
         required: true
         default: main
+        type: string
+      candidate_digest:
+        description: "Candidate multi-arch image digest (required for mode=promote, e.g. sha256:...)"
+        required: false
         type: string
       allow_recovery:
         description: Safely resume publication if a previous run partially failed (re-verifies existing artifacts)
@@ -35,6 +47,20 @@ jobs:
             exit 2
           }
 
+      - name: Validate promotion parameters
+        if: ${{ inputs.mode == 'promote' }}
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+        run: |
+          if [ -z "$CANDIDATE_DIGEST" ]; then
+            echo "::error::candidate_digest input is required when mode=promote" >&2
+            exit 2
+          fi
+          if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::candidate_digest '$CANDIDATE_DIGEST' must be a valid sha256 digest format (sha256:...)" >&2
+            exit 2
+          fi
+
       - name: Checkout reviewed release commit
         uses: actions/checkout@v7
         with:
@@ -56,6 +82,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check release tag status
+        if: ${{ inputs.mode == 'promote' }}
         id: tag_status
         env:
           RELEASE_TAG: v${{ inputs.version }}
@@ -80,6 +107,7 @@ jobs:
           fi
 
       - name: Set up QEMU
+        if: ${{ inputs.mode == 'candidate' }}
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -93,6 +121,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check versioned image status
+        if: ${{ inputs.mode == 'promote' }}
         id: image_status
         env:
           RELEASE_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.version }}
@@ -120,21 +149,20 @@ jobs:
             echo "image_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Extract Docker metadata
-        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+      - name: Extract Docker metadata for candidate
+        if: ${{ inputs.mode == 'candidate' }}
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ inputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=raw,value=candidate-${{ inputs.version }}
           labels: |
             org.opencontainers.image.version=${{ inputs.version }}
             org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
 
       - name: Build and push candidate multi-architecture image
-        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+        if: ${{ inputs.mode == 'candidate' }}
         id: build
         uses: docker/build-push-action@v7
         with:
@@ -147,8 +175,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify candidate artifact and OCI metadata
-        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
+      - name: Verify candidate artifact and OCI metadata (candidate mode)
+        if: ${{ inputs.mode == 'candidate' }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -159,28 +187,65 @@ jobs:
             --expected-version "$RELEASE_VERSION" \
             --expected-revision "${{ steps.revision.outputs.sha }}"
 
-      - name: Publish verified versioned tags to GHCR
-        if: ${{ steps.image_status.outputs.image_exists != 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+      - name: Record candidate summary and halt
+        if: ${{ inputs.mode == 'candidate' }}
         run: |
-          TAG_ARGS=()
-          while IFS= read -r tag; do
-            [ -n "$tag" ] && TAG_ARGS+=(--tag "$tag")
-          done <<< "${{ steps.meta.outputs.tags }}"
+          VERSION="${{ inputs.version }}"
+          DIGEST="${{ steps.build.outputs.digest }}"
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Candidate Image Built & Verified
+
+          - **Version:** \`${VERSION}\`
+          - **Commit:** \`${{ steps.revision.outputs.sha }}\`
+          - **Candidate Tag:** \`ghcr.io/${GITHUB_REPOSITORY}:candidate-${VERSION}\`
+          - **Immutable Digest:** \`${DIGEST}\`
+          - **Platforms:** \`linux/amd64\`, \`linux/arm64\`
+
+          ### Acceptance & Promotion Instructions:
+          1. Use this exact candidate image for live deployment acceptance testing on Proxmox LXC 112:
+             \`\`\`bash
+             docker pull ghcr.io/${GITHUB_REPOSITORY}:candidate-${VERSION}@${DIGEST}
+             \`\`\`
+          2. Complete acceptance verification on Proxmox LXC 112 and Cloud Run.
+          3. When acceptance is verified and signed off, trigger this workflow with:
+             - **mode:** \`promote\`
+             - **version:** \`${VERSION}\`
+             - **candidate_digest:** \`${DIGEST}\`
+          EOF
+          echo "Candidate mode complete. Halting before promotion."
+
+      - name: Verify candidate artifact and OCI metadata (promote mode)
+        if: ${{ inputs.mode == 'promote' }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          IMAGE_DIGEST: ${{ inputs.candidate_digest }}
+        run: |
+          python3 scripts/verify_release_artifact.py \
+            --image "ghcr.io/${GITHUB_REPOSITORY}:candidate-${RELEASE_VERSION}" \
+            --expected-digest "$IMAGE_DIGEST" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-revision "${{ steps.revision.outputs.sha }}"
+
+      - name: Publish verified versioned tags to GHCR
+        if: ${{ inputs.mode == 'promote' && steps.image_status.outputs.image_exists != 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ inputs.candidate_digest }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          MAJOR_MINOR="$(echo "$RELEASE_VERSION" | cut -d. -f1,2)"
           for attempt in 1 2 3; do
-            if docker buildx imagetools create "${TAG_ARGS[@]}" \
+            if docker buildx imagetools create \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}:${MAJOR_MINOR}" \
               "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
-              exit 0
+              break
             fi
             echo "Attempt $attempt failed; retrying in 5s..." >&2
             sleep 5
           done
-          echo "Failed to publish versioned tags after 3 attempts" >&2
-          exit 1
 
       - name: Create release tag
-        if: ${{ steps.tag_status.outputs.tag_exists != 'true' }}
+        if: ${{ inputs.mode == 'promote' && steps.tag_status.outputs.tag_exists != 'true' }}
         env:
           RELEASE_TAG: v${{ inputs.version }}
         run: |
@@ -196,6 +261,7 @@ jobs:
           done
 
       - name: Create GitHub release
+        if: ${{ inputs.mode == 'promote' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ inputs.version }}
@@ -208,8 +274,9 @@ jobs:
           fi
 
       - name: Promote the verified digest to latest
+        if: ${{ inputs.mode == 'promote' }}
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.image_status.outputs.digest }}
+          IMAGE_DIGEST: ${{ inputs.candidate_digest || steps.image_status.outputs.digest }}
         run: |
           for attempt in 1 2 3; do
             if docker buildx imagetools create \
@@ -222,3 +289,23 @@ jobs:
           done
           echo "Failed to promote digest to latest after 3 attempts" >&2
           exit 1
+
+      - name: Record promotion summary
+        if: ${{ inputs.mode == 'promote' }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          DIGEST="${{ inputs.candidate_digest || steps.image_status.outputs.digest }}"
+          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Release Successfully Promoted!
+
+          - **Version:** \`${VERSION}\`
+          - **Git Tag:** \`v${VERSION}\`
+          - **Verified Source Digest:** \`${DIGEST}\`
+          - **Promoted GHCR Tags:**
+            - \`ghcr.io/${GITHUB_REPOSITORY}:${VERSION}\`
+            - \`ghcr.io/${GITHUB_REPOSITORY}:${MAJOR_MINOR}\`
+            - \`ghcr.io/${GITHUB_REPOSITORY}:latest\`
+
+          All public tags now point cryptographically to the exact candidate image verified during acceptance testing.
+          EOF
