@@ -157,6 +157,9 @@ def _seed_synthetic_data(data_dir: Path) -> dict:
             """
         )
 
+    for item in data_dir.iterdir():
+        item.chmod(0o666 if item.is_file() else 0o777)
+
     return {
         "plex": plex_data,
         "speakers": catalog_data,

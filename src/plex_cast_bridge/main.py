@@ -133,6 +133,17 @@ async def lifespan(app: FastAPI):
         "yes",
     }
     settings = Settings()
+    if settings.enable_pubsub_listener:
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if creds_path:
+            p = Path(creds_path)
+            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+                raise RuntimeError(
+                    f"CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS ({creds_path}) "
+                    "points to an unmounted placeholder (/dev/null), missing file, or empty key. "
+                    "Provide a valid Google Cloud service account key via PCB_GCP_CREDENTIALS to enable Google Home voice control."
+                )
+
     if music_index.database_path().exists():
         await run_in_threadpool(music_index_scan.recover_interrupted)
     stored = load_app_settings()
@@ -253,15 +264,6 @@ async def lifespan(app: FastAPI):
     reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
     if settings.enable_pubsub_listener:
-        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if creds_path:
-            p = Path(creds_path)
-            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
-                raise RuntimeError(
-                    f"CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS ({creds_path}) "
-                    "points to an unmounted placeholder (/dev/null), missing file, or empty key. "
-                    "Provide a valid Google Cloud service account key via PCB_GCP_CREDENTIALS to enable Google Home voice control."
-                )
 
         async def dispatch(data):
             if data["action"] == "play":
