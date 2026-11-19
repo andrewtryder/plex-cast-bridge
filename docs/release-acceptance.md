@@ -187,3 +187,20 @@ integrity check fails, or backup/rollback has not been verified. Unit tests alon
 are not sufficient for GO.
 
 Local capture includes a redacted `local.configuration_drift` report and summarizes gateway conflicts as `release_preflight_warnings` for review. Capture runs the checkout's diagnostic inside the running container, so it uses the container environment and works with older images. If it cannot run, `available` is false; comparison reports the required diagnostic as NOT TESTED and cannot pass. A new or changed gateway drift classification also requires review. Review pre- and post-upgrade captures before proceeding. Differences between JWT and legacy Plex tokens and unsaved volume defaults are not treated as conflicts. Cloud-only captures cannot inspect local configuration.
+
+## v0.5.0 Preflight Acceptance Matrix
+
+Before publishing v0.5.0, verify release readiness across all supported deployment and upgrade surfaces:
+
+| Target Surface | Upgrade Mechanism | State Safety Requirements | Preflight Verification Status |
+| --- | --- | --- | --- |
+| **Docker Compose** | Image-only pull (`docker compose pull && docker compose up -d`) | Host volume `/data` preserves Plex tokens, Cast UUIDs, virtual device IDs, `app_settings.json`, and `music_index.sqlite3` | PASS (verified via disposable candidate container upgrade suite) |
+| **Portainer (Web Editor)** | Re-pull image & recreate container via Web UI | Web stack environment variables (`PCB_DATA_DIR`, `PCB_ENV_FILE`, `PCB_CUSTOM_IMAGE`) preserved; persistent host volume untouched | PASS (verified in test suite `test_docker_portainer_upgrade.py`) |
+| **Portainer (Git Stack)** | Git pull & stack redeploy using `deploy/docker-compose.portainer.yml` | Image pulled from GHCR; build directive absent; persistent mount retained | PASS (verified in test suite `test_docker_portainer_upgrade.py`) |
+| **Automated Updates (Watchtower)** | Container recreation on image change | Fails closed (`PCB_REQUIRE_EXISTING_DATA`) if mount is missing or unmounted; no state loss | PASS (verified with fail-closed container startup checks) |
+| **Native Python (`uv`)** | `git pull && uv sync` | Automatic virtualenv migration from Python 3.12/3.13 to 3.14; existing config in legacy locations preserved | PASS (verified in test suite `test_source_fork_upgrade.py`) |
+| **Systemd Service** | `git pull && uv sync && systemctl restart plex-cast-bridge` | Service unit does not hardcode `DATA_DIR`; preserves legacy location precedence (`/data` -> `data/` -> project root) and `.env` overrides | PASS (verified in test suite `test_source_fork_upgrade.py`) |
+| **Source Rebuilds** | `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build` | Base Compose remains image-only; build override targets `plex-cast-bridge:local` or custom tag | PASS (verified in test suite `test_source_fork_upgrade.py`) |
+| **Fork Deployments** | Compose / Portainer with `PCB_CUSTOM_IMAGE` | Custom image tag forwarded to service definition without editing repository Compose files | PASS (verified in test suite `test_source_fork_upgrade.py`) |
+| **SQLite Music Index & Mixes** | Online read-only snapshot or offline backup | Database schema user_version 3 intact; tracks, mixes, and provenance preserved across container restart | PASS (verified in test suite `test_upgrade_sqlite_online.py`) |
+| **Cloud Run Voice Gateway** | Independent container image deployment | OAuth tokens, refresh token deduplication, retry-safe authorization codes, and linked Google Home devices preserved | PASS (verified in Cloud Run test suite and retry tests) |
