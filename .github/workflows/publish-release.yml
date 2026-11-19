@@ -40,8 +40,13 @@ jobs:
     steps:
       - name: Validate requested version
         env:
+          MODE: ${{ inputs.mode }}
           VERSION: ${{ inputs.version }}
         run: |
+          if [ "$MODE" != "candidate" ] && [ "$MODE" != "promote" ]; then
+            echo "Mode must be 'candidate' or 'promote'" >&2
+            exit 2
+          fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "Version must be numeric semver without a v prefix" >&2
             exit 2
@@ -74,10 +79,11 @@ jobs:
         id: revision
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REF: ${{ inputs.ref }}
         run: |
           python3 scripts/verify_release_commit.py \
             --version "$RELEASE_VERSION" \
-            --ref "${{ inputs.ref }}" \
+            --ref "$RELEASE_REF" \
             --main-ref origin/main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -86,24 +92,30 @@ jobs:
         id: tag_status
         env:
           RELEASE_TAG: v${{ inputs.version }}
-          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REF: ${{ inputs.ref }}
           ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+          rc=0
+          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1 || rc=$?
+          if [ "$rc" -eq 0 ]; then
             echo "Release tag $RELEASE_TAG already exists on remote"
             git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
             python3 scripts/verify_release_commit.py \
-              --version "${{ inputs.version }}" \
-              --ref "${{ inputs.ref }}" \
+              --version "$RELEASE_VERSION" \
+              --ref "$RELEASE_REF" \
               --verify-tag "$RELEASE_TAG"
             if [ "$ALLOW_RECOVERY" != "true" ]; then
               echo "Release tag already exists: $RELEASE_TAG; set allow_recovery to true to resume" >&2
               exit 1
             fi
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$rc" -eq 2 ]; then
             echo "Release tag does not exist yet (clean release or tag required)"
             echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to query remote release tag $RELEASE_TAG (git ls-remote exited $rc)" >&2
+            exit "$rc"
           fi
 
       - name: Set up QEMU
@@ -124,25 +136,38 @@ jobs:
         if: ${{ inputs.mode == 'promote' }}
         id: image_status
         env:
-          RELEASE_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.version }}
           RELEASE_VERSION: ${{ inputs.version }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
           EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
           ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
         run: |
+          RELEASE_IMAGE="ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}"
+          MAJOR_MINOR="${RELEASE_VERSION%.*}"
+          MAJOR_MINOR_IMAGE="ghcr.io/${GITHUB_REPOSITORY}:${MAJOR_MINOR}"
           if docker buildx imagetools inspect "$RELEASE_IMAGE" >/dev/null 2>&1; then
             echo "Versioned image $RELEASE_IMAGE already exists on GHCR"
             if [ "$ALLOW_RECOVERY" != "true" ]; then
               echo "Versioned image already exists: $RELEASE_IMAGE; set allow_recovery to true to resume" >&2
               exit 1
             fi
-            echo "Verifying existing image artifact for recovery..."
+            echo "Verifying existing image artifact for recovery against approved candidate digest..."
             OUTPUT=$(python3 scripts/verify_release_artifact.py \
               --image "$RELEASE_IMAGE" \
+              --expected-digest "$CANDIDATE_DIGEST" \
               --expected-version "$RELEASE_VERSION" \
               --expected-revision "$EXPECTED_SHA")
             DIGEST=$(echo "$OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['digest'])")
             echo "Existing image verified with digest $DIGEST"
-            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            if python3 scripts/verify_release_artifact.py \
+              --image "$MAJOR_MINOR_IMAGE" \
+              --expected-digest "$CANDIDATE_DIGEST" \
+              --expected-version "$RELEASE_VERSION" \
+              --expected-revision "$EXPECTED_SHA" >/dev/null 2>&1; then
+              echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Major/minor tag $MAJOR_MINOR_IMAGE missing or mismatched; will re-tag from approved candidate digest"
+              echo "image_exists=false" >> "$GITHUB_OUTPUT"
+            fi
             echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           else
             echo "Versioned image does not exist yet (clean release or image build required)"
@@ -180,31 +205,34 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
         run: |
           python3 scripts/verify_release_artifact.py \
             --image "ghcr.io/${GITHUB_REPOSITORY}:candidate-${RELEASE_VERSION}" \
             --expected-digest "$IMAGE_DIGEST" \
             --expected-version "$RELEASE_VERSION" \
-            --expected-revision "${{ steps.revision.outputs.sha }}"
+            --expected-revision "$EXPECTED_SHA"
 
       - name: Record candidate summary and halt
         if: ${{ inputs.mode == 'candidate' }}
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
         run: |
-          VERSION="${{ inputs.version }}"
-          DIGEST="${{ steps.build.outputs.digest }}"
           cat <<EOF >> "$GITHUB_STEP_SUMMARY"
           ## Candidate Image Built & Verified
 
           - **Version:** \`${VERSION}\`
-          - **Commit:** \`${{ steps.revision.outputs.sha }}\`
+          - **Commit:** \`${EXPECTED_SHA}\`
           - **Candidate Tag:** \`ghcr.io/${GITHUB_REPOSITORY}:candidate-${VERSION}\`
           - **Immutable Digest:** \`${DIGEST}\`
           - **Platforms:** \`linux/amd64\`, \`linux/arm64\`
 
           ### Acceptance & Promotion Instructions:
-          1. Use this exact candidate image for live deployment acceptance testing on Proxmox LXC 112:
+          1. Use this exact immutable candidate image for live deployment acceptance testing on Proxmox LXC 112:
              \`\`\`bash
-             docker pull ghcr.io/${GITHUB_REPOSITORY}:candidate-${VERSION}@${DIGEST}
+             docker pull ghcr.io/${GITHUB_REPOSITORY}@${DIGEST}
              \`\`\`
           2. Complete acceptance verification on Proxmox LXC 112 and Cloud Run.
           3. When acceptance is verified and signed off, trigger this workflow with:
@@ -218,13 +246,14 @@ jobs:
         if: ${{ inputs.mode == 'promote' }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-          IMAGE_DIGEST: ${{ inputs.candidate_digest }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
         run: |
           python3 scripts/verify_release_artifact.py \
             --image "ghcr.io/${GITHUB_REPOSITORY}:candidate-${RELEASE_VERSION}" \
-            --expected-digest "$IMAGE_DIGEST" \
+            --expected-digest "$CANDIDATE_DIGEST" \
             --expected-version "$RELEASE_VERSION" \
-            --expected-revision "${{ steps.revision.outputs.sha }}"
+            --expected-revision "$EXPECTED_SHA"
 
       - name: Publish verified versioned tags to GHCR
         if: ${{ inputs.mode == 'promote' && steps.image_status.outputs.image_exists != 'true' }}
@@ -232,16 +261,36 @@ jobs:
           IMAGE_DIGEST: ${{ inputs.candidate_digest }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          MAJOR_MINOR="$(echo "$RELEASE_VERSION" | cut -d. -f1,2)"
+          MAJOR_MINOR="${RELEASE_VERSION%.*}"
           for attempt in 1 2 3; do
             if docker buildx imagetools create \
               --tag "ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_VERSION}" \
               --tag "ghcr.io/${GITHUB_REPOSITORY}:${MAJOR_MINOR}" \
               "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
-              break
+              exit 0
             fi
-            echo "Attempt $attempt failed; retrying in 5s..." >&2
-            sleep 5
+            echo "Attempt $attempt failed; retrying in ${RETRY_DELAY_SECONDS:-5}s..." >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep "${RETRY_DELAY_SECONDS:-5}"
+            fi
+          done
+          echo "Failed to publish versioned tags to GHCR after 3 attempts" >&2
+          exit 1
+
+      - name: Verify published versioned GHCR tags
+        if: ${{ inputs.mode == 'promote' }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          MAJOR_MINOR="${RELEASE_VERSION%.*}"
+          for tag in "$RELEASE_VERSION" "$MAJOR_MINOR"; do
+            python3 scripts/verify_release_artifact.py \
+              --image "ghcr.io/${GITHUB_REPOSITORY}:${tag}" \
+              --expected-digest "$CANDIDATE_DIGEST" \
+              --expected-version "$RELEASE_VERSION" \
+              --expected-revision "$EXPECTED_SHA"
           done
 
       - name: Create release tag
@@ -249,24 +298,33 @@ jobs:
         env:
           RELEASE_TAG: v${{ inputs.version }}
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           for attempt in 1 2 3; do
             if git push origin "$RELEASE_TAG"; then
-              break
+              exit 0
             fi
-            echo "Git push attempt $attempt failed; retrying in 5s..." >&2
-            sleep 5
+            echo "Git push attempt $attempt failed; retrying in ${RETRY_DELAY_SECONDS:-5}s..." >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep "${RETRY_DELAY_SECONDS:-5}"
+            fi
           done
+          echo "Failed to push release tag $RELEASE_TAG after 3 attempts" >&2
+          exit 1
 
       - name: Create GitHub release
         if: ${{ inputs.mode == 'promote' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ inputs.version }}
+          ALLOW_RECOVERY: ${{ inputs.allow_recovery }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ "$ALLOW_RECOVERY" != "true" ]; then
+              echo "GitHub release already exists: $RELEASE_TAG; set allow_recovery to true to resume" >&2
+              exit 1
+            fi
             echo "GitHub release $RELEASE_TAG already exists"
           else
             echo "Creating GitHub release $RELEASE_TAG..."
@@ -274,9 +332,9 @@ jobs:
           fi
 
       - name: Promote the verified digest to latest
-        if: ${{ inputs.mode == 'promote' }}
+        if: ${{ success() && inputs.mode == 'promote' }}
         env:
-          IMAGE_DIGEST: ${{ inputs.candidate_digest || steps.image_status.outputs.digest }}
+          IMAGE_DIGEST: ${{ inputs.candidate_digest }}
         run: |
           for attempt in 1 2 3; do
             if docker buildx imagetools create \
@@ -284,18 +342,21 @@ jobs:
               "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}"; then
               exit 0
             fi
-            echo "Attempt $attempt failed; retrying in 5s..." >&2
-            sleep 5
+            echo "Attempt $attempt failed; retrying in ${RETRY_DELAY_SECONDS:-5}s..." >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep "${RETRY_DELAY_SECONDS:-5}"
+            fi
           done
           echo "Failed to promote digest to latest after 3 attempts" >&2
           exit 1
 
       - name: Record promotion summary
-        if: ${{ inputs.mode == 'promote' }}
+        if: ${{ success() && inputs.mode == 'promote' }}
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.candidate_digest }}
         run: |
-          VERSION="${{ inputs.version }}"
-          DIGEST="${{ inputs.candidate_digest || steps.image_status.outputs.digest }}"
-          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
+          MAJOR_MINOR="${VERSION%.*}"
           cat <<EOF >> "$GITHUB_STEP_SUMMARY"
           ## Release Successfully Promoted!
 
