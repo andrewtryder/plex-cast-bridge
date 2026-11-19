@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build virtual environment
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /build
 
@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # -----------------------------------------------------------------------------
 # Stage 2: Minimal runtime image
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim AS runner
+FROM python:3.15-slim AS runner
 
 WORKDIR /app
 
