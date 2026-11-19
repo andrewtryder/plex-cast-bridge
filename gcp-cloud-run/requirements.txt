@@ -141,7 +141,6 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   pydantic-settings
-    #   starlette
     #   typing-inspection
 typing-inspection==0.4.5
     # via

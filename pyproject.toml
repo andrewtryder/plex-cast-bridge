@@ -2,7 +2,7 @@
 name = "plex-cast-bridge"
 version = "0.2.2"
 description = "Personal Google Home Cloud-to-Cloud Integration, Gemini-Powered Smart DJ, and Continuous Plex Radio for Google Cast"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -54,7 +54,8 @@ pythonpath = ["src", "gcp-cloud-run/src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 ignore = ["E501"]

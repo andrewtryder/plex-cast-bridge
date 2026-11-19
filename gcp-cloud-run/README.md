@@ -1,6 +1,6 @@
 # GCP Cloud Run Gateway (`cloud_gateway`)
 
-A lightweight Python 3.12+ FastAPI Google Home Cloud-to-Cloud fulfillment webhook and personal OAuth 2.0 server designed for **GCP Cloud Run**. It bridges Google Home voice commands to your local home server (`plex-cast-bridge`) via **GCP Cloud Pub/Sub**.
+A lightweight Python 3.14 FastAPI Google Home Cloud-to-Cloud fulfillment webhook and personal OAuth 2.0 server designed for **GCP Cloud Run**. It bridges Google Home voice commands to your local home server (`plex-cast-bridge`) via **GCP Cloud Pub/Sub**.
 
 ---
 

@@ -153,6 +153,14 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
         assert result.returncode == 0, result.stderr
         with urlopen(f"http://127.0.0.1:{port}/api/settings", timeout=5) as response:
             assert json.load(response)["library"]["linked"] is True
+        if os.getenv("PCB_TEST_EXPECTED_PYTHON"):
+            expected_py = os.environ["PCB_TEST_EXPECTED_PYTHON"]
+            probe = run("docker", "compose", "-f", str(compose), "exec", "-T", "bridge", "python", "-c",
+                        "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+            assert probe.returncode == 0, probe.stderr
+            assert probe.stdout.strip() == expected_py, (
+                f"expected Python {expected_py} in upgraded bridge, got {probe.stdout.strip()}"
+            )
         catalog = json.loads((data / "catalog.json").read_text())
         assert catalog["speakers"][0]["google_home_device_id"] == speaker["google_home_device_id"]
         if not legacy_env:

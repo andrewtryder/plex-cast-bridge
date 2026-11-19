@@ -135,6 +135,14 @@ python3 scripts/upgrade.py restore-data \
 
 This is an explicit data replacement. Keep the printed safety backup, preserved directory, and restore journal: they contain newer data and credentials. The command refuses to proceed if it cannot preserve ownership, if a data restore journal already exists, or if the current configuration differs from the reviewed one. It does not replace Compose files, external catalogs, or credentials outside the data directory. If interrupted, leave writers stopped and inspect the journal and preserved directory before taking further action.
 
+## Native installations (non-Docker)
+
+Native installations running directly on host Python (outside Docker) are **not automatically backward-compatible** when upgrading to this release because the project requires Python 3.14 (`requires-python = ">=3.14,<3.15"`).
+
+- **When managed with `uv`**: `uv` automatically downloads and uses a managed Python 3.14 standalone interpreter when syncing or running commands (such as `uv sync` or `uv run`), without modifying system Python or requiring host package-manager upgrades.
+- **When managed with standard virtual environments or host Python**: Systems running Python older than 3.14 (such as Debian 12 with Python 3.11 or Ubuntu 24.04 with Python 3.12) cannot execute the bridge runtime directly. Operators must install a Python 3.14 interpreter or switch to the supported Docker container deployment.
+- **Upgrade scripts**: `scripts/upgrade.py` itself uses only standard-library modules compatible with host Python 3.11+ (such as `datetime.UTC`), allowing host Python 3.11+ to run the upgrade utility, but the bridge runtime and dependencies require Python 3.14.
+
 ## Google Home and Cloud Run
 
 Cloud Run is optional and is not changed by a local upgrade. Existing Google Home users should keep their current cloud service, credentials, Firestore data, and linked devices. Cloud Run image updates are a separate maintainer operation described in [persistent state and upgrades](persistent-state.md); do not rerun first-install provisioning or relink merely to upgrade.
