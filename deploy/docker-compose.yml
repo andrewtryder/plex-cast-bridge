@@ -1,24 +1,24 @@
 services:
   plex-cast-bridge:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
     image: ghcr.io/andrewtryder/plex-cast-bridge:latest
     container_name: plex-cast-bridge
     restart: unless-stopped
     # host networking is required for Chromecast mDNS discovery on the local subnet
     network_mode: host
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
       - PORT=8000
       - DATA_DIR=/data
     volumes:
       # Mount Google Cloud Service Account key for Pub/Sub authentication
-      - ../gcp-credentials.json:/app/gcp-credentials.json:ro
-      # Persistent mutable data directory (catalog.json, dead_letter_queue.jsonl)
-      - ../data:/data
+      - ${PCB_GCP_CREDENTIALS:-../gcp-credentials.json}:/app/gcp-credentials.json:ro
+      # Persistent mutable data directory (catalog.json, dead_letter_queue.jsonl, plex_connection.json, music_index.sqlite3)
+      # For Portainer Git-stacks, set PCB_DATA_DIR in stack env to a stable host path (e.g. /opt/plex-cast-bridge/data)
+      # so storage does not depend on the ephemeral git checkout directory.
+      - ${PCB_DATA_DIR:-../data}:/data
     logging:
       driver: "json-file"
       options:

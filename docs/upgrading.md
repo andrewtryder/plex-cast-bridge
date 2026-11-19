@@ -1,150 +1,168 @@
 # Upgrading Plex Cast Bridge
 
-> **Draft:** this workflow is under review and is not yet recommended for general use. Keep your existing installation and backups until the upgrade has been verified.
+An ordinary local upgrade replaces the bridge container image while preserving all persistent configuration and data. You do **not** need to reconnect Plex, relink Google Home, rediscover speakers, reset playback volume settings, or rebuild saved mixes when updating the image.
 
-An ordinary local upgrade replaces the bridge image and keeps its persistent data. It does not run first-time setup or change Cloud Run. You do not need to reconnect Plex or relink Google Home as part of the local upgrade.
+Routine updates for Docker Compose, Portainer, and automatic container update tools follow standard Docker workflows and **do not require running a complex migration script** when the existing installation is compatible.
 
-## Before you begin
+---
 
-Run these commands on the Docker host: for Proxmox, that means inside the LXC that runs Docker, not on the Proxmox hypervisor. For Docker Compose, use the host where the bridge container runs. Use the upgrade scripts from a checkout or an extracted source archive for the release you are reviewing; a Compose-only installation does not need Git. Replace the example paths with your own.
+## What Persistent State is Preserved
 
-For a Compose-only installation, download and extract the source archive for the exact reviewed release from the project's [releases page](https://github.com/andrewtryder/plex-cast-bridge/releases), then change into the extracted directory before running the commands below. The archive must include both `scripts/` and `src/`; downloading only `upgrade.py` is insufficient. Keep your existing Compose files and `.env` in their original location. This draft workflow has not yet been released, so do not substitute an older release's scripts.
+All state that distinguishes your installation from defaults is stored under the persistent data mount (`DATA_DIR`, mapped to `/data` in containers). Across image updates and container recreations, the following are preserved:
 
-For example, after choosing the release tag to review, replace the placeholder and use a new directory on the Docker host:
+| Component | Persistent File | What is Preserved |
+|---|---|---|
+| **Plex Authentication** | `plex_connection.json`, `plex_device_*.pem` | Authorized Plex server URL, music section, client identifier, and Plex JWT tokens. No need to reconnect to plex.tv. |
+| **Cast Speakers** | `catalog.json` | Physical Cast speaker UUIDs, stable virtual device IDs, custom friendly names, room hints, and enabled/disabled toggles. |
+| **Google Home Sync** | `google_home_sync.json`, `google_home_setup.json` | Cloud Gateway URL, catalog write secret, sync timestamps, and project metadata. Google Home stays linked. |
+| **App Settings** | `app_settings.json` | Custom UI settings, default playback volume, and max volume clamps. |
+| **Music Mixes & Index** | `music_index.sqlite3` | SQLite database storing your indexed library tracks, custom mixes, prompts, and track ordering. |
+| **Environment** | `.env` | Environment configuration, Pub/Sub settings, and API keys. |
 
-```sh
-REVIEWED_REF=REPLACE_WITH_RELEASE_TAG
-mkdir "$HOME/plex-cast-bridge-upgrade-source"
-curl -fsSL "https://github.com/andrewtryder/plex-cast-bridge/archive/${REVIEWED_REF}.tar.gz" \
-  -o "$HOME/plex-cast-bridge-upgrade-source/source.tar.gz"
-tar -xzf "$HOME/plex-cast-bridge-upgrade-source/source.tar.gz" \
-  --strip-components=1 -C "$HOME/plex-cast-bridge-upgrade-source"
-cd "$HOME/plex-cast-bridge-upgrade-source"
+---
+
+## Routine Docker Upgrades
+
+### 1. Docker Compose (Standard CLI)
+
+To update an existing installation deployed with `deploy/docker-compose.yml`:
+
+```bash
+cd ~/plex-cast-bridge
+
+# 1. (Recommended) Take a quick snapshot backup of your persistent data
+tar -czf "plex-data-backup-$(date +%Y%m%d%H%M%S).tar.gz" data/
+
+# 2. Pull the latest verified official release from GHCR
+docker compose -f deploy/docker-compose.yml pull
+
+# 3. Recreate the container with the updated image
+docker compose -f deploy/docker-compose.yml up -d
+
+# 4. Verify container health
+docker compose -f deploy/docker-compose.yml ps
 ```
 
-Stop all other programs and containers that write the bridge's data directory or external catalog file, and prevent them from restarting until the upgrade finishes. Do not edit the Compose files or managed override during the operation. The tool checks other running Docker containers at preflight, but cannot prevent a new writer from starting or identify every host process. Make sure you have enough free space for a private backup and know where your existing Compose file is.
+The container restarts in seconds with the new image, immediately reconnecting to your existing `/data` mount.
 
-## Check the installation and available release
+---
 
-From the extracted source or checkout on the Docker host:
+### 2. Portainer Deployment Upgrades
 
-```sh
-python3 scripts/upgrade.py doctor \
-  --compose-file /path/to/compose.yml \
-  --check-updates
-```
+#### Updating a Portainer Web-Editor Stack or Template
+1. In Portainer, navigate to **Stacks** and select your `plex-cast-bridge` stack.
+2. Click **Editor** (or **Update the stack**).
+3. Toggle **Re-pull image** to **ON**.
+4. Click **Update the stack**.
+5. Portainer pulls the newest image from GHCR, stops the old container, and starts the new container attached to the same persistent volume or bind mount.
 
-The command shows the current image and version when the image supplies a version label, the persistent data path, and the latest official release and its immutable image digest. A custom image is not checked against the official release automatically. If the check is unavailable, inspect the project's [releases](https://github.com/andrewtryder/plex-cast-bridge/releases) and obtain the digest from your registry.
+#### Updating an Individual Container in Portainer
+1. Go to **Containers** → click on `plex-cast-bridge`.
+2. Click **Recreate** in the top action bar.
+3. Enable the **Re-pull image** toggle.
+4. Click **Recreate**.
 
-If the tool cannot choose the service, add `--service SERVICE_NAME`. Do not proceed if the diagnostic is **NOT TESTED**. A gateway warning needs review: existing environment values may overwrite the saved gateway configuration on startup. Do not delete or regenerate credentials to clear a warning.
+#### Updating a Portainer Git-Managed Stack
+If you deployed the stack using Portainer's **Repository** option:
+1. Navigate to **Stacks** → select your stack.
+2. Click **Update the stack**.
+3. Toggle **Re-pull image** to **ON**.
+4. Click **Update**.
 
-## Prepare persistent image selection
+> [!IMPORTANT]
+> **Portainer Git-stack persistent storage requirement:**
+> Ensure your Git stack defines `PCB_DATA_DIR` in its **Environment variables** pointing to a permanent host path (e.g. `PCB_DATA_DIR=/opt/plex-cast-bridge/data`).
+> Portainer clones Git repositories to an internal directory (`/data/compose/<id>/`) that can be wiped or replaced upon Git pull or stack update. Storing persistent data outside the checkout ensures your settings survive Git updates.
 
-Existing installations need a one-time reviewed migration. For a default Compose filename without an existing override or `COMPOSE_FILE`, prepare a review file and examine its proposed image-only override. Replace `plex-cast-bridge` with your actual Compose service name if needed:
+---
 
-```sh
-python3 scripts/upgrade.py prepare-compose-migration \
-  --compose-file /path/to/compose.yml --service plex-cast-bridge \
-  --review-file "$HOME/.local/share/plex-cast-bridge/compose-migration.json"
-```
+## Automatic-Update Behavior
 
-After reviewing the printed path and content, explicitly create the override:
+When a new verified image is published to `ghcr.io/andrewtryder/plex-cast-bridge:latest`, container environments behave as follows:
 
-```sh
-python3 scripts/upgrade.py migrate-compose \
-  --review-file "$HOME/.local/share/plex-cast-bridge/compose-migration.json" --confirm
-```
+| Deployment Method | Automatic Update Behavior | Action Required |
+|---|---|---|
+| **Manual Docker Compose** | Does **not** update automatically. The running container continues on its current image digest indefinitely. | Run `docker compose pull && docker compose up -d` when you choose to update. |
+| **Portainer (Manual Stacks)** | Does **not** update automatically. Publishing an image to GHCR does not notify Portainer. | Trigger update manually via **Update the stack** with **Re-pull image**. |
+| **Portainer Git-stack Polling** | Polling checks for **Git repository commits**, *not* image registry updates. A new image tag published without a git commit will not trigger a stack redeploy. | Re-pull manually or configure a webhook. |
+| **Portainer Webhooks** | If you configured a Portainer stack webhook, triggering the webhook endpoint causes Portainer to re-pull the image and redeploy the stack. | Automated via your CI or trigger script. |
+| **Automatic Tools (Watchtower, Ouroboros)** | Automatically detects image digest changes on GHCR, pulls the candidate, and restarts the container with existing flags and mounts. | Fully automated. See unattended limitations below. |
+| **Version-Pinned (`:0.3.0`)** | Does **not** update when `:latest` changes. Pinned strictly to the specified release. | Change the tag in your compose file when ready. |
+| **Digest-Pinned (`@sha256:...`)** | Completely immutable. Immune to tag movements or registry modifications. | Update digest explicitly after review. |
 
-This creates the new override alongside the existing Compose file and does not change the running container. It selects the verified running image ID, even if the original Compose file names an older image, so a later recreation preserves the version already running. The image must remain in Docker's local cache. It refuses to overwrite an existing override or handle ambiguous file selection; those installations require manual review. Keep the original Compose file and `.env` in place. The following examples assume the new file is `/path/to/compose.override.yml`; use the path printed by the command.
+### Limitations & Risks of Unattended Automatic Updates (Watchtower)
+While automatic tools like Watchtower provide hands-off convenience:
+- **No Automatic Backups**: Unattended updates do **not** take a snapshot of `/data` before recreation.
+- **No Automated Rollback**: If a newer version contains an unexpected regression or incompatible dependency, automatic tools cannot roll back automatically.
+- **Recommended Practice**: If you run Watchtower, configure an automated daily/weekly backup of your host data directory (`cron` + `tar`), or pin your stack to a specific version tag.
 
-## Review and apply
+---
 
-Copy the immutable image reference displayed by the update check and use it as the target. Choose a new private plan path outside the bridge's data directory:
+## Simple Image Rollback
 
-```sh
-python3 scripts/upgrade.py plan \
-  --compose-file /path/to/compose.yml \
-  --compose-file /path/to/compose.override.yml \
-  --service plex-cast-bridge \
-  --target 'ghcr.io/andrewtryder/plex-cast-bridge@sha256:REPLACE_WITH_DIGEST' \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json"
-```
+If a newly deployed image introduces an issue or regression, rolling back is straightforward:
 
-Review the current and target images, persistent data path, backup location, warnings, and proposed actions. The tool records a private plan and checks the installation again before stopping the bridge. A changed installation requires a new plan. The backup is created alongside the plan, is private, and includes the quiesced data directory and reviewed Compose, environment, and mounted subscriber credential inputs.
+1. Edit your `docker-compose.yml` or Portainer stack definition to pin the previous known-good version tag or digest:
+   ```yaml
+   image: ghcr.io/andrewtryder/plex-cast-bridge:0.2.1
+   ```
+   or using an immutable digest:
+   ```yaml
+   image: ghcr.io/andrewtryder/plex-cast-bridge@sha256:b0db066ed210255039515602dbe3759f697203f42b2b2a39214835dbc2b83422
+   ```
+2. Recreate the container:
+   ```bash
+   docker compose -f deploy/docker-compose.yml up -d
+   ```
+3. Because all settings and mixes remain in your persistent `/data` mount, the previous image starts immediately with your data intact.
 
-After you have stopped other writers and prevented them from restarting, and reviewed the plan, explicitly start the upgrade:
+---
 
-```sh
-python3 scripts/upgrade.py apply \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
-  --confirm-exclusive-data
-```
+## Unsupported or Risky Installation Layouts
 
-If the plan shows a gateway warning and you have reviewed its consequences, add `--acknowledge-gateway-drift`. If the health endpoint is not on the default local port, add `--health-url http://127.0.0.1:PORT/health`. The bridge is stopped briefly while its data backup is created and checked by restoring an isolated copy. An unavailable image registry stops the process before the bridge is stopped.
+To avoid unexpected data loss during updates, avoid these configurations:
 
-## Verify or recover
+1. **Unmounted `/data`**: Running the container without mounting `/data` causes all mutable state to be written to the container's overlay layer. Recreating the container will wipe all credentials and mixes.
+2. **Ephemeral Git checkout storage**: Storing data inside Portainer's internal Git checkout directory without setting `PCB_DATA_DIR` to a permanent host path.
+3. **Silent volume switching**: Switching an existing deployment from a host bind mount (`./data`) to a named volume (`plex_data:/data`) without copying your files first. Docker named volumes initialize empty and will cause the bridge to start unlinked.
+4. **Incorrect file permissions**: If the host data directory has root-only permissions (`0700`), the container's non-root `appuser` (UID `10001`) cannot write to it, causing startup or save errors. Ensure the host folder is owned by or writable by UID 10001:
+   ```bash
+   sudo chown -R 10001:10001 /path/to/data
+   ```
 
-The apply command verifies the replacement and then records the reviewed digest in the managed override. Keep the backup directory and the override. From the Compose directory, normal `docker compose up -d` selects that digest; when using explicit `-f` arguments, include the managed override last. Passing only the original file omits it and can select the original image. You can repeat verification later:
+---
 
-```sh
-python3 scripts/upgrade.py verify \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json"
-```
+## Developer and Fork Workflows
 
-Use the same `--health-url` if you supplied one during apply. The music check attempts a SQLite online snapshot in a network-isolated helper with the source mounted recursively read-only. It returns **NOT TESTED** if the Docker version, kernel, filesystem, database state, or permissions do not support that operation. Offline backup verification is separate. A **NOT TESTED** result is not a pass. Keep the backup and investigate before treating the upgrade as complete. In the dashboard, open existing saved mixes and check that their tracks are present, then browse or search the existing music index. Compare these with what you recorded before the upgrade. This manual check does not establish database integrity; retain the verified offline backup. Check Google Home in normal use if applicable. Keep the previous image and backup until you are satisfied.
+- **Building from local source**: Developers who clone the repository and modify source code can build locally using the build override:
+  ```bash
+  docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
+  ```
+- **Custom GHCR images / Forks**: Set `image:` in your Compose file to your custom repository (e.g. `ghcr.io/yourusername/plex-cast-bridge:latest`). The image-only deployment works identically with any compliant container image.
 
-Docker Desktop on macOS or Windows is not a supported host for the live SQLite snapshot or ownership-preserving data restoration. The tool fails closed there: it does not finalize the reviewed image selection when the live check is **NOT TESTED**, and full data restoration requires a suitable Linux Docker host. Use a Linux Docker host for a completed supported upgrade, or keep the backup and follow the printed recovery instructions.
+---
 
-If replacement passed but the image selection was interrupted, preserve the backup and review the printed recovery instructions. Once the service and backup have been inspected, retry selection with:
+## Native Python Installations (Non-Docker)
 
-```sh
-python3 scripts/upgrade.py finalize-selection \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" --confirm
-```
+Native installations running directly on host Python (outside Docker) require Python 3.14 (`requires-python = ">=3.14,<3.15"`).
+- **With `uv`**: Run `uv sync` in the repository. `uv` automatically downloads and uses a standalone Python 3.14 runtime without modifying system packages.
+- **Without `uv`**: Systems with host Python older than 3.14 (e.g. Debian 12 / Ubuntu 24.04) cannot run the bridge natively and must install Python 3.14 or switch to the supported Docker container.
 
-Use the same custom `--health-url` if applicable. This command verifies the candidate and backup before switching the override. If apply did not record completion or verification fails, use the image rollback command below instead of finalizing.
-
-For image recovery, select the same plan and explicitly confirm the image rollback:
-
-```sh
-python3 scripts/upgrade.py rollback \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
-  --confirm-image-rollback
-```
-
-This changes the image only. It does not overwrite newer data, credentials, or Compose files with the backup. An older image may not understand data changed by a newer version; if it cannot start, keep the backup and current data and investigate before restoring anything. Never extract a database backup over a running writer. A full data restore replaces the active data with the older backup, so newer changes will no longer appear in the service. It requires separate explicit authorization and all writers must remain stopped.
-
-You can inspect a backup without changing active data. Choose a new destination under a private directory; preserving the original file ownership may require additional host permissions:
-
-```sh
-mkdir -p -m 700 "$HOME/.local/share/plex-cast-bridge/restore-review"
-python3 scripts/upgrade.py stage-restore \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
-  --destination "$HOME/.local/share/plex-cast-bridge/restore-review/staged-data"
-```
-
-The staged copy contains credentials and needs the same protection as the original data. The command refuses to overwrite an existing destination or write inside the active data directory.
-
-If image-only rollback cannot recover the service and you have reviewed the backup, this separate command stops the bridge, creates and verifies a safety backup of current data, preserves the current directory, restores the selected data backup, and starts the previous image:
-
-```sh
-python3 scripts/upgrade.py restore-data \
-  --plan-file "$HOME/.local/share/plex-cast-bridge/upgrade-review.json" \
-  --confirm-overwrite-data --confirm-exclusive-data
-```
-
-This is an explicit data replacement. Keep the printed safety backup, preserved directory, and restore journal: they contain newer data and credentials. The command refuses to proceed if it cannot preserve ownership, if a data restore journal already exists, or if the current configuration differs from the reviewed one. It does not replace Compose files, external catalogs, or credentials outside the data directory. If interrupted, leave writers stopped and inspect the journal and preserved directory before taking further action.
-
-## Native installations (non-Docker)
-
-Native installations running directly on host Python (outside Docker) are **not automatically backward-compatible** when upgrading to this release because the project requires Python 3.14 (`requires-python = ">=3.14,<3.15"`).
-
-- **When managed with `uv`**: `uv` automatically downloads and uses a managed Python 3.14 standalone interpreter when syncing or running commands (such as `uv sync` or `uv run`), without modifying system Python or requiring host package-manager upgrades.
-- **When managed with standard virtual environments or host Python**: Systems running Python older than 3.14 (such as Debian 12 with Python 3.11 or Ubuntu 24.04 with Python 3.12) cannot execute the bridge runtime directly. Operators must install a Python 3.14 interpreter or switch to the supported Docker container deployment.
-- **Upgrade scripts**: `scripts/upgrade.py` itself uses only standard-library modules compatible with host Python 3.11+ (such as `datetime.UTC`), allowing host Python 3.11+ to run the upgrade utility, but the bridge runtime and dependencies require Python 3.14.
+---
 
 ## Google Home and Cloud Run
 
-Cloud Run is optional and is not changed by a local upgrade. Existing Google Home users should keep their current cloud service, credentials, Firestore data, and linked devices. Cloud Run image updates are a separate maintainer operation described in [persistent state and upgrades](persistent-state.md); do not rerun first-install provisioning or relink merely to upgrade.
+Cloud Run voice gateway updates are completely independent of local Docker container upgrades. Existing Google Home users should keep their current Cloud Run service, secrets, Firestore records, and linked devices. You do **not** need to redeploy Cloud Run or relink Google Home when upgrading your local bridge container.
 
-The offline data restore has not yet been validated across all filesystem and container configurations. It stops for manual review when it cannot safely account for additional writable mounts. A catalog outside the data mount is supported only when it is an individually bind-mounted file. Named Docker volumes whose source is inaccessible to the host user also need manual handling. These limitations are being addressed before the workflow is recommended for general users.
+---
+
+## Optional: Script-Assisted Reviewed Upgrade Workflow
+
+For enterprise or Proxmox LXC environments requiring offline quiesced backup verification, preflight doctor checks, and immutable digest review before application, the script-assisted tooling in `scripts/upgrade.py` remains available:
+
+```bash
+# Optional preflight diagnostic
+python3 scripts/upgrade.py doctor --compose-file deploy/docker-compose.yml --check-updates
+```
+
+See [persistent-state.md](persistent-state.md) and [proxmox-deployment.md](proxmox-deployment.md) for specialized Proxmox LXC scripts.
