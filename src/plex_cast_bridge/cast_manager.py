@@ -1,27 +1,181 @@
+import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
 from pathlib import Path
+from uuid import UUID
 
 import pychromecast
+from pychromecast.const import CAST_TYPE_GROUP
 
 from .cast_discovery import _discover_via_dnssd, extract_room_name
 from .local_speaker import LocalSpeaker
 from .speaker_queue import DEFAULT_CAST_VOLUME, SpeakerQueue
+from .speaker_registry import is_cast_group
 
 log = logging.getLogger(__name__)
+
+DIAL_IDENTITY_TIMEOUT = 4.0
+_HOSTNAME_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
+)
 
 # Re-export discovery helpers and SpeakerQueue for existing import paths / monkeypatches.
 __all__ = [
     "DEFAULT_CAST_VOLUME",
+    "DIAL_IDENTITY_TIMEOUT",
     "CastManager",
     "SpeakerQueue",
     "_discover_via_dnssd",
     "extract_room_name",
+    "resolve_dial_display_metadata",
+    "verify_host_cast_uuid",
 ]
+
+
+def _parse_uuid(value: object) -> UUID | None:
+    """Parse a valid UUID value without raising on missing or malformed inputs."""
+    if isinstance(value, UUID):
+        return value
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _uuids_match(left: object, right: object) -> bool:
+    """Compare two Cast UUIDs structurally when valid, else case-insensitively."""
+    left_uuid = _parse_uuid(left)
+    right_uuid = _parse_uuid(right)
+    if left_uuid is not None and right_uuid is not None:
+        return left_uuid == right_uuid
+    left_text = str(left or "").strip().casefold()
+    right_text = str(right or "").strip().casefold()
+    return bool(left_text and left_text == right_text)
+
+
+def _validate_host(host: object) -> str | None:
+    """Return a clean IP address or hostname suitable for Cast/DIAL access."""
+    if not isinstance(host, str):
+        return None
+    candidate = host.strip()
+    if not candidate or candidate.casefold() == "local":
+        return None
+    if any(ch.isspace() or ch in "/?#@\\" for ch in candidate):
+        return None
+    ip_part = candidate.partition("%")[0]
+    try:
+        ip = ipaddress.ip_address(ip_part)
+    except ValueError:
+        if ":" in candidate or len(candidate) > 253 or not _HOSTNAME_RE.match(candidate):
+            return None
+        return candidate
+    if ip.is_unspecified:
+        return None
+    return candidate
+
+
+def _validate_port(port: object) -> int | None:
+    """Return a valid TCP port number, defaulting None to standard Cast port 8009."""
+    if port is None:
+        return 8009
+    if isinstance(port, bool) or not isinstance(port, int):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    return port
+
+
+def _is_individual_speaker_record(record: dict) -> bool:
+    """Return True only when a catalog record represents an individual speaker."""
+    if record.get("is_group"):
+        return False
+    kind = record.get("kind")
+    if kind is not None and str(kind).strip().casefold() != "speaker":
+        return False
+    if is_cast_group(record.get("model"), record.get("name")):
+        return False
+    return True
+
+
+def verify_host_cast_uuid(
+    host: str,
+    expected_uuid: str | UUID,
+    *,
+    timeout: float = DIAL_IDENTITY_TIMEOUT,
+) -> tuple[UUID, object]:
+    """Verify a Cast host's identity independently via PyChromecast DIAL."""
+    expected = _parse_uuid(expected_uuid)
+    if expected is None:
+        raise ValueError("Cast UUID unavailable: expected UUID is missing or malformed")
+    validated_host = _validate_host(host)
+    if validated_host is None:
+        raise ValueError("Cast UUID unavailable: configured speaker host is missing or invalid")
+    try:
+        device_info = pychromecast.dial.get_device_info(validated_host, timeout=timeout)
+    except Exception as exc:
+        log.warning(
+            "DIAL identity check failed for host %s (%s)",
+            validated_host,
+            type(exc).__name__,
+        )
+        raise ValueError(
+            "Cast UUID unavailable: could not verify device identity from configured host"
+        ) from exc
+    if device_info is None:
+        log.warning("DIAL identity check returned no device info for host %s", validated_host)
+        raise ValueError(
+            "Cast UUID unavailable: could not verify device identity from configured host"
+        )
+
+    cast_type = str(getattr(device_info, "cast_type", "") or "").strip().casefold()
+    reported_model = getattr(device_info, "model_name", None)
+    if cast_type == CAST_TYPE_GROUP or is_cast_group(reported_model):
+        raise ValueError("Cast UUID unavailable: configured host reported a Cast Group")
+
+    reported = _parse_uuid(getattr(device_info, "uuid", None))
+    if reported is None:
+        raise ValueError(
+            "Cast UUID unavailable: configured host did not report a valid device UUID"
+        )
+    if reported != expected:
+        raise ValueError("Cast UUID mismatch: configured host reported a different Cast device")
+    return reported, device_info
+
+
+def resolve_dial_display_metadata(
+    device_info: object,
+    *,
+    fallback_model: str = "Google Cast",
+    fallback_name: str = "Cast speaker",
+) -> tuple[str, str]:
+    """Extract non-placeholder model and friendly name from a DIAL DeviceStatus."""
+    reported_model = getattr(device_info, "model_name", None)
+    model_name = (
+        reported_model.strip()
+        if isinstance(reported_model, str)
+        and reported_model.strip()
+        and reported_model.strip() != "Unknown model name"
+        else fallback_model
+    )
+    reported_name = getattr(device_info, "friendly_name", None)
+    friendly_name = (
+        reported_name.strip()
+        if isinstance(reported_name, str)
+        and reported_name.strip()
+        and reported_name.strip() != "Unknown Chromecast"
+        else fallback_name
+    )
+    return model_name, friendly_name
 
 
 class CastManager:
@@ -60,6 +214,8 @@ class CastManager:
                             "visible": s.get("google_home_visible", s.get("enabled", True)),
                             "room": room,
                             "model": s.get("model", "Google Cast"),
+                            "kind": s.get("kind"),
+                            "is_group": bool(s.get("is_group", False)),
                             "uuid": s.get("cast_uuid") or s.get("uuid"),
                             "host": s.get("host"),
                             "port": s.get("port", 8009),
@@ -141,7 +297,14 @@ class CastManager:
             log.warning("Cast endpoint for '%s' did not respond on port %s; retrying on 8009",
                         name, host_tuple[1])
             cast = pychromecast.get_chromecast_from_host(fallback)
-            cast.wait(timeout=timeout)
+            try:
+                cast.wait(timeout=timeout)
+            except Exception:
+                try:
+                    cast.disconnect()
+                except Exception:
+                    log.debug("Could not close failed Cast connection for '%s'", name, exc_info=True)
+                raise
         sq = SpeakerQueue(
             cast,
             default_volume=min(self.default_volume, self.max_volume),
@@ -277,23 +440,67 @@ class CastManager:
             self.last_discovered = discovered
         return discovered
 
-    def get_device(self, device_id: str):
-        """Resolve an authorized virtual device by UUID using fresh discovery.
-
-        Never trust a persisted IP as proof of identity; DHCP can reassign it.
-        """
-        records = [s for s in self._get_catalog_speakers() if s.get("device_id") == device_id]
+    def _resolve_verified_catalog_host(self, device_id: str, expected_uuid_key: str) -> tuple:
+        """Resolve an individual speaker from catalog after independent DIAL UUID verification."""
+        catalog_speakers = self._get_catalog_speakers()
+        records = [s for s in catalog_speakers if s.get("device_id") == device_id]
         if len(records) != 1:
             raise ValueError("Unknown or conflicting virtual device")
         record = records[0]
         if not record.get("enabled") or not record.get("visible"):
             raise ValueError("Virtual device is disabled or hidden")
-        uuid = str(record.get("uuid") or "").casefold()
-        if not uuid:
-            name = (record.get("name") or "").casefold()
-            if sum(1 for s in self._get_catalog_speakers() if (s.get("name") or "").casefold() == name) != 1:
-                raise ValueError("Ambiguous legacy speaker")
-            return self.get(record.get("name"))
+        if not _is_individual_speaker_record(record):
+            raise ValueError(
+                "Cast UUID unavailable: direct host fallback is not supported for Cast Groups"
+            )
+        raw_uuid = str(record.get("uuid") or "").strip()
+        expected_uuid = _parse_uuid(raw_uuid)
+        if expected_uuid is None or str(expected_uuid) != expected_uuid_key:
+            raise ValueError("Cast UUID unavailable: catalog UUID is missing or malformed")
+        matching_uuid_records = [
+            s for s in catalog_speakers if _parse_uuid(s.get("uuid")) == expected_uuid
+        ]
+        if len(matching_uuid_records) != 1:
+            raise ValueError("Cast UUID unavailable or ambiguous")
+
+        host = _validate_host(record.get("host"))
+        if host is None:
+            raise ValueError("Cast UUID unavailable: no valid configured speaker host")
+        port = _validate_port(record.get("port", 8009))
+        if port is None:
+            raise ValueError("Cast UUID unavailable: invalid configured speaker port")
+
+        reported_uuid, device_info = verify_host_cast_uuid(host, expected_uuid)
+        model_name, friendly_name = resolve_dial_display_metadata(
+            device_info,
+            fallback_model=record.get("model") or "Google Cast",
+            fallback_name=record.get("name") or device_id,
+        )
+        log.info(
+            "Verified Cast UUID for %r via DIAL at %s:%s; connecting host-based",
+            device_id,
+            host,
+            port,
+        )
+        return (host, port, reported_uuid, model_name, friendly_name)
+
+    def get_device(self, device_id: str):
+        """Resolve an authorized virtual device by UUID via mDNS or DIAL-verified host fallback.
+
+        Never trust a persisted IP as proof of identity; DHCP can reassign it.
+        """
+        catalog_speakers = self._get_catalog_speakers()
+        records = [s for s in catalog_speakers if s.get("device_id") == device_id]
+        if len(records) != 1:
+            raise ValueError("Unknown or conflicting virtual device")
+        record = records[0]
+        if not record.get("enabled") or not record.get("visible"):
+            raise ValueError("Virtual device is disabled or hidden")
+        raw_uuid = str(record.get("uuid") or "").strip()
+        if not raw_uuid:
+            raise ValueError("Cast UUID unavailable: catalog UUID is missing or malformed")
+        parsed_uuid = _parse_uuid(raw_uuid)
+        uuid = str(parsed_uuid) if parsed_uuid is not None else raw_uuid.casefold()
         key = f"uuid:{uuid}"
         with self.lock:
             cached = self.speakers.get(key)
@@ -302,22 +509,37 @@ class CastManager:
                     return cached
                 self._discard_speaker(key)
 
+        host_tuple = None
         # Share the same discovery lock used by background/manual speaker scans.
         # Concurrent Zeroconf browsers can return no result or duplicate Cast
         # records transiently, which made valid voice commands fail to route.
         with self._discovery_lock:
-            casts, browser = pychromecast.get_chromecasts(timeout=3)
+            casts = []
+            browser = None
             try:
-                matches = [c.cast_info for c in casts if str(c.uuid).casefold() == uuid]
-                if len(matches) != 1:
+                casts, browser = pychromecast.get_chromecasts(timeout=3)
+                matches = [c.cast_info for c in casts if _uuids_match(c.uuid, uuid)]
+                if len(matches) > 1:
                     raise ValueError("Cast UUID unavailable or ambiguous")
-                info = matches[0]
-                host_tuple = (info.host, info.port, info.uuid, info.model_name, info.friendly_name)
+                if len(matches) == 1:
+                    info = matches[0]
+                    host_tuple = (
+                        info.host,
+                        info.port,
+                        info.uuid,
+                        info.model_name,
+                        info.friendly_name,
+                    )
+            except ValueError:
+                raise
+            except Exception as exc:
+                log.debug("pychromecast get_chromecasts error during virtual-device lookup: %s", exc)
             finally:
-                try:
-                    browser.stop_discovery()
-                except Exception as exc:
-                    log.debug("stop_discovery failed during virtual-device resolution: %s", exc)
+                if browser is not None:
+                    try:
+                        browser.stop_discovery()
+                    except Exception as exc:
+                        log.debug("stop_discovery failed during virtual-device resolution: %s", exc)
                 for cast in casts:
                     try:
                         cast.disconnect()
@@ -325,6 +547,13 @@ class CastManager:
                         # A cleanup error must not replace a successful UUID match
                         # or obscure the actionable discovery error above.
                         log.debug("Cast cleanup after UUID lookup failed: %s", exc)
+
+        if host_tuple is None:
+            log.info(
+                "mDNS did not find virtual device %r; attempting UUID-verified host fallback",
+                device_id,
+            )
+            host_tuple = self._resolve_verified_catalog_host(device_id, uuid)
 
         with self.lock:
             cached = self.speakers.get(key)
