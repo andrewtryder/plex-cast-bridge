@@ -32,6 +32,17 @@ OLDER_IMAGE = os.getenv(
     "PCB_TEST_START_IMAGE",
     "ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb",
 )
+SYNTHETIC_LEGACY_PLEX_TOKEN = "synthetic-legacy-token-upgrade-test"
+_SENSITIVE_SYNTHETIC_VALUES = (
+    SYNTHETIC_LEGACY_PLEX_TOKEN,
+    "synthetic-jwt-token-upgrade-test",
+    "synthetic-catalog-key-777",
+)
+_STARTUP_LOG_MARKERS = (
+    "Local control API running",
+    "Local dashboard and control API",
+    "Application startup complete",
+)
 
 
 def _docker_available() -> bool:
@@ -57,6 +68,113 @@ def _ensure_older_image() -> None:
     res = subprocess.run(["docker", "image", "inspect", OLDER_IMAGE], capture_output=True)
     if res.returncode != 0:
         subprocess.run(["docker", "pull", OLDER_IMAGE], check=True, capture_output=True)
+
+
+def _sanitize_container_text(text: str) -> str:
+    """Redact synthetic credentials/tokens from container diagnostic output."""
+    sanitized = text or ""
+    for secret in _SENSITIVE_SYNTHETIC_VALUES:
+        if secret:
+            sanitized = sanitized.replace(secret, "<REDACTED>")
+    return sanitized
+
+
+def _container_diagnostics(cid: str) -> str:
+    """Return sanitized container state and tail logs for failure diagnostics."""
+    inspect_res = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            "status={{.State.Status}} running={{.State.Running}} exit_code={{.State.ExitCode}} error={{.State.Error}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    logs_res = subprocess.run(
+        ["docker", "logs", "--tail", "50", cid],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    state_line = _sanitize_container_text((inspect_res.stdout or inspect_res.stderr).strip())
+    combined_logs = "\n".join(part for part in (logs_res.stdout, logs_res.stderr) if part).strip()
+    log_tail = _sanitize_container_text(combined_logs[-2000:])
+    return f"{state_line or 'status=unavailable'}\nlogs:\n{log_tail or '<empty>'}"
+
+
+def _wait_for_container_python(
+    cid: str,
+    *,
+    require_startup_log: bool = True,
+    timeout: float = 20.0,
+) -> str:
+    """Wait until a container is running and responsive to Python, returning major.minor."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        inspect_res = subprocess.run(
+            ["docker", "inspect", cid, "--format", "{{.State.Running}}|{{.State.Status}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if inspect_res.returncode == 0:
+            running_str, _, status = inspect_res.stdout.strip().partition("|")
+            running = running_str == "true"
+            if not running and status in {"exited", "dead"}:
+                pytest.fail(
+                    f"Container {cid} exited before readiness check completed:\n"
+                    f"{_container_diagnostics(cid)}"
+                )
+            if running:
+                if require_startup_log:
+                    logs_res = subprocess.run(
+                        ["docker", "logs", "--tail", "100", cid],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    logs_text = f"{logs_res.stdout}\n{logs_res.stderr}"
+                    if "Application startup failed" in logs_text:
+                        pytest.fail(
+                            f"Container {cid} failed application startup:\n"
+                            f"{_container_diagnostics(cid)}"
+                        )
+                    startup_seen = any(marker in logs_text for marker in _STARTUP_LOG_MARKERS)
+                else:
+                    startup_seen = True
+
+                if startup_seen:
+                    probe = subprocess.run(
+                        [
+                            "docker",
+                            "exec",
+                            cid,
+                            "python",
+                            "-c",
+                            "import sys; from plex_cast_bridge.config import Settings; Settings(); print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if probe.returncode == 0:
+                        still_running = subprocess.run(
+                            ["docker", "inspect", cid, "--format", "{{.State.Running}}"],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        if still_running.returncode == 0 and still_running.stdout.strip() == "true":
+                            return probe.stdout.strip()
+        time.sleep(0.25)
+
+    pytest.fail(
+        f"Container {cid} did not become ready within {timeout:.1f}s:\n"
+        f"{_container_diagnostics(cid)}"
+    )
 
 
 def _seed_synthetic_data(data_dir: Path) -> dict:
@@ -229,9 +347,27 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
 
     data_dir = tmp_path / "data"
     expected = _seed_synthetic_data(data_dir)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "-v", f"{data_dir}:/data",
+            "--entrypoint", "python",
+            CANDIDATE_TAG,
+            "-c",
+            (
+                "from pathlib import Path; import shutil; "
+                "p = Path('/data/music_index.sqlite3'); "
+                "tmp = Path('/data/music_index.sqlite3.own'); "
+                "shutil.copyfile(p, tmp); tmp.chmod(0o666); tmp.replace(p)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
     cid_old = f"pcb-old-{uuid.uuid4().hex[:8]}"
     cid_new = f"pcb-new-{uuid.uuid4().hex[:8]}"
+    cid_rollback = f"pcb-rollback-{uuid.uuid4().hex[:8]}"
 
     try:
         # Step 1: Run older image and verify Python version
@@ -240,18 +376,14 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
                 "docker", "run", "-d", "--name", cid_old,
                 "-v", f"{data_dir}:/data",
                 "-e", "DATA_DIR=/data",
+                "-e", f"PLEX_TOKEN={SYNTHETIC_LEGACY_PLEX_TOKEN}",
                 "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
                 "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
                 OLDER_IMAGE,
             ],
             check=True, capture_output=True,
         )
-        time.sleep(2)
-
-        ver_old = subprocess.run(
-            ["docker", "exec", cid_old, "python", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        ver_old = _wait_for_container_python(cid_old)
         # Older release runs Python 3.12
         assert ver_old == "3.12", f"Expected older image to run Python 3.12, got {ver_old}"
 
@@ -271,13 +403,7 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
             ],
             check=True, capture_output=True,
         )
-        time.sleep(2)
-
-        # Verify candidate runs Python 3.14
-        ver_new = subprocess.run(
-            ["docker", "exec", cid_new, "python", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        ver_new = _wait_for_container_python(cid_new)
         assert ver_new == "3.14", f"Expected candidate image to run Python 3.14, got {ver_new}"
 
         # Verify candidate code is running
@@ -287,6 +413,12 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
         ).stdout.strip()
         assert code_check == "ok"
 
+        subprocess.run(
+            ["docker", "exec", cid_new, "chmod", "0666", "/data/music_index.sqlite3"],
+            check=True,
+            capture_output=True,
+        )
+
         # Verify all persistent data is intact
         _verify_synthetic_data(data_dir, expected)
 
@@ -294,25 +426,27 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
         subprocess.run(["docker", "stop", cid_new], check=True, capture_output=True)
         subprocess.run(["docker", "rm", cid_new], check=True, capture_output=True)
 
-        cid_rollback = f"pcb-rollback-{uuid.uuid4().hex[:8]}"
         subprocess.run(
             [
                 "docker", "run", "-d", "--name", cid_rollback,
                 "-v", f"{data_dir}:/data",
                 "-e", "DATA_DIR=/data",
+                "-e", f"PLEX_TOKEN={SYNTHETIC_LEGACY_PLEX_TOKEN}",
                 "-e", "PCB_DISABLE_BACKGROUND_DISCOVERY=1",
                 "-e", "ALLOW_UNAUTHENTICATED_LOCAL_API=true",
                 OLDER_IMAGE,
             ],
             check=True, capture_output=True,
         )
-        time.sleep(2)
+        ver_rollback = _wait_for_container_python(cid_rollback)
+        assert ver_rollback == "3.12", f"Expected rollback image to run Python 3.12, got {ver_rollback}"
 
         _verify_synthetic_data(data_dir, expected)
-        subprocess.run(["docker", "rm", "-f", cid_rollback], capture_output=True)
+        subprocess.run(["docker", "stop", cid_rollback], check=True, capture_output=True)
+        subprocess.run(["docker", "rm", cid_rollback], check=True, capture_output=True)
 
     finally:
-        subprocess.run(["docker", "rm", "-f", cid_old, cid_new], capture_output=True)
+        subprocess.run(["docker", "rm", "-f", cid_old, cid_new, cid_rollback], capture_output=True)
 
 
 # ---------------------------------------------------------------------------
@@ -508,26 +642,26 @@ def test_actual_compose_lifecycle_recreation(tmp_path: Path):
             ["docker", "compose", "-f", str(compose_path), "-f", str(override), "up", "-d"],
             check=True, capture_output=True, env=env,
         )
-        time.sleep(2)
 
         cid = subprocess.run(
             ["docker", "compose", "-f", str(compose_path), "-f", str(override), "ps", "-q", "plex-cast-bridge"],
             capture_output=True, text=True, check=True, env=env,
         ).stdout.strip()
         assert cid, "Container ID should not be empty"
+        _wait_for_container_python(cid, require_startup_log=False)
 
         # Step 2: Recreate
         subprocess.run(
             ["docker", "compose", "-f", str(compose_path), "-f", str(override), "up", "-d", "--force-recreate"],
             check=True, capture_output=True, env=env,
         )
-        time.sleep(2)
 
         cid2 = subprocess.run(
             ["docker", "compose", "-f", str(compose_path), "-f", str(override), "ps", "-q", "plex-cast-bridge"],
             capture_output=True, text=True, check=True, env=env,
         ).stdout.strip()
         assert cid2 != cid, "Container should have been recreated"
+        _wait_for_container_python(cid2, require_startup_log=False)
 
         _verify_synthetic_data(data_dir, expected)
 
@@ -588,7 +722,12 @@ def test_portainer_git_stack_changing_checkout_directory_preserves_mount(tmp_pat
             ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "up", "-d"],
             cwd=str(checkout_1), check=True, capture_output=True, env=env,
         )
-        time.sleep(2)
+        cid1 = subprocess.run(
+            ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "ps", "-q", "plex-cast-bridge"],
+            cwd=str(checkout_1), capture_output=True, text=True, check=True, env=env,
+        ).stdout.strip()
+        assert cid1, "Checkout 1 container ID should not be empty"
+        _wait_for_container_python(cid1, require_startup_log=False)
 
         # Simulate Portainer wiping checkout 1 on stack update
         shutil.rmtree(checkout_1)
@@ -598,7 +737,12 @@ def test_portainer_git_stack_changing_checkout_directory_preserves_mount(tmp_pat
             ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "up", "-d", "--force-recreate"],
             cwd=str(checkout_2), check=True, capture_output=True, env=env,
         )
-        time.sleep(2)
+        cid2 = subprocess.run(
+            ["docker", "compose", "-f", "docker-compose.portainer.yml", "-f", "docker-compose.override.yml", "ps", "-q", "plex-cast-bridge"],
+            cwd=str(checkout_2), capture_output=True, text=True, check=True, env=env,
+        ).stdout.strip()
+        assert cid2, "Checkout 2 container ID should not be empty"
+        _wait_for_container_python(cid2, require_startup_log=False)
 
         # Verify all persistent data remains intact
         _verify_synthetic_data(host_data, expected)
@@ -671,7 +815,7 @@ def test_failure_behavior_read_only_mount(tmp_path: Path):
             ],
             check=True, capture_output=True,
         )
-        time.sleep(2)
+        _wait_for_container_python(cid, require_startup_log=False)
 
         script = (
             "from pathlib import Path\n"
@@ -863,7 +1007,7 @@ def test_google_home_dashboard_only_allows_dev_null_placeholder(tmp_path: Path):
             ],
             check=True, capture_output=True,
         )
-        time.sleep(2)
+        _wait_for_container_python(cid, require_startup_log=False)
 
         inspect_res = subprocess.run(
             ["docker", "inspect", cid, "--format", "{{.State.Running}}"],
