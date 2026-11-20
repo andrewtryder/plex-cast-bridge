@@ -62,6 +62,36 @@ def _track_summary(track) -> dict:
     }
 
 
+def _is_media_stopped(cast, media, *, stop_acknowledged: bool) -> bool:
+    """Confirm Cast media playback stopped via IDLE/STOPPED or acknowledged app teardown."""
+    status = getattr(media, "status", None)
+    state = getattr(status, "player_state", None)
+    if state in ("IDLE", "STOPPED"):
+        return True
+    if not stop_acknowledged or state != "UNKNOWN":
+        return False
+    # receiver.stop_app() terminates Default Media Receiver (CC1AD845), causing
+    # PyChromecast's channel_disconnected() to reset media.status to a fresh
+    # MediaStatus(player_state="UNKNOWN", media_session_id=None).
+    if getattr(status, "media_session_id", None) is not None:
+        return False
+    socket_client = getattr(cast, "socket_client", None)
+    if socket_client is not None and getattr(socket_client, "is_connected", True) is False:
+        return False
+    app_namespaces = getattr(socket_client, "app_namespaces", None)
+    media_namespace = getattr(media, "namespace", None)
+    if (
+        isinstance(app_namespaces, (list, set, tuple))
+        and isinstance(media_namespace, str)
+        and media_namespace in app_namespaces
+    ):
+        return False
+    cast_status = getattr(cast, "status", None)
+    if getattr(cast_status, "app_id", None) == "CC1AD845":
+        return False
+    return True
+
+
 class SpeakerQueue(MediaStatusListener):
     def __init__(self, cast, default_volume=DEFAULT_CAST_VOLUME, max_volume: float = 1.0):
         self.cast = cast
@@ -699,16 +729,22 @@ class SpeakerQueue(MediaStatusListener):
             if was_playing:
                 # A successful Receiver STOP_APP callback means the request was
                 # accepted, not that media playback actually ended. Wait for a
-                # fresh Cast media status before reporting command completion.
+                # fresh Cast media status (IDLE/STOPPED) or confirmed app teardown.
                 deadline = time.monotonic() + self.stop_confirmation_timeout
                 while time.monotonic() < deadline:
-                    state = getattr(getattr(media, "status", None), "player_state", None)
-                    if state == "IDLE":
+                    stop_acknowledged = bool(
+                        stop_error is None and stopped.is_set() and accepted and accepted[0]
+                    )
+                    if _is_media_stopped(self.cast, media, stop_acknowledged=stop_acknowledged):
                         break
+                    if stopped.is_set() and accepted and not accepted[0]:
+                        raise RuntimeError(
+                            f"Cast rejected stop on '{self.cast.name}'"
+                        ) from stop_error
                     time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
                 else:
                     raise RuntimeError(
-                        f"Cast player did not report IDLE after stop on '{self.cast.name}'"
+                        f"Cast player did not report IDLE or stopped app after stop on '{self.cast.name}'"
                     ) from stop_error
             elif stop_error is not None:
                 raise RuntimeError(f"Cast stop request failed on '{self.cast.name}'") from stop_error

@@ -271,6 +271,105 @@ def test_stop_does_not_report_success_when_cast_remains_playing():
     q.close()
 
 
+@pytest.mark.parametrize("new_app_id", ["E8C28D3C", None])
+def test_stop_accepts_app_teardown_unknown_state_after_channel_disconnect(new_app_id):
+    media_ns = "urn:x-cast:com.google.cast.media"
+    media = MagicMock()
+    media.namespace = media_ns
+    media.status = SimpleNamespace(player_state="PLAYING", media_session_id=42)
+    cast_status = SimpleNamespace(volume_level=0.15, app_id="CC1AD845")
+    receiver = MagicMock()
+    socket_client = SimpleNamespace(
+        receiver_controller=receiver,
+        is_connected=True,
+        app_namespaces=[media_ns],
+    )
+
+    def stop_and_teardown(callback_function):
+        # Model PyChromecast SocketClient.new_cast_status() -> MediaController.channel_disconnected()
+        cast_status.app_id = new_app_id
+        socket_client.app_namespaces = []
+        media.status = SimpleNamespace(player_state="UNKNOWN", media_session_id=None)
+        callback_function(True, {})
+
+    def send_volume(payload):
+        if payload.get("type") == "SET_VOLUME":
+            cast_status.volume_level = payload["volume"]["level"]
+
+    receiver.stop_app.side_effect = stop_and_teardown
+    receiver.send_message.side_effect = send_volume
+    cast = SimpleNamespace(
+        media_controller=media,
+        name="Master Bedroom display",
+        set_volume=MagicMock(),
+        status=cast_status,
+        socket_client=socket_client,
+    )
+    q = SpeakerQueue(cast, default_volume=0.4, max_volume=0.85)
+    q.load_watchdog_seconds = 0
+    q.replace([_track("a")], repeat=False)
+    assert cast_status.volume_level == 0.4
+    q.stop()
+    assert cast_status.volume_level == 0.15
+    q.close()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "no_callback",
+        "rejected",
+        "disconnected",
+        "cc1ad845_still_active",
+        "media_namespace_still_active",
+        "media_session_still_active",
+    ],
+)
+def test_stop_fails_closed_on_unconfirmed_unknown_state(scenario):
+    media_ns = "urn:x-cast:com.google.cast.media"
+    media = MagicMock()
+    media.namespace = media_ns
+    media.status = SimpleNamespace(player_state="PLAYING", media_session_id=42)
+    cast_status = SimpleNamespace(volume_level=0.15, app_id="CC1AD845")
+    receiver = MagicMock()
+    socket_client = SimpleNamespace(
+        receiver_controller=receiver,
+        is_connected=True,
+        app_namespaces=[media_ns],
+    )
+
+    def stop_side_effect(callback_function):
+        media.status = SimpleNamespace(
+            player_state="UNKNOWN",
+            media_session_id=42 if scenario == "media_session_still_active" else None,
+        )
+        if scenario == "disconnected":
+            socket_client.is_connected = False
+        if scenario != "cc1ad845_still_active":
+            cast_status.app_id = "E8C28D3C"
+        if scenario != "media_namespace_still_active":
+            socket_client.app_namespaces = []
+        if scenario == "no_callback":
+            return
+        callback_function(scenario != "rejected", {})
+
+    receiver.stop_app.side_effect = stop_side_effect
+    cast = SimpleNamespace(
+        media_controller=media,
+        name="Master Bedroom display",
+        set_volume=MagicMock(),
+        status=cast_status,
+        socket_client=socket_client,
+    )
+    q = SpeakerQueue(cast, default_volume=0.4, max_volume=0.85)
+    q.current = _track("a")
+    q.stop_confirmation_timeout = 0.05
+    expected_match = "Cast rejected stop" if scenario == "rejected" else "did not report IDLE"
+    with pytest.raises(RuntimeError, match=expected_match):
+        q.stop()
+    q.close()
+
+
 def test_native_queue_advances_bridge_queue_and_removes_stale_item():
     receiver = MagicMock()
     media = MagicMock()
