@@ -347,6 +347,23 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
 
     data_dir = tmp_path / "data"
     expected = _seed_synthetic_data(data_dir)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "-v", f"{data_dir}:/data",
+            "--entrypoint", "python",
+            CANDIDATE_TAG,
+            "-c",
+            (
+                "from pathlib import Path; import shutil; "
+                "p = Path('/data/music_index.sqlite3'); "
+                "tmp = Path('/data/music_index.sqlite3.own'); "
+                "shutil.copyfile(p, tmp); tmp.chmod(0o666); tmp.replace(p)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
     cid_old = f"pcb-old-{uuid.uuid4().hex[:8]}"
     cid_new = f"pcb-new-{uuid.uuid4().hex[:8]}"
@@ -395,6 +412,12 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         assert code_check == "ok"
+
+        subprocess.run(
+            ["docker", "exec", cid_new, "chmod", "0666", "/data/music_index.sqlite3"],
+            check=True,
+            capture_output=True,
+        )
 
         # Verify all persistent data is intact
         _verify_synthetic_data(data_dir, expected)
