@@ -11,8 +11,10 @@ from urllib.request import Request, urlopen
 
 import pychromecast
 
+from plex_cast_bridge.cast_manager import resolve_dial_display_metadata, verify_host_cast_uuid
 from plex_cast_bridge.catalog_store import list_speaker_records
 from plex_cast_bridge.config import Settings
+from plex_cast_bridge.speaker_registry import is_cast_group
 
 log = logging.getLogger("test_live_cast")
 
@@ -247,25 +249,47 @@ def main(argv=None) -> int:
         log.error("Cast UUID does not resolve to exactly one configured speaker")
         return 1
     record = records[0]
+    if not record.get("enabled", True) or not record.get("google_home_visible", True):
+        log.error("Refusing disabled or hidden speaker")
+        return 1
     device_id = record.get("google_home_device_id") or record.get("id")
-    if record.get("kind") == "group" or record.get("is_group"):
+    if not device_id:
+        log.error("Configured speaker does not have a Google Home virtual device ID")
+        return 1
+    if (
+        record.get("kind") == "group"
+        or record.get("is_group")
+        or is_cast_group(record.get("model"), record.get("speaker_name") or record.get("name"))
+    ):
         log.error("Refusing Cast Group; this helper only targets individual speakers")
         return 1
 
-    info = (
-        record.get("host"),
-        record.get("port", 8009),
-        record.get("cast_uuid") or record.get("uuid"),
-        record.get("model") or "Google Cast",
-        record.get("speaker_name") or record.get("name") or "Cast speaker",
-    )
+    host = record.get("host")
+    expected_uuid = record.get("cast_uuid") or record.get("uuid")
     cast = None
     try:
-        if not info[0] or not info[2]:
+        if not host or not expected_uuid:
             raise AcceptanceFailure("Configured Cast endpoint or UUID is missing")
+        try:
+            verified_uuid, device_info = verify_host_cast_uuid(host, expected_uuid)
+        except ValueError as exc:
+            raise AcceptanceFailure(str(exc)) from None
+
+        model_name, friendly_name = resolve_dial_display_metadata(
+            device_info,
+            fallback_model=record.get("model") or "Google Cast",
+            fallback_name=record.get("speaker_name") or record.get("name") or "Cast speaker",
+        )
+        info = (
+            host,
+            record.get("port", 8009),
+            verified_uuid,
+            model_name,
+            friendly_name,
+        )
         cast = pychromecast.get_chromecast_from_host(info)
         cast.wait(timeout=8)
-        if str(cast.uuid).casefold() != str(info[2]).casefold():
+        if str(cast.uuid).casefold() != str(verified_uuid).casefold():
             raise AcceptanceFailure("Configured endpoint returned a different Cast UUID")
         from types import SimpleNamespace
 
