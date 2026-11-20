@@ -249,6 +249,9 @@ def main(argv=None) -> int:
         log.error("Cast UUID does not resolve to exactly one configured speaker")
         return 1
     record = records[0]
+    if not record.get("enabled", True) or not record.get("google_home_visible", True):
+        log.error("Refusing disabled or hidden speaker")
+        return 1
     device_id = record.get("google_home_device_id") or record.get("id")
     if not device_id:
         log.error("Configured speaker does not have a Google Home virtual device ID")

@@ -499,6 +499,11 @@ class CastManager:
         raw_uuid = str(record.get("uuid") or "").strip()
         if not raw_uuid:
             raise ValueError("Cast UUID unavailable: catalog UUID is missing or malformed")
+        matching_uuid_records = [
+            s for s in catalog_speakers if _uuids_match(s.get("uuid"), raw_uuid)
+        ]
+        if len(matching_uuid_records) != 1:
+            raise ValueError("Cast UUID unavailable or ambiguous")
         parsed_uuid = _parse_uuid(raw_uuid)
         uuid = str(parsed_uuid) if parsed_uuid is not None else raw_uuid.casefold()
         key = f"uuid:{uuid}"

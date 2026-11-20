@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import release_acceptance as acceptance
 
@@ -793,3 +795,38 @@ def test_live_cast_main_rejects_catalog_group_by_model_before_dial(monkeypatch):
     rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", group_uuid, "--query", "private query"])
     assert rc == 1
     dial_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("overrides", [{"enabled": False}, {"google_home_visible": False}])
+def test_live_cast_main_rejects_disabled_or_hidden_speaker_before_dial(monkeypatch, overrides):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import pychromecast
+
+    from scripts import test_live_cast
+
+    mb_uuid = "11111111-1111-4111-8111-111111111111"
+    record = {
+        "google_home_device_id": "plex-jukebox:Master Bedroom",
+        "speaker_name": "Master Bedroom display",
+        "cast_uuid": mb_uuid,
+        "host": "192.168.88.126",
+        "port": 8009,
+        "kind": "speaker",
+        "model": "Google Nest Hub",
+        "enabled": True,
+        "google_home_visible": True,
+        **overrides,
+    }
+    monkeypatch.setattr(test_live_cast, "Settings", lambda: SimpleNamespace(max_cast_volume=0.85))
+    monkeypatch.setattr(test_live_cast, "list_speaker_records", lambda: [record])
+    dial_mock = MagicMock()
+    connect_mock = MagicMock()
+    monkeypatch.setattr(pychromecast.dial, "get_device_info", dial_mock)
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", connect_mock)
+
+    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query", "private query"])
+    assert rc == 1
+    dial_mock.assert_not_called()
+    connect_mock.assert_not_called()

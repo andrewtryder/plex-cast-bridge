@@ -496,9 +496,22 @@ def test_get_device_rejects_duplicate_virtual_device_ids_and_duplicate_uuids(tmp
         ],
     )
     dup_uuid_mgr = CastManager(catalog_path=dup_uuid_path)
-    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **kwargs: ([], MagicMock()))
+    mdns_hit = SimpleNamespace(
+        uuid=UUID(MB_UUID),
+        cast_info=SimpleNamespace(
+            host="192.168.88.126",
+            port=8009,
+            uuid=UUID(MB_UUID),
+            model_name="Google Nest Hub",
+            friendly_name="Master Bedroom display",
+        ),
+        disconnect=MagicMock(),
+    )
+    dup_mdns_mock = MagicMock(return_value=([mdns_hit], MagicMock()))
+    monkeypatch.setattr(pychromecast, "get_chromecasts", dup_mdns_mock)
     with pytest.raises(ValueError, match="unavailable or ambiguous"):
         dup_uuid_mgr.get_device("plex-jukebox:Master Bedroom")
+    dup_mdns_mock.assert_not_called()
     dial_mock.assert_not_called()
     connect_mock.assert_not_called()
 
