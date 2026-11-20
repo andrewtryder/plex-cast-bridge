@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import time
 from urllib.error import HTTPError, URLError
@@ -49,9 +50,45 @@ def dashboard_request(base_url: str, path: str, body: dict, timeout: float = 90)
         ) from None
 
 
+def _media_namespace_active(cast) -> bool | None:
+    """Return whether the Cast media namespace is currently active on the receiver."""
+    client = getattr(cast, "socket_client", None)
+    namespaces = getattr(client, "app_namespaces", None)
+    media_ns = getattr(getattr(cast, "media_controller", None), "namespace", None)
+    if not isinstance(namespaces, (list, tuple, set)) or not isinstance(media_ns, str):
+        return None
+    return media_ns in namespaces
+
+
+def _is_app_stopped(speaker) -> bool:
+    """Return True when the receiver is connected and tore down Default Media Receiver."""
+    cast = speaker.cast
+    client = getattr(cast, "socket_client", None)
+    if not getattr(client, "is_connected", False):
+        return False
+    if _media_namespace_active(cast) is not False:
+        return False
+    media_status = getattr(getattr(cast, "media_controller", None), "status", None)
+    state = str(getattr(media_status, "player_state", "UNKNOWN")).upper()
+    if state != "UNKNOWN" or getattr(media_status, "media_session_id", None) is not None:
+        return False
+    return getattr(getattr(cast, "status", None), "app_id", None) != "CC1AD845"
+
+
 def receiver_state(speaker) -> str:
     """Refresh and return the state from this exact Cast connection."""
-    speaker.cast.media_controller.update_status()
+    # Calling media_controller.update_status() when no media app owns the receiver
+    # causes PyChromecast to launch Default Media Receiver (CC1AD845).
+    if _media_namespace_active(speaker.cast) is False:
+        receiver = getattr(
+            getattr(speaker.cast, "socket_client", None),
+            "receiver_controller",
+            None,
+        )
+        if callable(getattr(receiver, "update_status", None)):
+            receiver.update_status()
+    else:
+        speaker.cast.media_controller.update_status()
     return str(getattr(speaker.cast.media_controller.status, "player_state", "UNKNOWN")).upper()
 
 
@@ -66,6 +103,8 @@ def wait_for_state(speaker, expected: set[str], timeout: float = 15, sleep=time.
         observed = receiver_state(speaker)
         if observed in expected:
             return observed
+        if "STOPPED" in expected and _is_app_stopped(speaker):
+            return "STOPPED"
         sleep(0.5)
     return observed
 
@@ -103,6 +142,7 @@ def run_device_test(
     base_url: str,
     max_volume: float,
     physical_idle_confirmed: bool = False,
+    dwell_seconds: float = 0.0,
     request=dashboard_request,
     sleep=time.sleep,
     wait=wait_for_state,
@@ -149,24 +189,32 @@ def run_device_test(
         results.append(("play", code, state))
         if code != 200 or state != "PLAYING":
             raise AcceptanceFailure("Receiver did not confirm PLAYING")
+        if dwell_seconds > 0:
+            sleep(dwell_seconds)
 
         code = transport("pause")
         state = wait(speaker, {"PAUSED"}, sleep=sleep)
         results.append(("pause", code, state))
         if code != 200 or state != "PAUSED":
             raise AcceptanceFailure("Receiver did not confirm PAUSED")
+        if dwell_seconds > 0:
+            sleep(max(1.0, dwell_seconds / 2))
 
         code = transport("resume")
         state = wait(speaker, {"PLAYING"}, sleep=sleep)
         results.append(("resume", code, state))
         if code != 200 or state != "PLAYING":
             raise AcceptanceFailure("Receiver did not confirm resumed PLAYING")
+        if dwell_seconds > 0:
+            sleep(dwell_seconds)
 
         for label, target in (("volume_up", raised), ("volume_down", lowered)):
             code = transport("volume", volume=target)
             if code != 200 or not set_volume_and_verify(speaker, target):
                 raise AcceptanceFailure(f"Receiver did not confirm {label}")
             results.append((label, code, round(target, 3)))
+            if dwell_seconds > 0:
+                sleep(max(1.0, dwell_seconds / 2))
 
         code = transport("stop")
         state = wait(speaker, {"IDLE", "STOPPED"}, sleep=sleep)
@@ -234,9 +282,17 @@ def main(argv=None) -> int:
         action="store_true",
         help="confirm in person that an UNKNOWN receiver is silent before playback starts",
     )
+    parser.add_argument(
+        "--dwell-seconds",
+        type=float,
+        default=4.0,
+        help="seconds to allow audible playback during play/pause/resume/volume checks",
+    )
     args = parser.parse_args(argv)
     if not args.allow_disruptive:
         parser.error("physical playback requires --allow-disruptive")
+    if not math.isfinite(args.dwell_seconds) or args.dwell_seconds < 0:
+        parser.error("--dwell-seconds must be a finite non-negative number")
 
     settings = Settings()
     records = [
@@ -301,6 +357,7 @@ def main(argv=None) -> int:
             base_url=args.base_url,
             max_volume=settings.max_cast_volume,
             physical_idle_confirmed=args.confirm_physical_idle,
+            dwell_seconds=args.dwell_seconds,
         )
         print(json.dumps(outcome))
         return 0

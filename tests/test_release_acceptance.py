@@ -830,3 +830,145 @@ def test_live_cast_main_rejects_disabled_or_hidden_speaker_before_dial(monkeypat
     assert rc == 1
     dial_mock.assert_not_called()
     connect_mock.assert_not_called()
+
+
+def test_live_cast_receiver_state_does_not_relaunch_media_app_when_namespace_absent():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from scripts.test_live_cast import receiver_state
+
+    media_ns = "urn:x-cast:com.google.cast.media"
+    receiver_ctrl = SimpleNamespace(update_status=MagicMock())
+    media_ctrl = SimpleNamespace(
+        namespace=media_ns,
+        status=SimpleNamespace(player_state="UNKNOWN", media_session_id=None),
+        update_status=MagicMock(),
+    )
+    speaker = SimpleNamespace(
+        cast=SimpleNamespace(
+            status=SimpleNamespace(app_id="E8C28D3C"),
+            socket_client=SimpleNamespace(
+                is_connected=True,
+                app_namespaces=["urn:x-cast:com.google.cast.receiver"],
+                receiver_controller=receiver_ctrl,
+            ),
+            media_controller=media_ctrl,
+        )
+    )
+
+    assert receiver_state(speaker) == "UNKNOWN"
+    media_ctrl.update_status.assert_not_called()
+    receiver_ctrl.update_status.assert_called_once()
+
+
+@pytest.mark.parametrize("new_app_id", ["E8C28D3C", None])
+def test_live_cast_wait_for_state_accepts_clean_app_teardown_on_stop(new_app_id):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from scripts.test_live_cast import wait_for_state
+
+    media_ns = "urn:x-cast:com.google.cast.media"
+    speaker = SimpleNamespace(
+        cast=SimpleNamespace(
+            status=SimpleNamespace(app_id=new_app_id),
+            socket_client=SimpleNamespace(
+                is_connected=True,
+                app_namespaces=["urn:x-cast:com.google.cast.receiver"],
+                receiver_controller=SimpleNamespace(update_status=MagicMock()),
+            ),
+            media_controller=SimpleNamespace(
+                namespace=media_ns,
+                status=SimpleNamespace(player_state="UNKNOWN", media_session_id=None),
+                update_status=MagicMock(),
+            ),
+        )
+    )
+
+    assert wait_for_state(speaker, {"IDLE", "STOPPED"}, timeout=0.2, sleep=lambda _d: None) == "STOPPED"
+    speaker.cast.media_controller.update_status.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda s: setattr(s.cast.status, "app_id", "CC1AD845"),
+        lambda s: s.cast.socket_client.app_namespaces.append("urn:x-cast:com.google.cast.media"),
+        lambda s: setattr(s.cast.media_controller.status, "media_session_id", 99),
+    ],
+)
+def test_live_cast_wait_for_state_rejects_unconfirmed_unknown_on_stop(mutator):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from scripts.test_live_cast import wait_for_state
+
+    media_ns = "urn:x-cast:com.google.cast.media"
+    speaker = SimpleNamespace(
+        cast=SimpleNamespace(
+            status=SimpleNamespace(app_id="E8C28D3C"),
+            socket_client=SimpleNamespace(
+                is_connected=True,
+                app_namespaces=["urn:x-cast:com.google.cast.receiver"],
+                receiver_controller=SimpleNamespace(update_status=MagicMock()),
+            ),
+            media_controller=SimpleNamespace(
+                namespace=media_ns,
+                status=SimpleNamespace(player_state="UNKNOWN", media_session_id=None),
+                update_status=MagicMock(),
+            ),
+        )
+    )
+    mutator(speaker)
+
+    assert wait_for_state(speaker, {"IDLE", "STOPPED"}, timeout=0.05, sleep=lambda _d: None) == "UNKNOWN"
+
+
+def test_live_cast_helper_sleeps_for_audible_dwell_between_transitions():
+    from types import SimpleNamespace
+
+    from scripts.test_live_cast import run_device_test
+
+    class Cast:
+        def __init__(self):
+            self.status = SimpleNamespace(volume_level=0.15)
+            self.socket_client = SimpleNamespace(is_connected=True)
+            self.media_controller = SimpleNamespace(
+                status=SimpleNamespace(player_state="IDLE"), update_status=lambda: None
+            )
+
+        def set_volume(self, value):
+            self.status.volume_level = value
+
+    speaker = SimpleNamespace(cast=Cast(), max_volume=0.85, is_group=False)
+    sleeps = []
+
+    def request(_url, path, body):
+        if path == "/api/command":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "pause":
+            speaker.cast.media_controller.status.player_state = "PAUSED"
+        elif body["action"] == "resume":
+            speaker.cast.media_controller.status.player_state = "PLAYING"
+        elif body["action"] == "volume":
+            speaker.cast.status.volume_level = body["volume"]
+        elif body["action"] == "stop":
+            speaker.cast.media_controller.status.player_state = "IDLE"
+        return 200
+
+    result = run_device_test(
+        speaker=speaker,
+        device_id="plex-jukebox:bedroom",
+        query="private query",
+        base_url="http://bridge",
+        max_volume=0.85,
+        dwell_seconds=3.0,
+        request=request,
+        sleep=lambda delay: sleeps.append(delay),
+    )
+    assert [item[0] for item in result] == [
+        "baseline", "safe_volume", "play", "pause", "resume",
+        "volume_up", "volume_down", "stop", "restore_volume",
+    ]
+    assert sleeps == [3.0, 1.5, 3.0, 1.5, 1.5]
