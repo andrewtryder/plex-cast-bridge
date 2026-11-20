@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -79,6 +80,70 @@ def test_mute_restore_obeys_configured_volume_limit():
     q.mute(True)
     q.mute(False)
     assert [call.args[0] for call in cast.set_volume.call_args_list] == [0.0, 0.4]
+    q.close()
+
+
+def test_mute_releases_queue_lock_before_waiting_for_cast_status():
+    """A receiver-status callback must run while a synchronous volume call waits."""
+
+    callback_finished = threading.Event()
+    callback_wait_results = []
+    cast = SimpleNamespace(
+        media_controller=MagicMock(),
+        name="Room",
+        status=SimpleNamespace(volume_level=0.35),
+    )
+    q = SpeakerQueue(cast)
+
+    def set_volume(_volume):
+        callback = threading.Thread(
+            target=lambda: (q.new_cast_status(cast.status), callback_finished.set()),
+            daemon=True,
+        )
+        callback.start()
+        callback_wait_results.append(callback_finished.wait(timeout=0.2))
+        callback.join(timeout=1)
+
+    cast.set_volume = set_volume
+
+    q.mute(True)
+    q.mute(False)
+
+    assert callback_wait_results == [True, True]
+    q.close()
+
+
+def test_overlapping_unmute_waits_for_inflight_mute():
+    mute_started = threading.Event()
+    allow_mute = threading.Event()
+    levels = []
+    status = SimpleNamespace(volume_level=0.35)
+    cast = SimpleNamespace(media_controller=MagicMock(), name="Room", status=status)
+    q = SpeakerQueue(cast)
+
+    def set_volume(level):
+        levels.append(level)
+        if level == 0.0:
+            mute_started.set()
+            assert allow_mute.wait(timeout=1)
+        status.volume_level = level
+
+    cast.set_volume = set_volume
+    mute_thread = threading.Thread(target=lambda: q.mute(True))
+    unmute_thread = threading.Thread(target=lambda: q.mute(False))
+
+    mute_thread.start()
+    assert mute_started.wait(timeout=1)
+    unmute_thread.start()
+    assert unmute_thread.is_alive()
+    allow_mute.set()
+    mute_thread.join(timeout=1)
+    unmute_thread.join(timeout=1)
+
+    assert not mute_thread.is_alive()
+    assert not unmute_thread.is_alive()
+    assert levels == [0.0, 0.35]
+    assert q._is_muted is False
     q.close()
 
 
