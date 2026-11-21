@@ -44,10 +44,31 @@ Those are Docker/shared-daemon tests and remain sequential. No `pytest-xdist`
 is enabled: process isolation has not been demonstrated for the shared Docker,
 filesystem, service-port, and concurrency-sensitive scenarios.
 
-Post-change test and CI timing must be captured from the PR run before claiming
-an improvement. The workflows now emit `--durations=20`; Buildx logs expose
-cache import/export and build times. Record the PR's job durations, cache hit
-or miss, and image build times here before merging.
+## Measured post-change validation
+
+CI run [#291](https://github.com/andrewtryder/plex-cast-bridge/actions/runs/44908941854)
+validated commit `e829755` successfully. It took **15m47s wall-clock** from
+workflow-job creation to the final Docker job completion; the critical-path
+Docker job was **15m45s**. The independent jobs were intentionally concurrent:
+
+| Job or step | Measured duration | Result |
+| --- | ---: | --- |
+| Pre-commit & Linters | 12 s | success |
+| Python 3.14 test suite | 36 s (tests: 28 s) | success |
+| Cloud Run requirements drift | 7 s | success |
+| Markdown relative links | 6 s | success |
+| Cloud Run gateway image build | 20 s (Buildx step: 5 s) | success |
+| Local bridge candidate Buildx build | 9 s | success |
+| Sequential Docker-integration matrix | 14m20s | success |
+| Published older image -> Python 3.14 candidate | 58 s | success |
+
+This is an initial cache-population measurement, not a before/after speed
+claim. Buildx GHA cache import/export uses the separate `local-bridge` and
+`cloud-run-gateway` scopes, but the public job metadata does not expose a
+per-layer cache hit/miss count. Consequently the report records the observed
+build durations and **does not claim a cache-hit performance improvement**.
+The 9-second local candidate build confirms that Docker integration tests reused
+the prebuilt image rather than triggering another candidate build.
 
 ## CI changes
 
