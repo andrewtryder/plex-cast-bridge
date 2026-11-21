@@ -2,7 +2,6 @@ import base64
 import urllib.parse
 import pytest
 
-import pytest
 
 from cloud_gateway.smart_home import generate_voice_synonyms
 
