@@ -27,8 +27,18 @@ jobs:
         with:
           python-version: "3.14"
 
+      # pre-commit/action@v3.0.1 embeds actions/cache@v4 (Node 20). Keep the
+      # same cache behavior explicitly with the Node 24 cache action instead.
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
       - name: Run pre-commit hooks
-        uses: pre-commit/action@v3.0.1
+        run: |
+          python -m pip install pre-commit
+          pre-commit run --show-diff-on-failure --color=always --all-files
 
   test:
     name: Test Suite (Python 3.14)
