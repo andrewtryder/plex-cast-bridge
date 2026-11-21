@@ -2,6 +2,8 @@ import base64
 import urllib.parse
 import pytest
 
+import pytest
+
 from cloud_gateway.smart_home import generate_voice_synonyms
 
 
@@ -714,6 +716,17 @@ def test_unknown_smart_home_command_is_not_published(client, auth_headers):
     assert cmd_result["status"] == "ERROR"
     assert cmd_result["errorCode"] == "notSupported"
     assert published == []
+
+
+@pytest.mark.parametrize("muted", [True, False])
+def test_mute_smart_home_command_maps_to_transport(muted):
+    from cloud_gateway.smart_home import parse_execute_command
+
+    assert parse_execute_command(
+        "action.devices.commands.mute",
+        {"mute": muted},
+        "Master Bedroom",
+    ) == {"action": "mute", "mute": muted, "speaker": "Master Bedroom"}
 
 
 def test_mixed_smart_home_commands_publish_nothing_on_unsupported(client, auth_headers):
