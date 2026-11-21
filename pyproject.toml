@@ -21,8 +21,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-cov>=6",
     "httpx>=0.28",
     "pillow>=11",
+    "radon>=6",
     "ruff>=0.8",
     "pre-commit>=4",
 ]
@@ -51,11 +53,32 @@ packages = ["src/plex_cast_bridge"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "gcp-cloud-run/src"]
+markers = [
+    "unit: isolated Python test run without Docker or an external image",
+    "docker_integration: requires a local Docker daemon or image",
+    "upgrade_e2e: Docker upgrade, compatibility, or rollback scenario",
+    "workflow: validates repository automation or release workflow contracts",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "C90"]
 ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+# Phase 1 records the existing high-complexity baseline without blocking
+# unrelated safety fixes. Lower this ratchet only alongside targeted refactors.
+max-complexity = 50
+
+[tool.coverage.run]
+branch = true
+parallel = true
+# Dynamic pytest contexts require the C tracer; Python 3.14 otherwise selects
+# sys.monitoring, which intentionally does not record them.
+core = "ctrace"
+
+[tool.coverage.report]
+skip_empty = true

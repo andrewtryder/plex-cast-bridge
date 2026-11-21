@@ -13,7 +13,8 @@ def test_production_image_diagnostic_is_read_only():
     root = Path(__file__).resolve().parents[1]
     tag = "plex-cast-bridge-config-drift-test"
     volume = "pcb-drift-test-" + uuid.uuid4().hex
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True)
     subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
     mount = f"type=volume,src={volume},dst=/data"
     try:

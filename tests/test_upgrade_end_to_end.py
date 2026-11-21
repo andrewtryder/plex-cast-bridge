@@ -62,8 +62,9 @@ def test_reviewed_upgrade_then_image_rollback_keeps_existing_data(tmp_path, exte
     compose.write_text(json.dumps({"services": {"bridge": service}}))
     original_compose = compose.read_bytes()
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbe2e" + os.urandom(6).hex()}
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", "plex-cast-bridge-config-drift-test", "."],
-                   cwd=root, env=env, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", "plex-cast-bridge-config-drift-test", "."],
+                       cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
         return subprocess.run(list(args), cwd=root, env=env, capture_output=True, text=True, timeout=240)
     def cli(*args):
@@ -196,7 +197,7 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
                   "H=type('H',(BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(503 if bad else 200),s.end_headers()),"
                   "'log_message':lambda *a:None}); HTTPServer(('0.0.0.0',8000),H).serve_forever()")
     compose = tmp_path / "compose.yaml"
-    test_image = "pcb-failure-test:" + os.urandom(6).hex()
+    test_image = os.getenv("PCB_TEST_LOCAL_IMAGE", "pcb-failure-test:" + os.urandom(6).hex())
     env_file = tmp_path / ".env"
     env_file.write_text("PLEX_TOKEN=synthetic-env-token\n")
     original_env = env_file.read_bytes()
@@ -204,8 +205,9 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
         "env_file": [str(env_file)], "command": ["python", "-c", server],
         "ports": [f"127.0.0.1:{port}:8000"], "volumes": [f"{data}:/data"]}}}))
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbfail" + os.urandom(6).hex()}
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
-                   cwd=root, env=env, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
+                       cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
         return subprocess.run(list(args), cwd=root, env=env, capture_output=True, text=True, timeout=240)
     def cli(*args):

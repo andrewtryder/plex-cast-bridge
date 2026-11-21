@@ -69,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
 HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
 """
-    test_image = "pcb-real-test:" + os.urandom(6).hex()
+    test_image = os.getenv("PCB_TEST_LOCAL_IMAGE", "pcb-real-test:" + os.urandom(6).hex())
     compose = tmp_path / "compose.yaml"
     compose.write_text(json.dumps({"services": {
         "plex-sim": {"image": test_image, "command": ["python", "-c", fake_plex], "networks": ["isolated"]},
@@ -80,8 +80,9 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
     reviewed_compose = compose.read_bytes()
     reviewed_env = env_file.read_bytes()
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbreal" + os.urandom(6).hex()}
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
-                   cwd=root, env=env, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
+                       cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
         return subprocess.run(list(args), cwd=root, env=env, capture_output=True, text=True, timeout=240)
     def cli(*args):
