@@ -1,0 +1,713 @@
+{
+  "/api/activity": {
+    "get": {
+      "operationId": "recent_activity_api_activity_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Recent Activity"
+    }
+  },
+  "/api/artwork/{rating_key}": {
+    "get": {
+      "description": "Proxy Plex thumbnails without exposing tokens to the browser (SSRF-hardened).",
+      "operationId": "artwork_proxy_api_artwork__rating_key__get",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "rating_key",
+          "required": true,
+          "schema": {
+            "title": "Rating Key",
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Artwork Proxy"
+    }
+  },
+  "/api/backup": {
+    "get": {
+      "description": "Download non-secret configuration backup (excludes tokens, PEMs, SA keys).",
+      "operationId": "backup_export_api_backup_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Backup Export"
+    }
+  },
+  "/api/backup/restore": {
+    "post": {
+      "description": "Apply a non-secret backup. Requires confirm=true.",
+      "operationId": "backup_restore_api_backup_restore_post",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Backup Restore"
+    }
+  },
+  "/api/backup/restore/preview": {
+    "post": {
+      "description": "Preview a non-secret backup zip without writing files.",
+      "operationId": "backup_restore_preview_api_backup_restore_preview_post",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Backup Restore Preview"
+    }
+  },
+  "/api/command": {
+    "post": {
+      "operationId": "command_endpoint_api_command_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Command"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Command Endpoint"
+    }
+  },
+  "/api/diagnostics": {
+    "get": {
+      "operationId": "diagnostics_api_diagnostics_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Diagnostics"
+    }
+  },
+  "/api/library/browse": {
+    "get": {
+      "operationId": "library_browse_api_library_browse_get",
+      "parameters": [
+        {
+          "in": "query",
+          "name": "kind",
+          "required": false,
+          "schema": {
+            "default": "artists",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        {
+          "in": "query",
+          "name": "query",
+          "required": false,
+          "schema": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "default": 40,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Library Browse"
+    }
+  },
+  "/api/library/play": {
+    "post": {
+      "operationId": "library_play_api_library_play_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LibraryPlay"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Library Play"
+    }
+  },
+  "/api/library/refresh": {
+    "post": {
+      "operationId": "refresh_endpoint_api_library_refresh_post",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Refresh Endpoint"
+    }
+  },
+  "/api/library/tracks": {
+    "get": {
+      "operationId": "library_tracks_api_library_tracks_get",
+      "parameters": [
+        {
+          "in": "query",
+          "name": "query",
+          "required": false,
+          "schema": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "default": 25,
+            "title": "Limit",
+            "type": "integer"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Library Tracks"
+    }
+  },
+  "/api/queue": {
+    "get": {
+      "operationId": "queue_get_api_queue_get",
+      "parameters": [
+        {
+          "in": "query",
+          "name": "speaker",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Queue Get"
+    },
+    "post": {
+      "operationId": "queue_mutate_api_queue_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/QueueMutate"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Queue Mutate"
+    }
+  },
+  "/api/settings": {
+    "get": {
+      "description": "Public non-secret settings + library summary for Settings \u2192 Playback.",
+      "operationId": "get_settings_api_settings_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Get Settings"
+    },
+    "patch": {
+      "description": "Update editable volumes; persist to data/app_settings.json and apply live.",
+      "operationId": "patch_settings_api_settings_patch",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Patch Settings"
+    }
+  },
+  "/api/speakers": {
+    "get": {
+      "operationId": "speakers_endpoint_api_speakers_get",
+      "parameters": [
+        {
+          "in": "query",
+          "name": "scan",
+          "required": false,
+          "schema": {
+            "default": false,
+            "title": "Scan",
+            "type": "boolean"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Speakers Endpoint"
+    }
+  },
+  "/api/speakers/refresh": {
+    "post": {
+      "operationId": "refresh_speakers_endpoint_api_speakers_refresh_post",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Refresh Speakers Endpoint"
+    }
+  },
+  "/api/speakers/test": {
+    "post": {
+      "operationId": "test_speaker_endpoint_api_speakers_test_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SpeakerTest"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Test Speaker Endpoint"
+    }
+  },
+  "/api/speakers/toggle": {
+    "post": {
+      "operationId": "toggle_speaker_endpoint_api_speakers_toggle_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SpeakerToggle"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Toggle Speaker Endpoint"
+    }
+  },
+  "/api/speakers/{device_id}": {
+    "delete": {
+      "operationId": "forget_speaker_endpoint_api_speakers__device_id__delete",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "device_id",
+          "required": true,
+          "schema": {
+            "title": "Device Id",
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Forget Speaker Endpoint"
+    },
+    "patch": {
+      "operationId": "patch_speaker_endpoint_api_speakers__device_id__patch",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "device_id",
+          "required": true,
+          "schema": {
+            "title": "Device Id",
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SpeakerPatch"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Patch Speaker Endpoint"
+    }
+  },
+  "/api/status": {
+    "get": {
+      "operationId": "status_endpoint_api_status_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Status Endpoint"
+    }
+  },
+  "/api/sync-catalog": {
+    "get": {
+      "operationId": "catalog_endpoint_api_sync_catalog_get",
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        }
+      },
+      "summary": "Catalog Endpoint"
+    }
+  },
+  "/api/transport": {
+    "post": {
+      "operationId": "transport_endpoint_api_transport_post",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Transport"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "Successful Response"
+        },
+        "422": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          },
+          "description": "Validation Error"
+        }
+      },
+      "summary": "Transport Endpoint"
+    }
+  }
+}
