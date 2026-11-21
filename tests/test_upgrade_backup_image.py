@@ -13,7 +13,8 @@ def test_quiesced_volume_backup_with_production_image():
     tag = "plex-cast-bridge-config-drift-test"
     ident = uuid.uuid4().hex
     data, backups, container = (f"pcb-test-data-{ident}", f"pcb-test-backup-{ident}", f"pcb-test-app-{ident}")
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
     for volume in (data, backups):
         subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
     def mount(volume, dest):

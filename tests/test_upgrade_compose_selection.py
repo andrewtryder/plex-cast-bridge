@@ -137,6 +137,7 @@ def test_image_switch_is_idempotent_and_refuses_customizations(tmp_path):
     assert other.read_bytes() == selection.managed_content("bridge", rollback)
 
 
+@pytest.mark.docker_integration
 @pytest.mark.skipif(os.getenv("PCB_TEST_DOCKER_IMAGE") != "1", reason="requires local Docker Compose")
 def test_default_compose_loads_new_override_without_changing_configuration(tmp_path, monkeypatch):
     monkeypatch.delenv("COMPOSE_FILE", raising=False)
@@ -168,6 +169,7 @@ def test_default_compose_loads_new_override_without_changing_configuration(tmp_p
     assert (base.read_bytes(), env.read_bytes()) == before
 
 
+@pytest.mark.docker_integration
 @pytest.mark.skipif(os.getenv("PCB_TEST_COMPOSE_RECREATE") != "1", reason="requires cached disposable Docker images")
 def test_selection_survives_restart_recreation_and_successive_switches(tmp_path, monkeypatch):
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
@@ -176,13 +178,12 @@ def test_selection_survives_restart_recreation_and_successive_switches(tmp_path,
     monkeypatch.setenv("COMPOSE_PROJECT_NAME", "pcbselection" + os.urandom(6).hex())
     old = "ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb"
     target = os.environ["PCB_TEST_UPGRADE_TARGET"]
+    subprocess.run(["docker", "pull", target], capture_output=True, check=True, timeout=120)
     data = tmp_path / "data"
     data.mkdir()
     (data / "sentinel").write_text("synthetic unchanged")
-    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
     base = tmp_path / "compose.yaml"
     base.write_text(json.dumps({"services": {"bridge": {"image": old, "network_mode": "none",
-        "build": {"context": str(tmp_path), "dockerfile": "Dockerfile"},
         "command": ["python", "-c", "import time; time.sleep(3600)"], "volumes": [f"{data}:/data"],
         "restart": "unless-stopped"}}}))
     original = base.read_bytes()

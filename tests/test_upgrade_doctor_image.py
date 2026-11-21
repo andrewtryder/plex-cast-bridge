@@ -26,7 +26,8 @@ def test_doctor_on_compose_only_installation(tmp_path):
     before = list(data.iterdir())
     project = "pcbdoctor" + os.urandom(6).hex()
     env = {**os.environ, "COMPOSE_PROJECT_NAME": project}
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
     try:
         subprocess.run(["docker", "compose", "-f", str(compose), "up", "-d", "--no-build"], env=env, check=True, capture_output=True)
         result = subprocess.run([sys.executable, str(root / "scripts/upgrade.py"), "doctor", "--compose-file", str(compose)],

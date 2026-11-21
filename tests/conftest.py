@@ -20,6 +20,50 @@ from cloud_gateway.pubsub_service import PubSubService
 from cloud_gateway.refresh_tokens import MemoryRefreshTokenStore
 
 
+_DOCKER_INTEGRATION_MODULES = {
+    "test_config_drift_image.py",
+    "test_config_drift_legacy_image.py",
+    "test_docker_portainer_upgrade.py",
+    "test_upgrade_backup_image.py",
+    "test_upgrade_docker_backup_image.py",
+    "test_upgrade_doctor_image.py",
+    "test_upgrade_end_to_end.py",
+    "test_upgrade_real_bridge.py",
+    "test_upgrade_sqlite_online.py",
+}
+_UPGRADE_E2E_MODULES = {
+    "test_docker_portainer_upgrade.py",
+    "test_upgrade_end_to_end.py",
+    "test_upgrade_real_bridge.py",
+}
+_WORKFLOW_MODULES = {
+    "test_publish_release_workflow.py",
+    "test_verify_release_artifact.py",
+    "test_verify_release_commit.py",
+}
+
+
+def pytest_collection_modifyitems(items):
+    """Assign each collected test to one CI execution category.
+
+    Marking at collection time keeps the historical test node IDs stable while
+    making the CI partition inspectable with ``pytest --collect-only -m ...``.
+    """
+    for item in items:
+        module = item.path.name
+        # A test-level marker is authoritative: most modules are entirely one
+        # category, but a small number contain an isolated Docker scenario.
+        # This keeps their ordinary tests in the Python job.
+        if item.get_closest_marker("docker_integration") or module in _DOCKER_INTEGRATION_MODULES:
+            item.add_marker(pytest.mark.docker_integration)
+        else:
+            item.add_marker(pytest.mark.unit)
+        if module in _UPGRADE_E2E_MODULES:
+            item.add_marker(pytest.mark.upgrade_e2e)
+        if module in _WORKFLOW_MODULES:
+            item.add_marker(pytest.mark.workflow)
+
+
 @pytest.fixture
 def test_settings(tmp_path):
     catalog_file = tmp_path / "catalog.json"
