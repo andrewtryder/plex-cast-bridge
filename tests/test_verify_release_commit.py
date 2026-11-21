@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,18 +16,38 @@ from verify_release_commit import (
     verify_release_tag,
 )
 
+_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+_GIT_IDENTITY = ("-c", "user.name=Tester", "-c", "user.email=tester@example.com")
+
+
+def _git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *_GIT_IDENTITY, *args],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+
 
 def _init_git_repo(path: Path) -> None:
-    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Tester"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=path, check=True, capture_output=True)
+    _git(path, "init", "-b", "main")
 
 
 def _commit(path: Path, message: str) -> str:
-    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", message], cwd=path, check=True, capture_output=True)
-    res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True)
+    _git(path, "add", ".")
+    _git(path, "commit", "-m", message)
+    res = _git(path, "rev-parse", "HEAD")
     return res.stdout.strip()
+
+
+def test_git_helpers_isolated_from_workspace_identity(tmp_path: Path):
+    """Regression: full-suite runs must not inherit the parent repo git config."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed")
+    commit = _commit(tmp_path, "seed")
+    assert len(commit) == 40
 
 
 def test_validate_release_version_succeeds_when_matching(tmp_path: Path):
@@ -66,12 +87,12 @@ def test_validate_commit_ancestry_accepts_ancestor_and_rejects_unmerged(tmp_path
     main_c1 = _commit(tmp_path, "initial commit")
 
     # Create a branch for feature
-    subprocess.run(["git", "checkout", "-b", "feature"], cwd=tmp_path, check=True, capture_output=True)
+    _git(tmp_path, "checkout", "-b", "feature")
     (tmp_path / "file.txt").write_text("feature branch edit")
     feature_c = _commit(tmp_path, "feature commit")
 
     # Switch back to main and make another commit
-    subprocess.run(["git", "checkout", "main"], cwd=tmp_path, check=True, capture_output=True)
+    _git(tmp_path, "checkout", "main")
     (tmp_path / "main.txt").write_text("main update")
     main_c2 = _commit(tmp_path, "main update")
 
@@ -92,7 +113,7 @@ def test_validate_release_commit_verifies_head_and_expected_ref(tmp_path: Path):
     _commit(tmp_path, "release 0.3.0")
 
     # Create another branch pointing to an earlier/different commit
-    subprocess.run(["git", "branch", "other"], cwd=tmp_path, check=True, capture_output=True)
+    _git(tmp_path, "branch", "other")
     (tmp_path / "extra.txt").write_text("extra")
     head_sha2 = _commit(tmp_path, "second commit")
 
@@ -113,7 +134,7 @@ def test_verify_release_tag_matching_commit(tmp_path: Path):
     _init_git_repo(tmp_path)
     (tmp_path / "file.txt").write_text("v0.3.0 content")
     commit_sha = _commit(tmp_path, "v0.3.0 commit")
-    subprocess.run(["git", "tag", "-a", "v0.3.0", "-m", "Release v0.3.0"], cwd=tmp_path, check=True, capture_output=True)
+    _git(tmp_path, "tag", "-a", "v0.3.0", "-m", "Release v0.3.0")
 
     verified = verify_release_tag(tmp_path, "v0.3.0", commit_sha)
     assert verified == commit_sha
@@ -123,7 +144,7 @@ def test_verify_release_tag_mismatched_commit(tmp_path: Path):
     _init_git_repo(tmp_path)
     (tmp_path / "file.txt").write_text("first")
     _commit(tmp_path, "first commit")
-    subprocess.run(["git", "tag", "-a", "v0.3.0", "-m", "Release v0.3.0"], cwd=tmp_path, check=True, capture_output=True)
+    _git(tmp_path, "tag", "-a", "v0.3.0", "-m", "Release v0.3.0")
 
     (tmp_path / "file.txt").write_text("second")
     commit2 = _commit(tmp_path, "second commit")
