@@ -7,15 +7,15 @@ not refactor production modules.
 ## Inventory and test overlap
 
 `pytest --collect-only -q` collected **463** nodes before the change. The
-same command after marker registration collects **463** nodes: **435** `unit`
-and **28** `docker_integration`. The Docker subset is also tagged
+same command after marker registration collects **463** nodes: **433**
+non-Docker nodes and **30** `docker_integration` nodes. The Docker subset is also tagged
 `upgrade_e2e` where it exercises an upgrade boundary. `workflow` is an
 orthogonal label for release-workflow contract tests.
 
 | CI execution | Selection | Nodes | Relationship to another execution |
 | --- | --- | ---: | --- |
-| Python 3.14 | `-m 'not docker_integration'` | 435 | Separate unit/process/workflow tests; Docker nodes are excluded. |
-| Local bridge Docker integration | `-m docker_integration` | 28 | Runs each Docker node once with a cached candidate image. |
+| Python 3.14 | `-m 'not docker_integration'` | 433 | Separate unit/process/workflow tests; Docker nodes are excluded. |
+| Local bridge Docker integration | `-m docker_integration` | 30 | Runs each Docker node once with a cached candidate image. |
 | Older published image -> candidate | `test_upgrade_real_bridge...[True]` | 1 | Intentional compatibility matrix: unlike the published-target run, target is the PR candidate and verifies Python 3.14. |
 | Cloud Run gateway image | Build only | n/a | Independent gateway container validation; it does not execute local-bridge tests. |
 
@@ -26,6 +26,14 @@ file again. The explicit published-release `legacy_env=True` invocation was an
 The candidate invocation remains **intentional different-environment coverage**.
 The diagnostic, backup, SQLite, Compose, older-image, candidate-image and
 rollback cases remain in the Docker suite; no test was deleted.
+
+The two real-Compose cases in `test_upgrade_compose_selection.py` are explicit
+function-level `docker_integration` tests. Collection treats that explicit
+marker as authoritative before applying a module default, so the other six
+tests in that mixed module remain in the Python job and no Docker test receives
+the `unit` marker. When adding another Docker-dependent case to a mostly-unit
+module, add `@pytest.mark.docker_integration` directly to that test; the
+collection partition will then expose it in the Docker selection automatically.
 
 ## Measured local baseline
 
@@ -45,6 +53,15 @@ is enabled: process isolation has not been demonstrated for the shared Docker,
 filesystem, service-port, and concurrency-sensitive scenarios.
 
 ## Measured post-change validation
+
+The final classification correction was verified locally on a Linux Docker
+daemon: `pytest --collect-only` found **463** total nodes, **433** selected by
+`not docker_integration`, and **30** selected by `docker_integration`; the
+intersection with `unit` was empty. Both real-Compose selection cases passed
+with their Docker CI environment variables enabled (not skipped or deselected).
+The full non-Docker suite, pre-commit/actionlint, and release-workflow contract
+tests also passed locally. The final GitHub Actions run and its timings are
+recorded below after the correction commit.
 
 CI run [#291](https://github.com/andrewtryder/plex-cast-bridge/actions/runs/44908941854)
 validated commit `e829755` successfully. It took **15m47s wall-clock** from

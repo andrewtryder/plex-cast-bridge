@@ -51,7 +51,10 @@ def pytest_collection_modifyitems(items):
     """
     for item in items:
         module = item.path.name
-        if module in _DOCKER_INTEGRATION_MODULES:
+        # A test-level marker is authoritative: most modules are entirely one
+        # category, but a small number contain an isolated Docker scenario.
+        # This keeps their ordinary tests in the Python job.
+        if item.get_closest_marker("docker_integration") or module in _DOCKER_INTEGRATION_MODULES:
             item.add_marker(pytest.mark.docker_integration)
         else:
             item.add_marker(pytest.mark.unit)
