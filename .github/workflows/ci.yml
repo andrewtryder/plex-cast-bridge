@@ -123,6 +123,11 @@ jobs:
 
       - name: Register local bridge candidate
         run: |
+          # buildx --load is authoritative for the registry tag. Re-apply the
+          # short test tag explicitly: Compose must never fall back to pulling
+          # it from a registry during the prebuilt-image integration matrix.
+          docker tag localhost:5000/plex-cast-bridge:candidate plex-cast-bridge-config-drift-test
+          docker image inspect plex-cast-bridge-config-drift-test >/dev/null
           docker push localhost:5000/plex-cast-bridge:candidate
           DIGEST="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/plex-cast-bridge:candidate | grep 'localhost:5000' | head -n 1)"
           echo "PR_CANDIDATE_TARGET=${DIGEST}" >> "$GITHUB_ENV"

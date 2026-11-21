@@ -205,7 +205,8 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
         "env_file": [str(env_file)], "command": ["python", "-c", server],
         "ports": [f"127.0.0.1:{port}:8000"], "volumes": [f"{data}:/data"]}}}))
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbfail" + os.urandom(6).hex()}
-    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+    built_test_image = os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1"
+    if built_test_image:
         subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
                        cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
@@ -303,4 +304,5 @@ exec {shlex.quote(docker_path)} "$@"
         assert env_file.read_bytes() == original_env
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
-        run("docker", "image", "rm", test_image)
+        if built_test_image:
+            run("docker", "image", "rm", test_image)

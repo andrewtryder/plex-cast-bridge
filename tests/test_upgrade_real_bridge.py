@@ -80,7 +80,8 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
     reviewed_compose = compose.read_bytes()
     reviewed_env = env_file.read_bytes()
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "pcbreal" + os.urandom(6).hex()}
-    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+    built_test_image = os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1"
+    if built_test_image:
         subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", test_image, "."],
                        cwd=root, env=env, check=True, capture_output=True)
     def run(*args):
@@ -195,6 +196,7 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
             assert ("s", "l", "t") in snapshot["index_ids"]["tracks"]
     finally:
         run("docker", "compose", "-f", str(compose), "down", "-v", "--remove-orphans")
-        run("docker", "image", "rm", test_image)
+        if built_test_image:
+            run("docker", "image", "rm", test_image)
         proxy.shutdown()
         proxy.server_close()
