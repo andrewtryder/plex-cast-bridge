@@ -62,6 +62,8 @@ or miss, and image build times here before merging.
   other. `setup-uv` dependency caching is enabled in each applicable job.
 * The local bridge is built once, loaded under the test tag, and reused by
   image integration tests through `PCB_TEST_PREBUILT_IMAGE=1`.
+* The Cloud Run job stages the repository sample catalog in its otherwise
+  isolated build context, matching the prior build contract.
 
 ## Complexity and refactoring map
 
