@@ -22,7 +22,8 @@ def test_docker_helper_preserves_container_owned_private_file(tmp_path):
     data.chmod(0o777)
     backup = tmp_path / "backup"
     backup.mkdir(mode=0o700)
-    subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
+    if os.getenv("PCB_TEST_PREBUILT_IMAGE") != "1":
+        subprocess.run(["docker", "build", "-f", "deploy/Dockerfile", "-t", tag, "."], cwd=root, check=True, capture_output=True)
     seed = ("from pathlib import Path; import os; p=Path('/data/plex_connection.json'); "
             "p.write_text('{\\\"jwt_token\\\":\\\"synthetic\\\"}'); os.chown(p,10001,10001); os.chmod(p,0o600)")
     subprocess.run(["docker", "run", "--rm", "--user", "0", "--mount", f"type=bind,src={data},dst=/data", tag,

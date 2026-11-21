@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# Only PR runs are superseded. Main retains a complete history for release
+# evidence, and the manually-dispatched release workflow is deliberately not
+# part of this concurrency group.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Pre-commit & Linters
@@ -20,8 +27,18 @@ jobs:
         with:
           python-version: "3.14"
 
+      # pre-commit/action@v3.0.1 embeds actions/cache@v4 (Node 20). Keep the
+      # same cache behavior explicitly with the Node 24 cache action instead.
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
       - name: Run pre-commit hooks
-        uses: pre-commit/action@v3.0.1
+        run: |
+          python -m pip install pre-commit
+          pre-commit run --show-diff-on-failure --color=always --all-files
 
   test:
     name: Test Suite (Python 3.14)
@@ -44,7 +61,10 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run Test Suite
-        run: uv run pytest -v
+        run: >-
+          uv run pytest -v -m 'not docker_integration' --durations=20
+          --cov=plex_cast_bridge --cov=cloud_gateway --cov-context=test
+          --cov-report=term-missing
 
   requirements-drift:
     name: Cloud Run requirements drift
@@ -83,21 +103,44 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Start local Docker registry
         run: docker run -d -p 5000:5000 --name registry registry:2
 
-      - name: Build and register local bridge image
+      - name: Build local bridge candidate once
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: |
+            localhost:5000/plex-cast-bridge:candidate
+            plex-cast-bridge-config-drift-test
+          cache-from: type=gha,scope=local-bridge
+          cache-to: type=gha,mode=max,scope=local-bridge
+
+      - name: Register local bridge candidate
         run: |
-          docker build -f deploy/Dockerfile -t localhost:5000/plex-cast-bridge:candidate -t plex-cast-bridge-config-drift-test .
+          # buildx --load is authoritative for the registry tag. Re-apply the
+          # short test tag explicitly: Compose must never fall back to pulling
+          # it from a registry during the prebuilt-image integration matrix.
+          docker tag localhost:5000/plex-cast-bridge:candidate plex-cast-bridge-config-drift-test
+          docker image inspect plex-cast-bridge-config-drift-test >/dev/null
           docker push localhost:5000/plex-cast-bridge:candidate
           DIGEST="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/plex-cast-bridge:candidate | grep 'localhost:5000' | head -n 1)"
           echo "PR_CANDIDATE_TARGET=${DIGEST}" >> "$GITHUB_ENV"
 
       - name: Install uv for image integration test
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Verify packaged diagnostic against production image
-        run: uv run --dev pytest -q tests/test_config_drift_image.py tests/test_config_drift_legacy_image.py tests/test_upgrade_backup_image.py tests/test_upgrade_docker_backup_image.py tests/test_upgrade_doctor_image.py tests/test_upgrade_end_to_end.py tests/test_upgrade_real_bridge.py tests/test_upgrade_sqlite_online.py tests/test_upgrade_compose_selection.py tests/test_docker_portainer_upgrade.py
+        run: >-
+          uv run --dev pytest -q -m docker_integration --durations=20
+          --cov=plex_cast_bridge --cov-context=test --cov-report=term-missing
         env:
           PCB_TEST_DOCKER_IMAGE: "1"
           PCB_TEST_UPGRADE_E2E: "1"
@@ -106,6 +149,8 @@ jobs:
           PCB_TEST_SQLITE_ONLINE: "1"
           PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
           PCB_TEST_COMPOSE_RECREATE: "1"
+          PCB_TEST_PREBUILT_IMAGE: "1"
+          PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
 
       - name: Verify upgrade from official older image to Python 3.14 candidate
         run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
@@ -114,16 +159,27 @@ jobs:
           PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
           PCB_TEST_UPGRADE_TARGET: ${{ env.PR_CANDIDATE_TARGET }}
           PCB_TEST_EXPECTED_PYTHON: "3.14"
+          PCB_TEST_PREBUILT_IMAGE: "1"
+          PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
 
-      - name: Verify upgrade between published releases
-        run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
-        env:
-          PCB_TEST_UPGRADE_E2E: "1"
-          PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
-          PCB_TEST_UPGRADE_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:ed8c8d78bc58e704f875e4b9618259009916db498c93587b3d274fed9c719757
+  cloud-run-build:
+    name: Cloud Run gateway image build
+    needs: [lint, requirements-drift]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Sync sample catalog for Cloud Run context
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Stage sample catalog for Cloud Run build context
         run: cp catalog.json gcp-cloud-run/catalog.json
 
       - name: Build Cloud Run gateway image
-        run: docker build -f gcp-cloud-run/Dockerfile gcp-cloud-run
+        uses: docker/build-push-action@v7
+        with:
+          context: gcp-cloud-run
+          file: gcp-cloud-run/Dockerfile
+          push: false
+          cache-from: type=gha,scope=cloud-run-gateway
+          cache-to: type=gha,mode=max,scope=cloud-run-gateway
