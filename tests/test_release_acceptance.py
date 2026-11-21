@@ -667,6 +667,76 @@ def test_compare_accepts_varied_speaker_counts_and_optional_google_home(tmp_path
             assert not acceptance.compare(left, right, "local")[0]
 
 
+@pytest.mark.parametrize("scope", ("all", "local"))
+def test_compare_scope_all_skips_cloud_when_before_not_applicable(tmp_path: Path, scope: str):
+    before = _valid_report()
+    before["cloud_run"] = {"available": False, "status": "NOT_APPLICABLE"}
+    after = json.loads(json.dumps(before))
+    after["local"]["docker"]["image_id"] = "sha256:replaced"
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+    safe, differences = acceptance.compare(left, right, scope=scope)
+    assert safe
+    assert differences == []
+
+
+def test_compare_scope_all_flags_cloud_activation_from_not_applicable(tmp_path: Path):
+    before = _valid_report()
+    before["cloud_run"] = {"available": False, "status": "NOT_APPLICABLE"}
+    after = _valid_report()
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+    safe, differences = acceptance.compare(left, right, scope="all")
+    assert not safe
+    assert any(
+        item.get("path") == "cloud_run.status" and "cloud configuration changed" in item.get("reason", "")
+        for item in differences
+    )
+
+
+def test_compare_projects_legacy_speakers_without_speaker_identity_field(tmp_path: Path):
+    before = _valid_report()
+    for report in (before,):
+        report["api"].pop("speaker_identity", None)
+        report["api"]["speakers"] = [
+            {"id": "v0", "uuid": "c0", "availability": "online", "name": "Kitchen"},
+        ]
+    after = json.loads(json.dumps(before))
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+    assert acceptance.compare(left, right, scope="local") == (True, [])
+    after["api"]["speakers"][0]["uuid"] = "replaced"
+    right.write_text(json.dumps(after))
+    safe, differences = acceptance.compare(left, right, scope="local")
+    assert not safe
+    assert any(item.get("path") == "api.speaker_identity" for item in differences)
+
+
+@pytest.mark.parametrize(
+    ("file_name", "before_state", "after_state"),
+    [
+        ("plex_connection.json", "absent", "present"),
+        ("music_index.sqlite3", "absent", "present"),
+    ],
+)
+def test_compare_detects_configuration_drift_file_state_change(
+    tmp_path: Path, file_name: str, before_state: str, after_state: str,
+):
+    before = _valid_report()
+    after = _valid_report()
+    for report, state in ((before, before_state), (after, after_state)):
+        report["local"]["configuration_drift"]["report"]["files"][file_name] = state
+    left, right = tmp_path / "before.json", tmp_path / "after.json"
+    left.write_text(json.dumps(before))
+    right.write_text(json.dumps(after))
+    safe, differences = acceptance.compare(left, right, scope="local")
+    assert not safe
+    assert any(item.get("path") == f"configuration_drift.files.{file_name}" for item in differences)
+
+
 def test_sqlite_wal_is_not_opened_or_changed(tmp_path):
     path = tmp_path / "music_index.sqlite3"
     path.write_bytes(b"database")
