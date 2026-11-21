@@ -166,6 +166,14 @@ def test_transport_volume_actions():
     mock_cast.get.assert_called_once_with("Master Bedroom")
     mock_speaker.adjust_volume.assert_called_once_with(-0.05)
 
+    # Test mute delegation, including the explicit Google Home boolean.
+    mock_cast.reset_mock()
+    mock_speaker.reset_mock()
+    resp = client.post("/api/transport", json={"action": "mute", "speaker": "Master Bedroom", "mute": True})
+    assert resp.status_code == 200
+    mock_cast.get.assert_called_once_with("Master Bedroom")
+    mock_speaker.mute.assert_called_once_with(True)
+
     # Test SpeakerQueue transport delegates to MediaController
     mock_mc = MagicMock()
     mock_real_cast = SimpleNamespace(media_controller=mock_mc, name="TestCast", status=SimpleNamespace(volume_level=0.5))
