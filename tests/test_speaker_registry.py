@@ -228,6 +228,57 @@ def test_removed_speaker_stays_removed_on_rediscovery():
     assert result[0]["removed"] is True
 
 
+def test_reconcile_idempotent_on_same_discovery_twice():
+    discovered = [{"name": "Patio", "room": "Patio", "uuid": "abcdabcdabcdabcd", "host": "10.0.0.5", "model": "Nest Mini"}]
+    first, s1 = reconcile_speakers([], discovered)
+    second, s2 = reconcile_speakers(first, discovered)
+    assert s1["new"] == 1
+    assert s2["unchanged"] == 1
+    assert {s["google_home_device_id"] for s in first} == {s["google_home_device_id"] for s in second}
+    assert google_home_sync_fingerprint(first) == google_home_sync_fingerprint(second)
+
+
+def test_duplicate_cast_uuid_in_discovery_ignored():
+    speakers, summary = reconcile_speakers(
+        [],
+        [
+            {"name": "A", "uuid": "0123456789abcdef", "host": "1.1.1.1"},
+            {"name": "B", "uuid": "0123456789abcdef", "host": "1.1.1.2"},
+        ],
+    )
+    assert summary["new"] == 1
+    assert len(speakers) == 1
+
+
+def test_discovery_order_does_not_change_ids():
+    a = {"name": "One", "uuid": "1111111111111111", "host": "1.1.1.1"}
+    b = {"name": "Two", "uuid": "2222222222222222", "host": "1.1.1.2"}
+    ab, _ = reconcile_speakers([], [a, b])
+    ba, _ = reconcile_speakers([], [b, a])
+    by_uuid_ab = {s["cast_uuid"]: s["google_home_device_id"] for s in ab}
+    by_uuid_ba = {s["cast_uuid"]: s["google_home_device_id"] for s in ba}
+    assert by_uuid_ab == by_uuid_ba
+
+
+def test_disabled_speaker_stays_hidden_from_sync():
+    existing = [
+        migrate_speaker_record(
+            {
+                "id": "plex-jukebox:Den",
+                "speaker_name": "Den",
+                "enabled": False,
+                "google_home_visible": False,
+            }
+        )
+    ]
+    speakers, _ = reconcile_speakers(
+        existing,
+        [{"name": "Den", "uuid": existing[0]["cast_uuid"], "host": "1.2.3.4"}],
+    )
+    assert speakers[0]["enabled"] is False
+    assert is_google_home_exposed(speakers[0]) is False
+
+
 def test_migration_preserves_conflicting_records_and_flags_them():
     from plex_cast_bridge.speaker_registry import migrate_catalog_speakers
 
