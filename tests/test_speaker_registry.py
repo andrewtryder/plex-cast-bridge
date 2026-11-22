@@ -279,6 +279,47 @@ def test_disabled_speaker_stays_hidden_from_sync():
     assert is_google_home_exposed(speakers[0]) is False
 
 
+def test_ambiguous_legacy_name_match_skips_uuid_attach():
+    """Two legacy records without UUIDs must not pick up discovery by shared name."""
+    existing = [
+        migrate_speaker_record({"id": "plex-jukebox:a", "speaker_name": "Speaker", "room_hint": "A"}),
+        migrate_speaker_record({"id": "plex-jukebox:b", "speaker_name": "Speaker", "room_hint": "B"}),
+    ]
+    for rec in existing:
+        rec["cast_uuid"] = ""
+    speakers, summary = reconcile_speakers(
+        existing,
+        [{"name": "Speaker", "uuid": "ffffffffffffffff", "host": "1.2.3.4"}],
+    )
+    assert summary["new"] == 1
+    assert len(speakers) == 3
+
+
+def test_no_match_across_different_known_uuids():
+    existing = [
+        migrate_speaker_record(
+            {
+                "id": "plex-jukebox:office",
+                "speaker_name": "Office",
+                "uuid": "aaaaaaaaaaaaaaaa",
+                "host": "10.0.0.1",
+            }
+        )
+    ]
+    speakers, summary = reconcile_speakers(
+        existing,
+        [{"name": "Office", "uuid": "bbbbbbbbbbbbbbbb", "host": "10.0.0.2"}],
+    )
+    assert summary["new"] == 1
+    assert len(speakers) == 2
+
+
+def test_whitespace_name_discovery_ignored():
+    speakers, summary = reconcile_speakers([], [{"name": "  \t  ", "uuid": "abcdabcdabcdabcd"}])
+    assert summary["new"] == 0
+    assert speakers == []
+
+
 def test_migration_preserves_conflicting_records_and_flags_them():
     from plex_cast_bridge.speaker_registry import migrate_catalog_speakers
 
