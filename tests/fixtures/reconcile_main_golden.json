@@ -1,0 +1,446 @@
+[
+  {
+    "id": "invalid_before_valid_uuid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "",
+        "uuid": "aabbccddeeff0011"
+      },
+      {
+        "name": "Kitchen",
+        "uuid": "aabbccddeeff0011",
+        "host": "10.0.0.1"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Kitchen Plex",
+          "google_home_visible": false,
+          "host": "10.0.0.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Kitchen Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Kitchen",
+          "speaker_name": "Kitchen"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "whitespace_before_valid_uuid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "   ",
+        "uuid": "aabbccddeeff0011"
+      },
+      {
+        "name": "Kitchen",
+        "uuid": "aabbccddeeff0011",
+        "host": "10.0.0.1"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Kitchen Plex",
+          "google_home_visible": false,
+          "host": "10.0.0.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Kitchen Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Kitchen",
+          "speaker_name": "Kitchen"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "test_speaker_before_valid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "test speaker",
+        "uuid": "aabbccddeeff0011"
+      },
+      {
+        "name": "Kitchen",
+        "uuid": "aabbccddeeff0011",
+        "host": "10.0.0.1"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Kitchen Plex",
+          "google_home_visible": false,
+          "host": "10.0.0.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Kitchen Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Kitchen",
+          "speaker_name": "Kitchen"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "two_valid_dup_uuid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "A",
+        "uuid": "aabbccddeeff0011",
+        "host": "1.1.1.1"
+      },
+      {
+        "name": "B",
+        "uuid": "aabbccddeeff0011",
+        "host": "2.2.2.2"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "A Plex",
+          "google_home_visible": false,
+          "host": "1.1.1.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "A Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "A",
+          "speaker_name": "A"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "two_valid_same_name_diff_uuid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "Den",
+        "uuid": "uuid-a",
+        "host": "1.1.1.1"
+      },
+      {
+        "name": "Den",
+        "uuid": "uuid-b",
+        "host": "2.2.2.2"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "uuid-a",
+          "enabled": true,
+          "google_home_name": "Den Plex",
+          "google_home_visible": false,
+          "host": "1.1.1.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Den Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Den",
+          "speaker_name": "Den"
+        },
+        {
+          "availability": "online",
+          "cast_uuid": "uuid-b",
+          "enabled": true,
+          "google_home_name": "Den Plex",
+          "google_home_visible": false,
+          "host": "2.2.2.2",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Den Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Den",
+          "speaker_name": "Den"
+        }
+      ],
+      "summary": {
+        "new": 2,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 2,
+        "message": "2 new speakers"
+      }
+    }
+  },
+  {
+    "id": "invalid_after_valid_uuid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": "Kitchen",
+        "uuid": "aabbccddeeff0011",
+        "host": "10.0.0.1"
+      },
+      {
+        "name": "",
+        "uuid": "aabbccddeeff0011"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Kitchen Plex",
+          "google_home_visible": false,
+          "host": "10.0.0.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Kitchen Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Kitchen",
+          "speaker_name": "Kitchen"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "uuidless_invalid_before_valid",
+    "existing": [],
+    "discovered": [
+      {
+        "name": ""
+      },
+      {
+        "name": "Kitchen",
+        "uuid": "aabbccddeeff0011",
+        "host": "10.0.0.1"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Kitchen Plex",
+          "google_home_visible": false,
+          "host": "10.0.0.1",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Kitchen Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Kitchen",
+          "speaker_name": "Kitchen"
+        }
+      ],
+      "summary": {
+        "new": 1,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 new speaker"
+      }
+    }
+  },
+  {
+    "id": "legacy_match",
+    "existing": [
+      {
+        "id": "plex-jukebox:Den",
+        "google_home_device_id": "plex-jukebox:Den",
+        "cast_uuid": "aabbccddeeff0011",
+        "speaker_name": "Den",
+        "google_home_name": "Den Plex",
+        "nicknames": [
+          "Den Plex"
+        ],
+        "room_hint": "Den",
+        "roomHint": "Den",
+        "model": "Google Cast",
+        "kind": "speaker",
+        "host": "",
+        "port": 8009,
+        "enabled": true,
+        "google_home_visible": true,
+        "last_seen": null,
+        "availability": "unknown",
+        "needs_review": false,
+        "identity_conflict_original_id": null,
+        "identity_conflict_previous_visibility": null,
+        "removed": false,
+        "name": "Den Plex"
+      }
+    ],
+    "discovered": [
+      {
+        "name": "Den",
+        "uuid": "aabbccddeeff0011",
+        "host": "9.9.9.9"
+      }
+    ],
+    "expected": {
+      "speakers": [
+        {
+          "availability": "online",
+          "cast_uuid": "aabbccddeeff0011",
+          "enabled": true,
+          "google_home_name": "Den Plex",
+          "google_home_visible": true,
+          "host": "9.9.9.9",
+          "identity_conflict_original_id": null,
+          "identity_conflict_previous_visibility": null,
+          "kind": "speaker",
+          "last_seen": "2026-07-01T15:00:00Z",
+          "model": "Google Cast",
+          "needs_review": false,
+          "nicknames": [
+            "Den Plex"
+          ],
+          "port": 8009,
+          "removed": false,
+          "room_hint": "Den",
+          "speaker_name": "Den"
+        }
+      ],
+      "summary": {
+        "new": 0,
+        "renamed": 0,
+        "unchanged": 1,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 1,
+        "message": "1 unchanged speaker"
+      }
+    }
+  }
+]

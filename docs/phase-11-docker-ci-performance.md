@@ -1,8 +1,8 @@
 # Phase 11 — Docker CI performance (measurement)
 
-Source: GitHub Actions run `45034430428` on `refactor/phase-8-app-lifecycle` @ `21528aa` (2026-11-22).
+Source: GitHub Actions runs on `main` post-Phase 8 merge (`45066817996` @ `7a56ee4`, 2026-11-22).
 
-Docker job total: **~890s (14m50s)** for `pytest -m docker_integration` (30 tests).
+Docker job total: **~881s (14m41s)** for `pytest -m docker_integration` (30 tests, 531 deselected in job).
 
 ## Slowest tests (call phase)
 
