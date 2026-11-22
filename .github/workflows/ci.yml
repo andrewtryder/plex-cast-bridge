@@ -140,18 +140,20 @@ jobs:
       - name: Verify packaged diagnostic against production image
         id: docker_integration
         run: |
-          set -o pipefail
+          set -euo pipefail
+          log=/tmp/docker-integration.log
           uv run --dev pytest -q -m docker_integration --durations=20 \
             --cov=plex_cast_bridge --cov-context=test --cov-report=term-missing \
-            --log-cli-level=WARNING 2>&1 | tee /tmp/docker-integration.log
-          if [ -f /tmp/docker-integration.log ]; then
-            {
-              echo "### Compose selection phase timings"
-              echo '```'
-              rg 'pcb_compose_phase' /tmp/docker-integration.log || true
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+            --log-cli-level=WARNING >"$log" 2>&1
+          pytest_rc=$?
+          cat "$log"
+          {
+            echo "### Compose selection phase timings"
+            echo '```'
+            rg 'pcb_compose_phase' "$log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$pytest_rc"
         env:
           PCB_COMPOSE_TIMING: "1"
           PCB_TEST_DOCKER_IMAGE: "1"

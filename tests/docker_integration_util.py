@@ -4,17 +4,24 @@ from __future__ import annotations
 import re
 import subprocess
 
+_IMMUTABLE_REF = re.compile(
+    r"(?:@sha256:[0-9a-f]{64}$)|(?:^sha256:[0-9a-f]{64}$)"
+)
 
-def _immutable_ref(ref: str) -> bool:
-    return bool(re.search(r"@sha256:[0-9a-f]{64}$", ref) or re.fullmatch(r"sha256:[0-9a-f]{64}", ref))
+
+def _require_immutable_ref(ref: str) -> None:
+    if not _IMMUTABLE_REF.search(ref):
+        raise ValueError(f"Integration tests require an immutable digest ref, not a mutable tag: {ref!r}")
 
 
 def ensure_immutable_image_present(ref: str, *, timeout: int = 120) -> str:
     """Return the local image ID for an immutable digest reference.
 
-  Pull only when the daemon does not already have the exact ref. Mutable tags
-    are always pulled so CI never substitutes an unexpected digest.
+    Ref format is validated before any Docker CLI call. Mutable tags are
+    rejected even when already present locally.
     """
+    _require_immutable_ref(ref)
+
     inspect = subprocess.run(
         ["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
         capture_output=True,
@@ -24,14 +31,26 @@ def ensure_immutable_image_present(ref: str, *, timeout: int = 120) -> str:
     )
     if inspect.returncode == 0 and inspect.stdout.strip():
         return inspect.stdout.strip()
-    if not _immutable_ref(ref):
-        raise ValueError(f"Integration tests require an immutable digest ref, not a mutable tag: {ref!r}")
-    subprocess.run(["docker", "pull", ref], capture_output=True, check=True, timeout=timeout)
+
+    try:
+        subprocess.run(
+            ["docker", "pull", ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Docker pull failed for immutable ref {ref!r}") from exc
+
     inspect = subprocess.run(
         ["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
         capture_output=True,
         text=True,
         timeout=timeout,
-        check=True,
+        check=False,
     )
-    return inspect.stdout.strip()
+    image_id = inspect.stdout.strip()
+    if inspect.returncode != 0 or not image_id:
+        raise RuntimeError(f"Docker image missing after pull for {ref!r}")
+    return image_id
