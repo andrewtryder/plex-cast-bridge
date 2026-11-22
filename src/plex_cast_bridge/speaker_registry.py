@@ -355,15 +355,14 @@ def reconcile_speakers(
     name_counts = _discovery_name_counts(discovered)
 
     for dev in discovered:
+        ctx = _discovery_device_context(dev, name_counts)
+        if ctx is None:
+            continue
         uuid_key = _norm(dev.get("uuid") or dev.get("cast_uuid"))
         if uuid_key and uuid_key in seen_uuids:
             continue
         if uuid_key:
             seen_uuids.add(uuid_key)
-
-        ctx = _discovery_device_context(dev, name_counts)
-        if ctx is None:
-            continue
         matched = _match_existing(ctx["match_dev"], existing, used_ids)
         if matched and matched.get("removed"):
             used_ids.add(matched["google_home_device_id"])
