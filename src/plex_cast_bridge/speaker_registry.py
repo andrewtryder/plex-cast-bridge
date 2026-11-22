@@ -176,6 +176,138 @@ def migrate_catalog_speakers(catalog: dict[str, Any]) -> tuple[dict[str, Any], b
     return data, changed
 
 
+def _reconcile_summary_template() -> dict[str, Any]:
+    return {
+        "new": 0,
+        "renamed": 0,
+        "unchanged": 0,
+        "offline": 0,
+        "returned": 0,
+        "needs_review": 0,
+        "total": 0,
+        "message": "",
+    }
+
+
+def _discovery_name_counts(discovered: list[dict[str, Any]]) -> dict[str, int]:
+    name_counts: dict[str, int] = {}
+    for dev in discovered:
+        key = _norm(dev.get("name"))
+        name_counts[key] = name_counts.get(key, 0) + 1
+    return name_counts
+
+
+def _discovery_device_context(dev: dict[str, Any], name_counts: dict[str, int]) -> dict[str, Any] | None:
+    name = (dev.get("name") or "").strip()
+    if not name or name.casefold() == "test speaker":
+        return None
+    return {
+        "name": name,
+        "room": (dev.get("room") or extract_room_name(name)).strip(),
+        "model": dev.get("model") or "Google Cast",
+        "cast_uuid": (dev.get("uuid") or "").strip(),
+        "host": dev.get("host") or "",
+        "port": int(dev.get("port") or 8009),
+        "kind": "group" if is_cast_group(dev.get("model"), name) else "speaker",
+        "match_dev": dev if name_counts[_norm(name)] == 1 else {**dev, "name": ""},
+    }
+
+
+def _update_matched_from_discovery(
+    matched: dict[str, Any],
+    ctx: dict[str, Any],
+    *,
+    now: str,
+) -> tuple[dict[str, Any], str]:
+    name = ctx["name"]
+    rec = copy.deepcopy(matched)
+    renamed = _norm(rec.get("speaker_name")) != _norm(name)
+    was_offline = (rec.get("availability") or "") == "offline"
+    rec["speaker_name"] = name
+    if ctx["cast_uuid"]:
+        rec["cast_uuid"] = ctx["cast_uuid"]
+    rec["host"] = ctx["host"]
+    rec["port"] = ctx["port"]
+    rec["model"] = ctx["model"]
+    rec["kind"] = ctx["kind"]
+    if not rec.get("room_hint"):
+        rec["room_hint"] = ctx["room"]
+    rec["roomHint"] = rec.get("room_hint") or ctx["room"]
+    rec["last_seen"] = now
+    rec["availability"] = "online"
+    rec["removed"] = False
+    if renamed:
+        counter = "renamed"
+    elif was_offline:
+        counter = "returned"
+    else:
+        counter = "unchanged"
+    normalized = migrate_speaker_record(rec, previously_exposed=rec.get("google_home_visible", False))
+    return normalized, counter
+
+
+def _create_new_from_discovery(ctx: dict[str, Any], *, now: str) -> dict[str, Any]:
+    gh_name = default_google_home_name(ctx["room"], ctx["name"])
+    return migrate_speaker_record(
+        {
+            "speaker_name": ctx["name"],
+            "room_hint": ctx["room"],
+            "cast_uuid": ctx["cast_uuid"],
+            "model": ctx["model"],
+            "kind": ctx["kind"],
+            "host": ctx["host"],
+            "port": ctx["port"],
+            "enabled": True,
+            "google_home_visible": False,
+            "google_home_name": gh_name,
+            "last_seen": now,
+            "availability": "online",
+        },
+        previously_exposed=False,
+    )
+
+
+def _append_offline_existing(
+    existing: list[dict[str, Any]],
+    used_ids: set[str],
+    result: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> None:
+    for rec in existing:
+        gid = rec["google_home_device_id"]
+        if gid in used_ids:
+            continue
+        if rec.get("removed"):
+            result.append(rec)
+            continue
+        offline = copy.deepcopy(rec)
+        offline["availability"] = "offline"
+        summary["offline"] += 1
+        result.append(migrate_speaker_record(offline, previously_exposed=offline.get("google_home_visible", False)))
+
+
+def _finalize_reconcile_summary(result: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+    for rec in result:
+        if rec.get("needs_review"):
+            summary["needs_review"] += 1
+    summary["total"] = len([r for r in result if not r.get("removed")])
+    parts = []
+    if summary["new"]:
+        parts.append(f"{summary['new']} new")
+    if summary["renamed"]:
+        parts.append(f"{summary['renamed']} renamed")
+    if summary["returned"]:
+        parts.append(f"{summary['returned']} returned")
+    if summary["offline"]:
+        parts.append(f"{summary['offline']} offline")
+    unchanged = summary["unchanged"]
+    if unchanged:
+        parts.append(f"{unchanged} unchanged")
+    summary["message"] = (
+        (", ".join(parts) + " speaker" + ("s" if summary["total"] != 1 else "")) if parts else "No speaker changes."
+    )
+
+
 def _match_existing(
     discovered: dict[str, Any],
     existing: list[dict[str, Any]],
@@ -214,130 +346,43 @@ def reconcile_speakers(
     """
     now = now_iso or _utcnow_iso()
     existing = [migrate_speaker_record(s) for s in existing_speakers]
-    summary = {
-        "new": 0,
-        "renamed": 0,
-        "unchanged": 0,
-        "offline": 0,
-        "returned": 0,
-        "needs_review": 0,
-        "total": 0,
-        "message": "",
-    }
+    summary = _reconcile_summary_template()
 
     used_ids: set[str] = set()
     result: list[dict[str, Any]] = []
 
     seen_uuids: set[str] = set()
-    name_counts: dict[str, int] = {}
-    for dev in discovered:
-        key = _norm(dev.get("name"))
-        name_counts[key] = name_counts.get(key, 0) + 1
+    name_counts = _discovery_name_counts(discovered)
 
     for dev in discovered:
-        name = (dev.get("name") or "").strip()
-        if not name or name.casefold() == "test speaker":
-            continue
         uuid_key = _norm(dev.get("uuid") or dev.get("cast_uuid"))
         if uuid_key and uuid_key in seen_uuids:
             continue
         if uuid_key:
             seen_uuids.add(uuid_key)
-        # Ambiguous discovery names cannot safely identify legacy records.
-        match_dev = dev if name_counts[_norm(name)] == 1 else {**dev, "name": ""}
-        matched = _match_existing(match_dev, existing, used_ids)
+
+        ctx = _discovery_device_context(dev, name_counts)
+        if ctx is None:
+            continue
+        matched = _match_existing(ctx["match_dev"], existing, used_ids)
         if matched and matched.get("removed"):
             used_ids.add(matched["google_home_device_id"])
             result.append(matched)
             continue
-        room = (dev.get("room") or extract_room_name(name)).strip()
-        model = dev.get("model") or "Google Cast"
-        cast_uuid = (dev.get("uuid") or "").strip()
-        host = dev.get("host") or ""
-        port = int(dev.get("port") or 8009)
-        kind = "group" if is_cast_group(model, name) else "speaker"
 
         if matched:
             used_ids.add(matched["google_home_device_id"])
-            rec = copy.deepcopy(matched)
-            renamed = _norm(rec.get("speaker_name")) != _norm(name)
-            was_offline = (rec.get("availability") or "") == "offline"
-            rec["speaker_name"] = name
-            if cast_uuid:
-                rec["cast_uuid"] = cast_uuid
-            rec["host"] = host
-            rec["port"] = port
-            rec["model"] = model
-            rec["kind"] = kind
-            # Preserve user room_hint edits unless empty.
-            if not rec.get("room_hint"):
-                rec["room_hint"] = room
-            rec["roomHint"] = rec.get("room_hint") or room
-            rec["last_seen"] = now
-            rec["availability"] = "online"
-            rec["removed"] = False
-            if renamed:
-                summary["renamed"] += 1
-            elif was_offline:
-                summary["returned"] += 1
-            else:
-                summary["unchanged"] += 1
-            result.append(migrate_speaker_record(rec, previously_exposed=rec.get("google_home_visible", False)))
+            rec, counter = _update_matched_from_discovery(matched, ctx, now=now)
+            summary[counter] += 1
+            result.append(rec)
         else:
-            gh_name = default_google_home_name(room, name)
-            rec = migrate_speaker_record(
-                {
-                    "speaker_name": name,
-                    "room_hint": room,
-                    "cast_uuid": cast_uuid,
-                    "model": model,
-                    "kind": kind,
-                    "host": host,
-                    "port": port,
-                    "enabled": True,
-                    "google_home_visible": False,  # new devices hidden until opted in
-                    "google_home_name": gh_name,
-                    "last_seen": now,
-                    "availability": "online",
-                },
-                previously_exposed=False,
-            )
+            rec = _create_new_from_discovery(ctx, now=now)
             summary["new"] += 1
             used_ids.add(rec["google_home_device_id"])
             result.append(rec)
 
-    # Preserve known speakers not seen this scan (offline), unless explicitly removed.
-    for rec in existing:
-        gid = rec["google_home_device_id"]
-        if gid in used_ids:
-            continue
-        if rec.get("removed"):
-            result.append(rec)
-            continue
-        offline = copy.deepcopy(rec)
-        offline["availability"] = "offline"
-        # Do not clear last_seen; do not auto-delete.
-        summary["offline"] += 1
-        result.append(migrate_speaker_record(offline, previously_exposed=offline.get("google_home_visible", False)))
-
-    for rec in result:
-        if rec.get("needs_review"):
-            summary["needs_review"] += 1
-
-    summary["total"] = len([r for r in result if not r.get("removed")])
-    parts = []
-    if summary["new"]:
-        parts.append(f"{summary['new']} new")
-    if summary["renamed"]:
-        parts.append(f"{summary['renamed']} renamed")
-    if summary["returned"]:
-        parts.append(f"{summary['returned']} returned")
-    if summary["offline"]:
-        parts.append(f"{summary['offline']} offline")
-    unchanged = summary["unchanged"]
-    if unchanged:
-        parts.append(f"{unchanged} unchanged")
-    summary["message"] = (", ".join(parts) + " speaker" + ("s" if summary["total"] != 1 else "")) if parts else "No speaker changes."
+    _append_offline_existing(existing, used_ids, result, summary)
+    _finalize_reconcile_summary(result, summary)
     return result, summary
 
 
