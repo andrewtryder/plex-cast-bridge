@@ -142,10 +142,10 @@ jobs:
         run: |
           set -euo pipefail
           log=/tmp/docker-integration.log
+          pytest_rc=0
           uv run --dev pytest -q -m docker_integration --durations=20 \
             --cov=plex_cast_bridge --cov-context=test --cov-report=term-missing \
-            --log-cli-level=WARNING >"$log" 2>&1
-          pytest_rc=$?
+            --log-cli-level=WARNING >"$log" 2>&1 || pytest_rc=$?
           cat "$log"
           {
             echo "### Compose selection phase timings"

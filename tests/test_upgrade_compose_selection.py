@@ -18,6 +18,18 @@ import upgrade
 
 log = logging.getLogger(__name__)
 
+# Exit promptly on SIGTERM so Compose stop/recreate does not wait for Docker's default stop timeout.
+_SYNTHETIC_IDLE_CMD = [
+    "python",
+    "-c",
+    "import signal,sys,time\n"
+    "def _stop(*_):\n"
+    "    sys.exit(0)\n"
+    "signal.signal(signal.SIGTERM,_stop)\n"
+    "signal.signal(signal.SIGINT,_stop)\n"
+    "time.sleep(3600)\n",
+]
+
 
 @contextmanager
 def _phase_timer(phase: str):
@@ -205,8 +217,8 @@ def test_selection_survives_restart_recreation_and_successive_switches(tmp_path,
     (data / "sentinel").write_text("synthetic unchanged")
     base = tmp_path / "compose.yaml"
     base.write_text(json.dumps({"services": {"bridge": {"image": old, "network_mode": "none",
-        "command": ["python", "-c", "import time; time.sleep(3600)"], "volumes": [f"{data}:/data"],
-        "restart": "unless-stopped"}}}))
+        "command": _SYNTHETIC_IDLE_CMD, "volumes": [f"{data}:/data"],
+        "stop_grace_period": "2s", "restart": "unless-stopped"}}}))
     original = base.read_bytes()
     def compose(*args):
         result = subprocess.run(["docker", "compose", *args], cwd=tmp_path, capture_output=True, text=True, check=False, timeout=120)
