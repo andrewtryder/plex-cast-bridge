@@ -1,15 +1,35 @@
 """Explicit, non-destructive preparation of a managed Compose override."""
 import json
+import logging
 import os
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from docker_integration_util import ensure_immutable_image_present
 import upgrade_compose_selection as selection
 import upgrade
+
+log = logging.getLogger(__name__)
+
+
+@contextmanager
+def _phase_timer(phase: str):
+    if os.getenv("PCB_COMPOSE_TIMING") != "1":
+        yield
+        return
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        elapsed = time.monotonic() - start
+        log.warning("pcb_compose_phase phase=%s elapsed_sec=%.3f", phase, elapsed)
 
 
 def _stub_compose(monkeypatch, image="example:old", environment=""):
@@ -178,7 +198,8 @@ def test_selection_survives_restart_recreation_and_successive_switches(tmp_path,
     monkeypatch.setenv("COMPOSE_PROJECT_NAME", "pcbselection" + os.urandom(6).hex())
     old = "ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb"
     target = os.environ["PCB_TEST_UPGRADE_TARGET"]
-    subprocess.run(["docker", "pull", target], capture_output=True, check=True, timeout=120)
+    with _phase_timer("ensure_target_image"):
+        ensure_immutable_image_present(target)
     data = tmp_path / "data"
     data.mkdir()
     (data / "sentinel").write_text("synthetic unchanged")
@@ -204,31 +225,46 @@ def test_selection_survives_restart_recreation_and_successive_switches(tmp_path,
         # its original Compose file still names old, but target is running.
         prior = tmp_path / "prior-selection.json"
         prior.write_text(json.dumps({"services": {"bridge": {"image": target}}}))
-        compose("-f", str(base), "-f", str(prior), "up", "-d", "--pull", "never")
+        with _phase_timer("compose_initial_up"):
+            compose("-f", str(base), "-f", str(prior), "up", "-d", "--pull", "never")
         assert_image(target)
-        preview = selection.migration_preview(base, "bridge")
+        with _phase_timer("migration_preview"):
+            preview = selection.migration_preview(base, "bridge")
         assert preview["configured_image"] == old and preview["current_image"] == image_id(target)
-        override = selection.create_migration(preview)
-        compose("up", "-d", "--force-recreate")
+        with _phase_timer("create_migration"):
+            override = selection.create_migration(preview)
+        with _phase_timer("compose_force_recreate"):
+            compose("up", "-d", "--force-recreate")
         assert_image(target)
-        selection.switch_managed_image(override, "bridge", image_id(target), old)
-        compose("up", "-d")
+        with _phase_timer("switch_to_old"):
+            selection.switch_managed_image(override, "bridge", image_id(target), old)
+        with _phase_timer("compose_after_switch_old"):
+            compose("up", "-d")
         assert_image(old)
-        selection.switch_managed_image(override, "bridge", old, target)
-        compose("up", "-d")
+        with _phase_timer("switch_to_target"):
+            selection.switch_managed_image(override, "bridge", old, target)
+        with _phase_timer("compose_after_switch_target"):
+            compose("up", "-d")
         cid = assert_image(target)
-        subprocess.run(["docker", "restart", cid], capture_output=True, check=True, timeout=120)
+        with _phase_timer("docker_restart"):
+            subprocess.run(["docker", "restart", cid], capture_output=True, check=True, timeout=120)
         assert_image(target)
-        compose("up", "-d", "--force-recreate")
+        with _phase_timer("compose_second_force_recreate"):
+            compose("up", "-d", "--force-recreate")
         assert_image(target)
         previous_id = image_id(old)
-        selection.switch_managed_image(override, "bridge", target, previous_id)
-        compose("up", "-d")
+        with _phase_timer("rollback_switch"):
+            selection.switch_managed_image(override, "bridge", target, previous_id)
+        with _phase_timer("compose_after_rollback"):
+            compose("up", "-d")
         assert_image(old)
-        selection.switch_managed_image(override, "bridge", previous_id, target)
-        compose("up", "-d")
+        with _phase_timer("forward_switch"):
+            selection.switch_managed_image(override, "bridge", previous_id, target)
+        with _phase_timer("compose_final_up"):
+            compose("up", "-d")
         assert_image(target)
         assert base.read_bytes() == original
         assert (data / "sentinel").read_text() == "synthetic unchanged"
     finally:
-        subprocess.run(["docker", "compose", "down", "--remove-orphans"], cwd=tmp_path, capture_output=True, timeout=120)
+        with _phase_timer("compose_down"):
+            subprocess.run(["docker", "compose", "down", "--remove-orphans"], cwd=tmp_path, capture_output=True, timeout=120)
