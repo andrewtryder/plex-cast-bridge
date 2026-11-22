@@ -33,6 +33,16 @@ from .music_index_routes import router as music_index_router
 from .mix_routes import router as mix_router
 from . import music_index, music_index_scan
 from . import catalog_sync
+from .startup_guards import ensure_persistent_data_mount, ensure_pubsub_credentials, has_existing_configuration, require_existing_configuration
+from .startup_lifecycle import (
+    LifespanBackgroundTasks,
+    abort_startup_after_background_tasks,
+    build_pubsub_dispatch,
+    schedule_google_home_reconcile,
+    schedule_music_index,
+    schedule_speaker_discovery,
+    shutdown_application,
+)
 
 log = logging.getLogger(__name__)
 
@@ -84,42 +94,11 @@ async def _init_plex_flexible(settings: Settings, auth: PlexAuthService):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Refuse to run with ephemeral state if /data is unmounted in container environments
     from .catalog_store import DATA_DIR
-    if (
-        DATA_DIR == Path("/data")
-        and (Path("/.dockerenv").exists() or os.getenv("DOCKER_CONTAINER") == "1")
-        and not os.path.ismount(DATA_DIR)
-        and os.environ.get("PCB_ALLOW_EPHEMERAL_DATA", "").strip().lower() not in {"1", "true", "yes"}
-    ):
-        raise RuntimeError(
-            "CRITICAL: /data is not a mounted persistent volume. "
-            "Plex Cast Bridge requires a persistent mount for /data to prevent data loss across updates. "
-            "Mount a host directory or named volume (e.g. -v /path/to/data:/data), "
-            "or set PCB_ALLOW_EPHEMERAL_DATA=1 if stateless execution is intended."
-        )
 
-    # Validate persistent data state during upgrades / existing installations
-    require_existing = os.environ.get("PCB_REQUIRE_EXISTING_DATA", "").strip().lower() in {"1", "true", "yes"} or \
-                       os.environ.get("PCB_UPGRADE", "").strip().lower() in {"1", "true", "yes"}
-    has_existing_data = any(
-        (DATA_DIR / f).exists()
-        for f in (
-            "catalog.json",
-            "plex_connection.json",
-            "music_index.sqlite3",
-            "app_settings.json",
-            "google_home_sync.json",
-            "google_home_setup.json",
-        )
-    )
-    if require_existing and not has_existing_data:
-        raise RuntimeError(
-            f"CRITICAL: PCB_REQUIRE_EXISTING_DATA is set, but {DATA_DIR} does not contain existing "
-            "Plex Cast Bridge configuration (no catalog.json, plex_connection.json, music_index.sqlite3, "
-            "app_settings.json, or google_home_sync.json found). "
-            "Refusing to start to prevent data loss from an incorrect or empty mount path."
-        )
+    ensure_persistent_data_mount(DATA_DIR)
+    require_existing_configuration(DATA_DIR)
+    has_existing_data = has_existing_configuration(DATA_DIR)
 
     if has_existing_data:
         log.info("Mounted persistent data directory at %s with existing configuration", DATA_DIR)
@@ -133,16 +112,7 @@ async def lifespan(app: FastAPI):
         "yes",
     }
     settings = Settings()
-    if settings.enable_pubsub_listener:
-        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if creds_path:
-            p = Path(creds_path)
-            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
-                raise RuntimeError(
-                    f"CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS ({creds_path}) "
-                    "points to an unmounted placeholder (/dev/null), missing file, or empty key. "
-                    "Provide a valid Google Cloud service account key via PCB_GCP_CREDENTIALS to enable Google Home voice control."
-                )
+    ensure_pubsub_credentials(settings.enable_pubsub_listener, os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
 
     if music_index.database_path().exists():
         await run_in_threadpool(music_index_scan.recover_interrupted)
@@ -192,7 +162,6 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             log.warning("Could not configure catalog sync from env: %s", exc)
     catalog_sync.resume_pending_push()
-    discovery_task: asyncio.Task | None = None
     discovery_lock = asyncio.Lock()
     interval = int(getattr(settings, "speaker_discovery_interval_sec", 0) or 0)
 
@@ -204,115 +173,61 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             log.warning("Initial speaker discovery warning: %s", exc)
 
-    async def _background_speaker_discovery():
-        while True:
-            await asyncio.sleep(max(interval, 60))
-            if discovery_lock.locked():
-                log.debug("Skipping overlapping speaker discovery job")
-                continue
-            async with discovery_lock:
-                try:
-                    discovered = await run_in_threadpool(app.state.cast.discover)
-                    result = await run_in_threadpool(
-                        _persist_discovered_speakers_to_catalog, discovered, app.state.cast
-                    )
-                    summary = (result or {}).get("summary") or {}
-                    if (result or {}).get("changed"):
-                        log.info("Background speaker discovery: %s", summary.get("message") or "catalog updated")
-                    else:
-                        log.debug("Background speaker discovery: unchanged")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    log.warning("Background speaker discovery failed: %s", exc)
-
-    if interval > 0 and not skip_auto_discovery:
-        discovery_task = asyncio.create_task(_background_speaker_discovery())
+    bg_tasks = LifespanBackgroundTasks(
+        discovery=schedule_speaker_discovery(
+            interval_sec=interval,
+            skip=skip_auto_discovery,
+            lock=discovery_lock,
+            discover=app.state.cast.discover,
+            persist=_persist_discovered_speakers_to_catalog,
+            cast=app.state.cast,
+        ),
+        music_index=schedule_music_index(
+            app=app,
+            database_path=music_index.database_path,
+            get_settings=music_index.get_settings,
+            status=music_index.status,
+            schedule_due=music_index_scan.schedule_due,
+            start_scan=music_index_scan.start,
+        ),
+        google_home_reconcile=schedule_google_home_reconcile(
+            interval_sec=settings.catalog_reconcile_interval_sec,
+            reconcile=catalog_sync.reconcile_cloud,
+        ),
+    )
+    if bg_tasks.discovery is not None:
         log.info("Background speaker discovery every %ss", interval)
 
-    async def _reconcile_google_home():
-        interval_sec = max(10, int(settings.catalog_reconcile_interval_sec))
-        backoff = interval_sec
-        while True:
-            try:
-                result = await run_in_threadpool(catalog_sync.reconcile_cloud)
-                backoff = min(300, backoff * 2) if result.get("state") == "failed" else interval_sec
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Google Home reconciliation failed")
-                backoff = min(300, backoff * 2)
-            await asyncio.sleep(backoff)
-
-    async def _schedule_music_index():
-        while True:
-            try:
-                if music_index.database_path().exists():
-                    settings_data = await run_in_threadpool(music_index.get_settings)
-                    plex = getattr(app.state, 'plex', None)
-                    if plex and settings_data['indexing_enabled'] and settings_data['schedule'] != 'manual':
-                        state = await run_in_threadpool(music_index.status)
-                        if music_index_scan.schedule_due(settings_data, state['scan']):
-                            await run_in_threadpool(music_index_scan.start, plex)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception('Music indexing scheduler failed')
-            await asyncio.sleep(60)
-
-    index_task = asyncio.create_task(_schedule_music_index())
-    reconcile_task = asyncio.create_task(_reconcile_google_home())
     app.state.worker = None
-    if settings.enable_pubsub_listener:
-
-        async def dispatch(data):
-            if data["action"] == "play":
-                return await play(
-                    dj=app.state.dj,
-                    plex=app.state.plex,
-                    cast=app.state.cast,
-                    settings=app.state.settings,
-                    command=Command(query=data["query"], speaker=data.get("speaker"), device_id=data.get("device_id")),
-                )
-            return await transport(
-                cast=app.state.cast,
-                settings=app.state.settings,
-                command=Transport(
-                    action=data["action"],
-                    device_id=data.get("device_id"),
-                    speaker=data.get("speaker"),
-                    volume=data.get("volume"),
-                    relative_volume=data.get("relative_volume"),
-                    mute=data.get("mute"),
-                ),
+    try:
+        if settings.enable_pubsub_listener:
+            dispatch = build_pubsub_dispatch(
+                app,
+                play=play,
+                transport=transport,
+                command_cls=Command,
+                transport_cls=Transport,
             )
+            app.state.worker = PubSubWorker(settings, asyncio.get_running_loop(), dispatch)
+    except Exception:
+        await abort_startup_after_background_tasks(
+            bg_tasks,
+            stop_pending_push=catalog_sync.stop_pending_push,
+            close_cast=app.state.cast.close,
+        )
+        raise
 
-        app.state.worker = PubSubWorker(settings, asyncio.get_running_loop(), dispatch)
     try:
         yield
     finally:
-        index_task.cancel()
-        try:
-            await index_task
-        except asyncio.CancelledError:
-            pass
-        if music_index.database_path().exists():
-            await run_in_threadpool(music_index_scan.cancel)
-        catalog_sync.stop_pending_push()
-        reconcile_task.cancel()
-        try:
-            await reconcile_task
-        except asyncio.CancelledError:
-            pass
-        if discovery_task is not None:
-            discovery_task.cancel()
-            try:
-                await discovery_task
-            except asyncio.CancelledError:
-                pass
-        if app.state.worker:
-            app.state.worker.close()
-        await run_in_threadpool(app.state.cast.close)
+        await shutdown_application(
+            app,
+            bg_tasks,
+            database_path=music_index.database_path,
+            cancel_index_scan=music_index_scan.cancel,
+            stop_pending_push=catalog_sync.stop_pending_push,
+            close_cast=app.state.cast.close,
+        )
 
 
 app = FastAPI(title="Plex Cast Bridge", lifespan=lifespan)
