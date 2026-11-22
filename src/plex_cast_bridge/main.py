@@ -33,6 +33,7 @@ from .music_index_routes import router as music_index_router
 from .mix_routes import router as mix_router
 from . import music_index, music_index_scan
 from . import catalog_sync
+from .startup_guards import ensure_persistent_data_mount, ensure_pubsub_credentials, has_existing_configuration, require_existing_configuration
 
 log = logging.getLogger(__name__)
 
@@ -84,42 +85,11 @@ async def _init_plex_flexible(settings: Settings, auth: PlexAuthService):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Refuse to run with ephemeral state if /data is unmounted in container environments
     from .catalog_store import DATA_DIR
-    if (
-        DATA_DIR == Path("/data")
-        and (Path("/.dockerenv").exists() or os.getenv("DOCKER_CONTAINER") == "1")
-        and not os.path.ismount(DATA_DIR)
-        and os.environ.get("PCB_ALLOW_EPHEMERAL_DATA", "").strip().lower() not in {"1", "true", "yes"}
-    ):
-        raise RuntimeError(
-            "CRITICAL: /data is not a mounted persistent volume. "
-            "Plex Cast Bridge requires a persistent mount for /data to prevent data loss across updates. "
-            "Mount a host directory or named volume (e.g. -v /path/to/data:/data), "
-            "or set PCB_ALLOW_EPHEMERAL_DATA=1 if stateless execution is intended."
-        )
 
-    # Validate persistent data state during upgrades / existing installations
-    require_existing = os.environ.get("PCB_REQUIRE_EXISTING_DATA", "").strip().lower() in {"1", "true", "yes"} or \
-                       os.environ.get("PCB_UPGRADE", "").strip().lower() in {"1", "true", "yes"}
-    has_existing_data = any(
-        (DATA_DIR / f).exists()
-        for f in (
-            "catalog.json",
-            "plex_connection.json",
-            "music_index.sqlite3",
-            "app_settings.json",
-            "google_home_sync.json",
-            "google_home_setup.json",
-        )
-    )
-    if require_existing and not has_existing_data:
-        raise RuntimeError(
-            f"CRITICAL: PCB_REQUIRE_EXISTING_DATA is set, but {DATA_DIR} does not contain existing "
-            "Plex Cast Bridge configuration (no catalog.json, plex_connection.json, music_index.sqlite3, "
-            "app_settings.json, or google_home_sync.json found). "
-            "Refusing to start to prevent data loss from an incorrect or empty mount path."
-        )
+    ensure_persistent_data_mount(DATA_DIR)
+    require_existing_configuration(DATA_DIR)
+    has_existing_data = has_existing_configuration(DATA_DIR)
 
     if has_existing_data:
         log.info("Mounted persistent data directory at %s with existing configuration", DATA_DIR)
@@ -133,16 +103,7 @@ async def lifespan(app: FastAPI):
         "yes",
     }
     settings = Settings()
-    if settings.enable_pubsub_listener:
-        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if creds_path:
-            p = Path(creds_path)
-            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
-                raise RuntimeError(
-                    f"CRITICAL: ENABLE_PUBSUB_LISTENER=true is set, but GOOGLE_APPLICATION_CREDENTIALS ({creds_path}) "
-                    "points to an unmounted placeholder (/dev/null), missing file, or empty key. "
-                    "Provide a valid Google Cloud service account key via PCB_GCP_CREDENTIALS to enable Google Home voice control."
-                )
+    ensure_pubsub_credentials(settings.enable_pubsub_listener, os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
 
     if music_index.database_path().exists():
         await run_in_threadpool(music_index_scan.recover_interrupted)
