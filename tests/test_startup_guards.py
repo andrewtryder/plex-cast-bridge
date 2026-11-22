@@ -39,5 +39,26 @@ def test_ensure_pubsub_credentials_ignores_when_disabled():
 def test_ensure_pubsub_credentials_rejects_empty_file(tmp_path):
     creds = tmp_path / "empty.json"
     creds.write_text("")
-    with pytest.raises(RuntimeError, match="GOOGLE_APPLICATION_CREDENTIALS"):
+    with pytest.raises(RuntimeError, match="ENABLE_PUBSUB_LISTENER=true"):
         ensure_pubsub_credentials(True, str(creds))
+
+
+def test_ensure_pubsub_credentials_accepts_nonempty_file(tmp_path):
+    creds = tmp_path / "key.json"
+    creds.write_text('{"type":"service_account"}')
+    ensure_pubsub_credentials(True, str(creds))
+
+
+def test_ensure_persistent_data_mount_contract_message(monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv("DOCKER_CONTAINER", "1")
+    monkeypatch.setattr("plex_cast_bridge.startup_guards.os.path.ismount", lambda _p: False)
+
+    class FakePath(Path):
+        def exists(self):
+            return str(self).endswith(".dockerenv")
+
+    monkeypatch.setattr("plex_cast_bridge.startup_guards.Path", FakePath)
+    with pytest.raises(RuntimeError, match="not a mounted persistent volume"):
+        ensure_persistent_data_mount(Path("/data"))
