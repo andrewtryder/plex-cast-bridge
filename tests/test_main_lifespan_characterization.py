@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from plex_cast_bridge import main
-from plex_cast_bridge.startup_lifecycle import LifespanBackgroundTasks
 
 
 @pytest.fixture
@@ -56,24 +55,26 @@ def test_lifespan_pubsub_worker_failure_cleans_background_tasks(discovery_off, m
         def __init__(self, *_args, **_kwargs):
             raise ValueError("missing subscription")
 
-    cancelled: list[LifespanBackgroundTasks | None] = [None]
-    real_cancel = startup_lifecycle.cancel_background_tasks
+    aborted: list[tuple] = []
+    real_abort = startup_lifecycle.abort_startup_after_background_tasks
 
-    async def spy_cancel(tasks):
-        cancelled[0] = tasks
-        await real_cancel(tasks)
+    async def spy_abort(tasks, **kwargs):
+        aborted.append((tasks, kwargs))
+        await real_abort(tasks, **kwargs)
 
     _lifespan_stubs(monkeypatch, plex_init=lambda *_a, **_k: MagicMock(), pubsub_factory=FailWorker)
-    monkeypatch.setattr(main, "cancel_background_tasks", spy_cancel)
+    monkeypatch.setattr(main, "abort_startup_after_background_tasks", spy_abort)
     monkeypatch.setenv("ENABLE_PUBSUB_LISTENER", "true")
     monkeypatch.setenv("GCP_PROJECT_ID", "proj")
     monkeypatch.setenv("GCP_PUBSUB_SUBSCRIPTION_ID", "sub")
     with pytest.raises(ValueError, match="missing subscription"):
         with TestClient(main.app):
             pass
-    assert cancelled[0] is not None
-    assert cancelled[0].music_index is not None
-    assert cancelled[0].google_home_reconcile is not None
+    assert len(aborted) == 1
+    tasks, kwargs = aborted[0]
+    assert tasks.music_index is not None
+    assert tasks.google_home_reconcile is not None
+    assert kwargs.get("close_cast") is not None
 
 
 def test_lifespan_pubsub_enabled_synthetic_worker(discovery_off, monkeypatch):

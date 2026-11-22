@@ -25,13 +25,26 @@ contact Plex, Cast, Google Cloud, or live Pub/Sub).
 
 ## Shutdown sequence
 
-| Step | Operation |
-|------|-----------|
-| 1 | Cancel discovery, music-index, and reconcile tasks; await |
-| 2 | `music_index_scan.cancel` (if DB exists) |
-| 3 | `catalog_sync.stop_pending_push` |
-| 4 | `PubSubWorker.close` (once) |
-| 5 | `CastManager.close` |
+Matches pre-Phase-8 `main.py` ordering (`shutdown_application`).
+
+| Step | Operation | On failure |
+|------|-----------|------------|
+| 1 | Cancel **music-index** scheduler; await | Log; continue |
+| 2 | `music_index_scan.cancel` (if DB exists) | Log; continue |
+| 3 | `catalog_sync.stop_pending_push` | Log; continue |
+| 4 | Cancel **reconcile** task; await | Log; continue |
+| 5 | Cancel **discovery** task; await | Log; continue |
+| 6 | `PubSubWorker.close` (once) | Log; continue |
+| 7 | `CastManager.close` | Log; continue |
+
+## Startup abort (before `yield`)
+
+When Pub/Sub worker construction fails after background tasks start:
+
+1. `stop_pending_push`
+2. Cancel music-index → reconcile → discovery (await each)
+3. `CastManager.close` via threadpool
+4. Re-raise the startup exception
 
 ## Task ownership
 

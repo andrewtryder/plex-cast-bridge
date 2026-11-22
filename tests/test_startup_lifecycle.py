@@ -10,6 +10,7 @@ import pytest
 
 from plex_cast_bridge.startup_lifecycle import (
     LifespanBackgroundTasks,
+    abort_startup_after_background_tasks,
     build_pubsub_dispatch,
     cancel_background_tasks,
     schedule_google_home_reconcile,
@@ -115,6 +116,87 @@ def test_shutdown_application_closes_worker_once():
         )
         worker.close.assert_called_once()
         cast.close.assert_called_once()
+
+    asyncio.run(run())
+
+
+def test_shutdown_order_matches_legacy_sequence():
+    """Music-index cancel → scan cancel → stop push → reconcile → discovery → worker → cast."""
+
+    async def run():
+        steps: list[str] = []
+
+        ready = asyncio.Event()
+
+        async def slow(name: str):
+            steps.append(f"armed:{name}")
+            ready.set()
+            await asyncio.sleep(3600)
+
+        tasks = LifespanBackgroundTasks(
+            music_index=asyncio.create_task(slow("music")),
+            google_home_reconcile=asyncio.create_task(slow("reconcile")),
+            discovery=asyncio.create_task(slow("discovery")),
+        )
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        path = MagicMock()
+        path.return_value.exists.return_value = True
+        worker = MagicMock()
+        worker.close.side_effect = lambda: steps.append("worker.close")
+        cast = MagicMock()
+        cast.close.side_effect = lambda: steps.append("cast.close")
+        app = SimpleNamespace(state=SimpleNamespace(worker=worker))
+
+        await shutdown_application(
+            app,
+            tasks,
+            database_path=path,
+            cancel_index_scan=lambda: steps.append("scan.cancel"),
+            stop_pending_push=lambda: steps.append("catalog.stop_push"),
+            close_cast=cast.close,
+        )
+
+        assert tasks.music_index.done()
+        assert steps.index("scan.cancel") < steps.index("catalog.stop_push")
+        assert steps.index("catalog.stop_push") < steps.index("worker.close")
+        assert steps.index("worker.close") < steps.index("cast.close")
+        assert tasks.google_home_reconcile.done()
+        assert tasks.discovery.done()
+
+    asyncio.run(run())
+
+
+def test_shutdown_best_effort_after_scan_cancel_failure():
+    async def run():
+        cast = MagicMock()
+        cast.close = MagicMock()
+        app = SimpleNamespace(state=SimpleNamespace(worker=None))
+        path = MagicMock()
+        path.return_value.exists.return_value = True
+        await shutdown_application(
+            app,
+            LifespanBackgroundTasks(),
+            database_path=path,
+            cancel_index_scan=lambda: (_ for _ in ()).throw(RuntimeError("scan cancel failed")),
+            stop_pending_push=lambda: None,
+            close_cast=cast.close,
+        )
+        cast.close.assert_called_once()
+
+    asyncio.run(run())
+
+
+def test_abort_startup_closes_cast_after_pubsub_style_failure():
+    async def run():
+        closed = {"n": 0}
+        tasks = LifespanBackgroundTasks(music_index=asyncio.create_task(asyncio.sleep(60)))
+        await abort_startup_after_background_tasks(
+            tasks,
+            stop_pending_push=lambda: None,
+            close_cast=lambda: closed.__setitem__("n", closed["n"] + 1),
+        )
+        assert closed["n"] == 1
+        assert tasks.music_index.done()
 
     asyncio.run(run())
 

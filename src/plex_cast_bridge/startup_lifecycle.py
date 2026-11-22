@@ -18,16 +18,21 @@ class LifespanBackgroundTasks:
     google_home_reconcile: asyncio.Task | None = None
 
 
+async def _cancel_task(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def cancel_background_tasks(tasks: LifespanBackgroundTasks) -> None:
-    """Cancel and await lifespan background loops (idempotent)."""
-    for task in (tasks.discovery, tasks.music_index, tasks.google_home_reconcile):
-        if task is None:
-            continue
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    """Cancel discovery, music-index, and reconcile loops (legacy batch helper)."""
+    await _cancel_task(tasks.discovery)
+    await _cancel_task(tasks.music_index)
+    await _cancel_task(tasks.google_home_reconcile)
 
 
 def schedule_speaker_discovery(
@@ -163,12 +168,50 @@ async def shutdown_application(
     stop_pending_push: Callable[[], None],
     close_cast: Callable[[], Any],
 ) -> None:
-    """Shutdown ordering: music index → catalog push → reconcile → discovery → Pub/Sub → Cast."""
-    await cancel_background_tasks(tasks)
+    """Shutdown mirrors pre-Phase-8 ordering; each step is best-effort."""
+
+    async def _run_step(step: str, op: Callable[[], Any] | Awaitable[Any]) -> None:
+        try:
+            if asyncio.iscoroutine(op):
+                await op
+            else:
+                result = op()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception:
+            log.exception("Application shutdown step failed: %s", step)
+
+    # 1. Stop music-index scheduler before touching active scan state.
+    await _cancel_task(tasks.music_index)
     if database_path().exists():
-        await run_in_threadpool(cancel_index_scan)
-    stop_pending_push()
+        await _run_step("music_index_scan.cancel", run_in_threadpool(cancel_index_scan))
+    await _run_step("catalog_sync.stop_pending_push", lambda: stop_pending_push())
+    # 2. Reconcile, then discovery (matches original main.py).
+    await _cancel_task(tasks.google_home_reconcile)
+    await _cancel_task(tasks.discovery)
+
     worker = getattr(app.state, "worker", None)
     if worker:
-        worker.close()
-    await run_in_threadpool(close_cast)
+        await _run_step("pubsub_worker.close", worker.close)
+    await _run_step("cast_manager.close", run_in_threadpool(close_cast))
+
+
+async def abort_startup_after_background_tasks(
+    tasks: LifespanBackgroundTasks,
+    *,
+    stop_pending_push: Callable[[], None],
+    close_cast: Callable[[], Any] | None = None,
+) -> None:
+    """Cancel background loops and release resources when startup fails before yield."""
+    try:
+        stop_pending_push()
+    except Exception:
+        log.exception("Startup abort: stop_pending_push failed")
+    await _cancel_task(tasks.music_index)
+    await _cancel_task(tasks.google_home_reconcile)
+    await _cancel_task(tasks.discovery)
+    if close_cast is not None:
+        try:
+            await run_in_threadpool(close_cast)
+        except Exception:
+            log.exception("Startup abort: cast_manager.close failed")

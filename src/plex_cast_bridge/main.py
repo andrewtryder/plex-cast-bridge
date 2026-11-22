@@ -36,8 +36,8 @@ from . import catalog_sync
 from .startup_guards import ensure_persistent_data_mount, ensure_pubsub_credentials, has_existing_configuration, require_existing_configuration
 from .startup_lifecycle import (
     LifespanBackgroundTasks,
+    abort_startup_after_background_tasks,
     build_pubsub_dispatch,
-    cancel_background_tasks,
     schedule_google_home_reconcile,
     schedule_music_index,
     schedule_speaker_discovery,
@@ -210,8 +210,11 @@ async def lifespan(app: FastAPI):
             )
             app.state.worker = PubSubWorker(settings, asyncio.get_running_loop(), dispatch)
     except Exception:
-        catalog_sync.stop_pending_push()
-        await cancel_background_tasks(bg_tasks)
+        await abort_startup_after_background_tasks(
+            bg_tasks,
+            stop_pending_push=catalog_sync.stop_pending_push,
+            close_cast=app.state.cast.close,
+        )
         raise
 
     try:
