@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.6.0](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.5.0...v0.6.0) (2026-11-22)
+
+
+### Features
+
+* feat: add dashboard static modules and playback coverage ([2342185](https://github.com/andrewtryder/plex-cast-bridge/commit/2342185774accd82bee3d8a46262fce502710520))
+
+### Bug Fixes
+
+* fix(speaker-registry): filter discovery before UUID dedupe ([3fbccba](https://github.com/andrewtryder/plex-cast-bridge/commit/3fbccba913acb8003851480f436a1e6755f05898))
+* fix: tolerate database_path errors during lifespan shutdown ([d030fd2](https://github.com/andrewtryder/plex-cast-bridge/commit/d030fd2fb747ccd9992bb697330527bd737de1c0))
+* fix: restore legacy shutdown order and startup abort cleanup (Phase 8) ([68f4302](https://github.com/andrewtryder/plex-cast-bridge/commit/68f43025c835a5892bbe75a5c1a69dbba1a4b92b))
+* fix: speed compose selection test shutdown and CI pytest capture ([466e91f](https://github.com/andrewtryder/plex-cast-bridge/commit/466e91fc148da6030786fc9487873175ca1ee8a7))
+* fix: validate immutable image refs before Docker calls ([3956555](https://github.com/andrewtryder/plex-cast-bridge/commit/39565555cd1943deea8b0a658e5dde53eff75047))
+* fix: retain prebuilt image across Docker matrix ([e829755](https://github.com/andrewtryder/plex-cast-bridge/commit/e829755acca9f0130f7ce12b65499a8cea3772af))
+* fix: stage Cloud Run build catalog ([16ae8a3](https://github.com/andrewtryder/plex-cast-bridge/commit/16ae8a3cbca7a13a6a0d837be7fcb38585d7ef5e))
+* fix: remove duplicate cloud gateway pytest import ([45f0e02](https://github.com/andrewtryder/plex-cast-bridge/commit/45f0e02451cba63ca0491b21034fa77e7e3cdb89))
+
+### Performance Improvements
+
+* perf: skip redundant compose-selection image pulls ([b889f9a](https://github.com/andrewtryder/plex-cast-bridge/commit/b889f9ae7970445b823c8917af7fb3c57d0a737a))
+
+### Code Refactoring
+
+* refactor: extract reconcile_speakers helpers (Phase 12) ([2271816](https://github.com/andrewtryder/plex-cast-bridge/commit/22718164946dd056366a1bd1012ef136de8e400f))
+* refactor: modularize lifespan tasks and fix Pub/Sub startup leak (Phase 8) ([21528aa](https://github.com/andrewtryder/plex-cast-bridge/commit/21528aac283be3dd9a53ae3e9ca37e80088eb5e3))
+* refactor: extract startup guard checks (Phase 8) ([c715656](https://github.com/andrewtryder/plex-cast-bridge/commit/c715656a2c6e229a3e0a809414200a4eaaf2bea2))
+* refactor: split config drift classification helpers (Phase 7) ([5a713ce](https://github.com/andrewtryder/plex-cast-bridge/commit/5a713cea8ddda166bc0fa7a86910c67e2bca0b88))
+* refactor: modularize release-acceptance verification (Phase 5) ([e60a7bd](https://github.com/andrewtryder/plex-cast-bridge/commit/e60a7bd521b68feb232e80fe64dfdc8a15f473b2))
+* refactor: extract Google Home wizard verify steps (Phase 4) ([d29a5a8](https://github.com/andrewtryder/plex-cast-bridge/commit/d29a5a8397cdbe2cc4a8436431fb899f2568bb12))
+* refactor: extract Plex music resolution helpers (Phase 3) ([d7690a4](https://github.com/andrewtryder/plex-cast-bridge/commit/d7690a48478c7d18f21971852752d5526b62d8b1))
+* refactor: split local dashboard routes into focused modules ([ad78485](https://github.com/andrewtryder/plex-cast-bridge/commit/ad7848542c3483a4b8ea849adf2bc825c7735eda))
+
+### Tests
+
+* test: add extended synthetic lifespan integration coverage ([d57d848](https://github.com/andrewtryder/plex-cast-bridge/commit/d57d8485421b06620cf97aa614802a4c5b5bba5b))
+* test: add reconcile snapshots and catalog persistence characterization (Phase 9) ([5d6b6c0](https://github.com/andrewtryder/plex-cast-bridge/commit/5d6b6c09622140c23faabd48a0fcb7801c81efc9))
+* test: expand speaker identity and migration characterization (Phase 9) ([6d59b6c](https://github.com/andrewtryder/plex-cast-bridge/commit/6d59b6c1d9e941a7d54f1c8e66b04e8720dcf18f))
+* test: characterize speaker reconciliation edge cases (Phase 9) ([f9fc05c](https://github.com/andrewtryder/plex-cast-bridge/commit/f9fc05c0425ede930502c84280c163903e171cba))
+* test: expand startup guard and lifespan characterization (Phase 8) ([8f37bf1](https://github.com/andrewtryder/plex-cast-bridge/commit/8f37bf1824b5b2d09c5de5d3fba5c1664a7703ac))
+* test: lock config drift diagnose semantics to main baseline ([4dea4a9](https://github.com/andrewtryder/plex-cast-bridge/commit/4dea4a9ac8ab58304ba92201d2fc76c37f6f2616))
+* test: isolate ephemeral git repos from workspace config ([77b6d1e](https://github.com/andrewtryder/plex-cast-bridge/commit/77b6d1e50bb1e8826a9a9c50a2ac50b9a92b1c7b))
+* test: classify compose selection Docker cases ([d958260](https://github.com/andrewtryder/plex-cast-bridge/commit/d95826015dd6c2fd5ba6dccb9fd13fa6d95c2ba5))
+
+### Documentation
+
+* docs: Phase 13 Docker CI optimization plan (measurement only) ([4beb6ec](https://github.com/andrewtryder/plex-cast-bridge/commit/4beb6ec1756b7d897c1ce274a2cf4063893dbcdc))
+* docs: refine Phase 10 migration analysis with call paths and risk matrix ([10062be](https://github.com/andrewtryder/plex-cast-bridge/commit/10062bef0f75ecea5035539131a209141d759f0b))
+* docs: record Phase 11 Docker CI slow-test measurements ([215cf5f](https://github.com/andrewtryder/plex-cast-bridge/commit/215cf5fed231a3a9176028f9ccfed3ad75a1be94))
+* docs: add Phase 10 identity migration proposal (draft) ([e46937c](https://github.com/andrewtryder/plex-cast-bridge/commit/e46937cd333994772c1b6b3448bbd44ef9deb2b5))
+* docs: record Phase 1 CI measurement ([b79a3f4](https://github.com/andrewtryder/plex-cast-bridge/commit/b79a3f40dd2d0a728282505fbe17295234a5cc8f))
+
+### Continuous Integration
+
+* ci: replace Node 20 pre-commit cache action ([37625ee](https://github.com/andrewtryder/plex-cast-bridge/commit/37625ee06ab47756cbe5985fd31bffda9ab68732))
+* ci: partition tests and cache candidate builds ([d6177eb](https://github.com/andrewtryder/plex-cast-bridge/commit/d6177eb9b50b47a788e7ffc5326d54eb9fcd30a3))
+
 ## [0.5.0](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.2.2...v0.5.0) (2026-11-19)
 
 
