@@ -183,7 +183,12 @@ async def shutdown_application(
 
     # 1. Stop music-index scheduler before touching active scan state.
     await _cancel_task(tasks.music_index)
-    if database_path().exists():
+    try:
+        path_exists = database_path().exists()
+    except Exception:
+        log.exception("Application shutdown step failed: music_index.database_path")
+        path_exists = False
+    if path_exists:
         await _run_step("music_index_scan.cancel", run_in_threadpool(cancel_index_scan))
     await _run_step("catalog_sync.stop_pending_push", lambda: stop_pending_push())
     # 2. Reconcile, then discovery (matches original main.py).
