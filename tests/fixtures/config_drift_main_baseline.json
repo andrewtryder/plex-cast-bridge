@@ -1,0 +1,1039 @@
+{
+  "empty_data": {
+    "catalog_source": "bundled catalog fallback",
+    "files": {
+      "app_settings.json": "absent",
+      "catalog.json": "absent",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "absent",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "absent"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "cloud_gateway_url": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  },
+  "gateway_overwrite": {
+    "catalog_source": "bundled catalog fallback",
+    "files": {
+      "app_settings.json": "absent",
+      "catalog.json": "absent",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "readable",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "absent"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [
+      "catalog_write_key",
+      "cloud_gateway_url"
+    ],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "release_preflight_warning",
+        "conflict": true,
+        "note": "Both environment values trigger a sync-file overwrite at startup.",
+        "present_sources": [
+          "google_home_sync.json",
+          "process environment"
+        ],
+        "source": "process environment (copied to sync file at startup)"
+      },
+      "cloud_gateway_url": {
+        "classification": "release_preflight_warning",
+        "conflict": true,
+        "note": "Both environment values trigger a sync-file overwrite at startup.",
+        "present_sources": [
+          "google_home_sync.json",
+          "process environment"
+        ],
+        "source": "process environment (copied to sync file at startup)"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  },
+  "gateway_warning_pair": {
+    "catalog_source": "bundled catalog fallback",
+    "files": {
+      "app_settings.json": "absent",
+      "catalog.json": "absent",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "readable",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "absent"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [
+      "cloud_gateway_url"
+    ],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Both environment values trigger a sync-file overwrite at startup.",
+        "present_sources": [
+          "google_home_sync.json",
+          "process environment"
+        ],
+        "source": "process environment (copied to sync file at startup)"
+      },
+      "cloud_gateway_url": {
+        "classification": "release_preflight_warning",
+        "conflict": true,
+        "note": "Both environment values trigger a sync-file overwrite at startup.",
+        "present_sources": [
+          "google_home_sync.json",
+          "process environment"
+        ],
+        "source": "process environment (copied to sync file at startup)"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  },
+  "invalid_catalog": {
+    "catalog_source": "data catalog",
+    "files": {
+      "app_settings.json": "absent",
+      "catalog.json": "unreadable or invalid",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "absent",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "absent"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "cloud_gateway_url": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  },
+  "partial_gateway_volumes": {
+    "catalog_source": "bundled catalog fallback",
+    "files": {
+      "app_settings.json": "readable",
+      "catalog.json": "absent",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "readable",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "absent"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "cloud_gateway_url": {
+        "classification": "informational",
+        "conflict": true,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [
+          "google_home_sync.json",
+          "process environment"
+        ],
+        "source": "google_home_sync.json"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [
+          "app_settings.json",
+          "process environment"
+        ],
+        "source": "app_settings.json"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "app_settings.json (normalized default)"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  },
+  "plex_jwt_volumes": {
+    "catalog_source": "bundled catalog fallback",
+    "files": {
+      "app_settings.json": "readable",
+      "catalog.json": "absent",
+      "google_home_setup.json": "absent",
+      "google_home_sync.json": "absent",
+      "music_index.sqlite3": "absent",
+      "plex_connection.json": "readable"
+    },
+    "index": "SQLite owns index settings and derived snapshot; not opened by this diagnostic.",
+    "release_preflight_warnings": [],
+    "scope": "Local process and .env only; Cloud Run, Firestore, Cloud Storage and Google Home were not queried. Cloud-side conflicts are unknown.",
+    "settings": {
+      "allow_unauthenticated_local_api": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_path": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_reconcile_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "catalog_write_key": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "cloud_gateway_url": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "A partial environment pair does not configure the sync file.",
+        "present_sources": [],
+        "source": "not configured"
+      },
+      "data_dir": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [
+          "process environment"
+        ],
+        "source": "app_settings.json (normalized default)"
+      },
+      "default_speaker_host": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "default_speaker_name": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "enable_pubsub_listener": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gcp_project_id_wizard": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "process environment / .env for subscriber; wizard record for setup"
+      },
+      "gcp_pubsub_subscription_id": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "gemini_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "google_application_credentials": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "local_api_key": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      },
+      "max_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "app_settings.json (normalized default)"
+      },
+      "night_cast_volume": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [
+          "app_settings.json"
+        ],
+        "source": "app_settings.json"
+      },
+      "pcb_disable_background_discovery": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "plex_music_section": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [
+          "plex_connection.json (JWT)"
+        ],
+        "source": "plex_connection.json (JWT; environment fallback if connection fails)"
+      },
+      "plex_token": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "JWT and legacy server tokens may differ by design.",
+        "present_sources": [
+          "plex_connection.json (JWT)",
+          "process environment"
+        ],
+        "source": "plex_connection.json (JWT; environment fallback if connection fails)"
+      },
+      "plex_url": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [
+          "plex_connection.json (JWT)"
+        ],
+        "source": "plex_connection.json (JWT; environment fallback if connection fails)"
+      },
+      "port": {
+        "classification": "ok",
+        "conflict": false,
+        "note": "Outside Compose, .env alone does not set this process variable.",
+        "present_sources": [],
+        "source": "default"
+      },
+      "speaker_discovery_interval_sec": {
+        "classification": "ok",
+        "conflict": false,
+        "present_sources": [],
+        "source": "default"
+      }
+    }
+  }
+}
