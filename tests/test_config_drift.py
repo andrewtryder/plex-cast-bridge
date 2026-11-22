@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from plex_cast_bridge import config_drift as drift
 
 
@@ -53,3 +55,55 @@ def test_invalid_existing_catalog_is_selected(tmp_path):
     result = drift.diagnose({}, {}, tmp_path)
     assert result["catalog_source"] == "data catalog"
     assert result["files"]["catalog.json"] == "unreadable or invalid"
+
+
+@pytest.mark.parametrize(
+    ("environ", "app_content", "expect_conflict", "expect_classification"),
+    [
+        ({}, '{"default_cast_volume":0.4}', False, "ok"),
+        ({"DEFAULT_CAST_VOLUME": "0.50"}, '{"default_cast_volume":0.4}', True, "override"),
+        ({"DEFAULT_CAST_VOLUME": "0.40"}, '{"default_cast_volume":0.4}', False, "ok"),
+        ({"DEFAULT_CAST_VOLUME": "not-a-number"}, '{"default_cast_volume":0.4}', False, "unknown"),
+    ],
+)
+def test_volume_provenance_conflicts(tmp_path, environ, app_content, expect_conflict, expect_classification):
+    (tmp_path / "app_settings.json").write_text(app_content)
+    result = drift.diagnose(environ, {}, tmp_path)
+    entry = result["settings"]["default_cast_volume"]
+    assert entry["conflict"] is expect_conflict
+    assert entry["classification"] == expect_classification
+
+
+def test_absent_catalog_file_classification(tmp_path):
+    result = drift.diagnose({}, {}, tmp_path)
+    assert result["files"]["catalog.json"] == "absent"
+
+
+@pytest.mark.parametrize(
+    ("content", "expect_state"),
+    [
+        ("[]", "invalid"),
+        ("{", "unreadable or invalid"),
+    ],
+)
+def test_malformed_catalog_file_classification(tmp_path, content, expect_state):
+    (tmp_path / "catalog.json").write_text(content)
+    result = drift.diagnose({}, {}, tmp_path)
+    assert result["files"]["catalog.json"] == expect_state
+
+
+@pytest.mark.parametrize(
+    ("sync", "environ", "warnings"),
+    [
+        ({}, {"CLOUD_GATEWAY_URL": "https://a", "CATALOG_WRITE_KEY": "k"}, []),
+        (
+            {"cloud_gateway_url": "https://saved", "catalog_write_key": "saved"},
+            {"CLOUD_GATEWAY_URL": "https://other", "CATALOG_WRITE_KEY": "saved"},
+            ["cloud_gateway_url"],
+        ),
+    ],
+)
+def test_gateway_release_preflight_warnings(tmp_path, sync, environ, warnings):
+    (tmp_path / "google_home_sync.json").write_text(json.dumps(sync))
+    result = drift.diagnose(environ, {}, tmp_path)
+    assert result["release_preflight_warnings"] == warnings
