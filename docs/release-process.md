@@ -10,7 +10,7 @@ before announcing a release.
 1. Merge only reviewed changes and let Release Please update its release PR.
    Release Please prepares the version and changelog, but does **not** create a
    tag or GitHub release.
-2. Run the full Linux CI suite (Python 3.14) and the disposable Docker upgrade
+2. Run the full Linux CI suite (Python 3.14 and 3.15) and the disposable Docker upgrade
    suite on the exact reviewed commit. A Docker Desktop result of **NOT TESTED**
    is not a substitute for Linux Docker acceptance.
 3. Collect private local-upgrade evidence using `release_acceptance.py` and

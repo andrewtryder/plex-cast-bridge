@@ -203,9 +203,9 @@ To avoid unexpected data loss during updates, avoid these configurations:
 
 ## Native Python Installations (Non-Docker)
 
-Native installations running directly on host Python (outside Docker) require Python 3.14 (`requires-python = ">=3.14,<3.15"`).
-- **With `uv`**: Run `uv sync` in the repository. `uv` automatically downloads and uses a standalone Python 3.14 runtime without modifying system packages. If upgrading an existing virtual environment that was previously initialized with Python 3.12 or 3.13, `uv sync` automatically recreates `.venv` using Python 3.14 and restores dependencies without requiring manual cleanup.
-- **Without `uv`**: Systems with host Python older than 3.14 (e.g. Debian 12 / Ubuntu 24.04) cannot run the bridge natively and must install Python 3.14 or switch to the supported Docker container.
+Native installations running directly on host Python (outside Docker) require Python 3.14 or 3.15 (`requires-python = ">=3.14,<3.16"`).
+- **With `uv`**: Run `uv sync` in the repository. `uv` automatically downloads and uses a compatible standalone Python runtime without modifying system packages. If upgrading an existing virtual environment, `uv sync` recreates `.venv` with a supported Python version and restores dependencies without requiring manual cleanup.
+- **Without `uv`**: Systems with host Python older than 3.14 (e.g. Debian 12 / Ubuntu 24.04) cannot run the bridge natively and must install Python 3.14 or 3.15, or switch to the supported Docker container.
 
 ### Systemd Service Upgrades
 
@@ -213,7 +213,7 @@ For host installations managed via systemd (`deploy/plex-cast-bridge.service`):
 1. Navigate to the installation directory (e.g. `cd /opt/plex-cast-bridge`).
 2. Pull the latest code: `git pull origin main`.
 3. Synchronize Python runtime and dependencies with uv: `uv sync`.
-   - If the previous installation was on Python 3.12 or 3.13, `uv sync` automatically migrates `.venv` to Python 3.14 without requiring manual virtualenv deletion or system Python modifications.
+   - If the previous installation used an unsupported Python version, `uv sync` automatically recreates `.venv` with a supported runtime without requiring manual virtualenv deletion or system Python modifications.
 4. Restart the service: `sudo systemctl restart plex-cast-bridge`.
    - The service preserves `EnvironmentFile=/opt/plex-cast-bridge/.env` and existing persistent state (preserving legacy location precedence across `/data`, `data/`, or the repository root, or any custom external `DATA_DIR` configured in `.env`).
 
