@@ -380,6 +380,14 @@ def _run_workflow_pipeline(
         if not _eval_if(step.get("if"), inputs, step_outputs, job_failed):
             continue
 
+        if mode == "candidate" and name in {
+            "Run Linux Docker acceptance matrix against exact candidate digest",
+            "Verify official legacy image upgrade to candidate digest",
+        }:
+            executed_steps.append(name)
+            step_results.append({"name": name, "returncode": 0, "stdout": "", "stderr": ""})
+            continue
+
         if "uses" in step:
             executed_steps.append(name)
             if step.get("id") == "build":
@@ -665,6 +673,15 @@ def test_candidate_mode_never_creates_stable_tags_or_updates_latest(tmp_path: Pa
     assert "candidate-" in meta_step["with"]["tags"]
     assert "latest" not in meta_step["with"]["tags"]
     assert build_step["with"]["tags"] == "ghcr.io/${{ github.repository }}:candidate-${{ inputs.version }}"
+    acceptance = _get_step("Run Linux Docker acceptance matrix against exact candidate digest")
+    assert acceptance["env"]["CANDIDATE_IMAGE"] == "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+    assert acceptance["env"]["PCB_TEST_UPGRADE_TARGET"] == acceptance["env"]["CANDIDATE_IMAGE"]
+    assert "docker pull \"$CANDIDATE_IMAGE\"" in acceptance["run"]
+    assert "docker tag \"$CANDIDATE_IMAGE\" \"$PCB_TEST_LOCAL_IMAGE\"" in acceptance["run"]
+    assert "pytest -q -m docker_integration" in acceptance["run"]
+    legacy = _get_step("Verify official legacy image upgrade to candidate digest")
+    assert legacy["env"]["PCB_TEST_UPGRADE_TARGET"] == legacy["env"]["CANDIDATE_IMAGE"]
+    assert "PCB_TEST_START_IMAGE" in legacy["env"]
 
     for promote_only_step in (
         "Check release tag status",
@@ -683,6 +700,8 @@ def test_candidate_mode_never_creates_stable_tags_or_updates_latest(tmp_path: Pa
     cand_run = _run_workflow_pipeline(tmp_path, mode="candidate")
     assert cand_run["failed"] is False
     assert "Verify candidate artifact and OCI metadata (candidate mode)" in cand_run["executed_steps"]
+    assert "Run Linux Docker acceptance matrix against exact candidate digest" in cand_run["executed_steps"]
+    assert "Verify official legacy image upgrade to candidate digest" in cand_run["executed_steps"]
     assert "Record candidate summary and halt" in cand_run["executed_steps"]
     assert f"ghcr.io/{GH_REPO}@{cand_run['candidate_digest']}" in cand_run["summary"]
 
