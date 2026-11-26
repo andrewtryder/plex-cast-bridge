@@ -679,6 +679,9 @@ def test_candidate_mode_never_creates_stable_tags_or_updates_latest(tmp_path: Pa
     assert "docker pull \"$CANDIDATE_IMAGE\"" in acceptance["run"]
     assert "docker tag \"$CANDIDATE_IMAGE\" \"$PCB_TEST_LOCAL_IMAGE\"" in acceptance["run"]
     assert "pytest -q -m docker_integration" in acceptance["run"]
+    assert acceptance["env"]["PCB_TEST_SQLITE_ONLINE"] == "1"
+    assert acceptance["env"]["PCB_TEST_SQLITE_IMAGE"] == acceptance["env"]["PCB_TEST_LOCAL_IMAGE"]
+    assert acceptance["env"]["PCB_TEST_COMPOSE_RECREATE"] == "1"
     legacy = _get_step("Verify official legacy image upgrade to candidate digest")
     assert legacy["env"]["PCB_TEST_UPGRADE_TARGET"] == legacy["env"]["CANDIDATE_IMAGE"]
     assert "PCB_TEST_START_IMAGE" in legacy["env"]

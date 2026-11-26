@@ -227,6 +227,9 @@ jobs:
           PCB_TEST_UPGRADE_E2E: "1"
           PCB_TEST_UPGRADE_TARGET: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
           PCB_TEST_FIRST_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:b0db066ed210255039515602dbe3759f697203f42b2b2a39214835dbc2b83422
+          PCB_TEST_SQLITE_ONLINE: "1"
+          PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
+          PCB_TEST_COMPOSE_RECREATE: "1"
           PCB_TEST_EXPECTED_PYTHON: "3.15"
           PCB_TEST_PREBUILT_IMAGE: "1"
           PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
