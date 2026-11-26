@@ -135,7 +135,10 @@ async def provision_preview(body: ProvisionRequest):
     preview = {
         "plan": plan.to_dict(),
         "cost_notes": describe_cost_notes(plan),
-        "steps": [run_provision_step(plan, s, dry_run=True) for s in plan.steps],
+        "steps": [
+            {"step": step, "status": "preview", "detail": "No changes will be made."}
+            for step in plan.steps
+        ],
     }
     setup.save_setup({"provision_preview": preview, "project_id": plan.project_id})
     return preview

@@ -93,6 +93,9 @@ HTTPServer(('0.0.0.0',32400),Handler).serve_forever()
     # and settings checks work even when Docker Desktop hides internal ports.
     class Proxy(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path not in {"/health", "/api/settings"}:
+                self.send_error(404)
+                return
             probe = run("docker", "compose", "-f", str(compose), "exec", "-T", "bridge", "python", "-c",
                         "import sys,urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000'+sys.argv[1],timeout=3).read().decode())",
                         self.path)

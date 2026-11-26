@@ -156,6 +156,22 @@ def test_existing_gateway_blocks_provision_preview_and_execution(wizard_env):
     assert response.status_code == 409
 
 
+def test_provision_preview_returns_safe_static_step_details(wizard_env, monkeypatch):
+    from plex_cast_bridge import google_home_routes
+
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError("private diagnostic detail")
+
+    monkeypatch.setattr(google_home_routes, "run_provision_step", unexpected)
+    response = TestClient(app).post(
+        "/api/google-home/provision/preview", json={"project_id": "synthetic-project"}
+    )
+
+    assert response.status_code == 200
+    assert all(step["detail"] == "No changes will be made." for step in response.json()["steps"])
+    assert "private diagnostic detail" not in response.text
+
+
 def test_mint_local_secrets_refuses_repeat_without_changing_existing_env(wizard_env, monkeypatch, tmp_path):
     from subprocess import CompletedProcess
     from plex_cast_bridge.gcp_provision import ops
