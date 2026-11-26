@@ -657,8 +657,9 @@ def _run_provision_step_inner(plan: ProvisionPlan, step: str) -> dict[str, Any]:
     if step == "mint_local_secrets":
         try:
             existing_found, _ = _probe_existing_cloud_run(plan)
-        except Exception as exc:
-            return {"step": step, "status": "failed", "detail": str(exc)}
+        except Exception:
+            log.exception("Cloud Run existence check failed while minting local secrets")
+            return {"step": step, "status": "failed", "detail": "Could not verify the Cloud Run service; see local logs."}
         if existing_found:
             return {
                 "step": step, "status": "failed",
