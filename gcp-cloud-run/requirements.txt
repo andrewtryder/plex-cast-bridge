@@ -21,7 +21,7 @@ cryptography==50.0.2
     # via
     #   google-auth
     #   pyjwt
-fastapi==0.162.5
+fastapi==0.165.0
 google-api-core==2.44.0
     # via
     #   google-cloud-core
@@ -109,19 +109,19 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.3
+pydantic==2.14.4
     # via
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.50.4
+pydantic-core==2.50.5
     # via pydantic
-pydantic-settings==2.16.2
+pydantic-settings==2.16.3
 pyjwt==2.15.1
 python-dotenv==1.2.4
     # via
     #   pydantic-settings
     #   uvicorn
-python-multipart==0.0.33
+python-multipart==0.0.34
 pyyaml==6.0.3
     # via uvicorn
 requests==2.34.2
