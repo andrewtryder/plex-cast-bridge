@@ -124,6 +124,63 @@ def test_fast_path_artist_vs_radio_routing():
     assert dj._try_fast_artist_match("play DJ Shadow radio", catalog["artists"]) is None
 
 
+def test_fast_artist_match_does_not_log_private_query_or_artist(caplog):
+    import logging
+    from plex_cast_bridge.ai_router import SmartDJ
+
+    caplog.set_level(logging.DEBUG)
+    artist_marker = "PRIVATE_ARTIST_SENTINEL_2716"
+    query_marker = f"Please play {artist_marker}"
+    intent = SmartDJ(api_key="").parse(query_marker, {"artists": [artist_marker]})
+
+    assert intent.target_artist == artist_marker
+    assert query_marker not in caplog.text
+    assert artist_marker not in caplog.text
+
+
+def test_smartdj_model_errors_do_not_log_private_prompt(caplog, monkeypatch):
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import plex_cast_bridge.ai_router as ai_router
+
+    caplog.set_level(logging.DEBUG)
+    private_marker = "PRIVATE_PROMPT_ERROR_SENTINEL_8472"
+    monkeypatch.setattr(ai_router, "CANDIDATE_MODELS", ["test-model"])
+    dj = ai_router.SmartDJ(api_key="dummy-key")
+    dj._client = SimpleNamespace(models=SimpleNamespace(
+        generate_content=MagicMock(side_effect=RuntimeError(private_marker))
+    ))
+
+    with pytest.raises(RuntimeError) as caught:
+        dj.parse(f"Play {private_marker}", {"artists": []})
+
+    assert private_marker not in caplog.text
+    assert private_marker not in str(caught.value)
+
+
+def test_speaker_queue_does_not_log_track_metadata(caplog):
+    import logging
+    from unittest.mock import patch
+
+    caplog.set_level(logging.DEBUG)
+    title_marker = "PRIVATE_TITLE_SENTINEL_5519"
+    artist_marker = "PRIVATE_ARTIST_SENTINEL_6304"
+    item = track(title_marker)
+    item.grandparentTitle = artist_marker
+    cast = SimpleNamespace(media_controller=MagicMock(), name="Desk Speaker", status=SimpleNamespace(volume_level=0.25))
+    queue = SpeakerQueue(cast, default_volume=None)
+    with patch.object(queue, "_schedule_load_watchdog"):
+        queue._play_track(item)
+    queue.executor.shutdown(wait=True)
+
+    assert cast.media_controller.play_media.call_args.kwargs["metadata"]["title"] == title_marker
+    assert cast.media_controller.play_media.call_args.kwargs["metadata"]["artist"] == artist_marker
+    assert title_marker not in caplog.text
+    assert artist_marker not in caplog.text
+
+
 def test_speaker_disable_toggle():
     from plex_cast_bridge.cast_manager import CastManager
 
@@ -540,12 +597,15 @@ def test_pubsub_worker_native_dlq_delegation():
     mock_msg.ack.assert_not_called()
 
 
-def test_pubsub_worker_local_dlq_retention(tmp_path):
+def test_pubsub_worker_local_dlq_retention(tmp_path, caplog):
+    import logging
     import json
     from unittest.mock import MagicMock, patch
 
     import plex_cast_bridge.pubsub_worker as pw
     from plex_cast_bridge.pubsub_worker import MAX_MESSAGE_RETRIES, PubSubWorker
+
+    caplog.set_level(logging.DEBUG)
 
     settings = SimpleNamespace(
         gcp_project_id="test-proj",
@@ -561,10 +621,11 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
     with patch.object(pw, "DEAD_LETTER_LOG", test_dlq_file):
         mock_msg = MagicMock(spec=["message_id", "data", "ack", "nack"])
         mock_msg.message_id = "msg-poison-pill"
-        mock_msg.data = json.dumps({"action": "play", "query": "CrashArtist"}).encode("utf-8")
+        query_marker = "PRIVATE_DLQ_QUERY_SENTINEL_7041"
+        mock_msg.data = json.dumps({"action": "play", "query": query_marker}).encode("utf-8")
 
         completed_future = MagicMock()
-        completed_future.result.side_effect = RuntimeError("Persistent crash")
+        completed_future.result.side_effect = RuntimeError("Private failure marker PRIVATE_DLQ_ERROR_SENTINEL_1883")
 
         def mock_run_coroutine(coro, _loop):
             fut = MagicMock()
@@ -587,7 +648,12 @@ def test_pubsub_worker_local_dlq_retention(tmp_path):
             assert len(lines) == 1
             record = json.loads(lines[0])
             assert record["message_id"] == "msg-poison-pill"
-            assert "Persistent crash" in record["error"]
+            assert record["error_type"] == "RuntimeError"
+            assert record["payload"]["query_present"] is True
+            assert query_marker not in caplog.text
+            assert "PRIVATE_DLQ_ERROR_SENTINEL_1883" not in caplog.text
+            assert query_marker not in lines[0]
+            assert "PRIVATE_DLQ_ERROR_SENTINEL_1883" not in lines[0]
 
 
 def test_data_dir_isolation_and_catalog_persistence(tmp_path, monkeypatch):

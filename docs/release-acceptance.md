@@ -141,9 +141,12 @@ disruptive test):
 ```sh
 python3 scripts/test_live_cast.py --allow-disruptive \
   --base-url http://127.0.0.1:8000 \
-  --device-uuid CAST_UUID_FROM_PRIVATE_BASELINE \
-  --query 'private known library query'
+  --device-uuid CAST_UUID_FROM_PRIVATE_BASELINE
 ```
+
+The helper prompts for the known library query with terminal echo disabled.
+For an automated local run, pass `--query-stdin` and pipe one query line without
+printing it in the invoking shell.
 
 `scripts/test_voice_fulfillment.py` is a simulated Cloud Run EXECUTE request,
 not a Google Assistant voice-recognition test. It requires `--allow-disruptive`,

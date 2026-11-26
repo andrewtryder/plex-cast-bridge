@@ -593,11 +593,15 @@ async def handle_smart_home_request(
                 dev_success = True
                 error_code = "transientError"
                 for pubsub_payload in parsed_payloads:
-                    log.info(f"Publishing execute payload for device '{dev_id}': {pubsub_payload}")
+                    log.info(
+                        "Publishing execute command for device '%s' (action=%s)",
+                        dev_id,
+                        pubsub_payload.get("action", "unknown"),
+                    )
                     try:
                         await pubsub_service.publish(pubsub_payload)
                     except Exception as exc:
-                        log.exception(f"Failed to publish execution to Pub/Sub: {exc}")
+                        log.error("Failed to publish execution to Pub/Sub (error_type=%s)", type(exc).__name__)
                         dev_success = False
                         error_code = "transientError"
                         break

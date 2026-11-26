@@ -185,7 +185,7 @@ async def fulfillment(
         )
         return response_data
     except Exception as exc:
-        log.exception(f"Error handling fulfillment request: {exc}")
+        log.error("Error handling fulfillment request (error_type=%s)", type(exc).__name__)
         req_id = body.get("requestId", "")
         return {
             "requestId": req_id,
@@ -209,7 +209,7 @@ async def webhook_query(
         "speaker": target_speaker,
         "source": "webhook",
     }
-    log.info(f"Webhook query received: {payload.query} (speaker={target_speaker})")
+    log.info("Webhook query received (action=play)")
     msg_id = await pubsub_service.publish(pubsub_payload)
     return {
         "status": "queued",

@@ -30,7 +30,7 @@ class PubSubService:
 
     def publish_sync(self, payload: dict[str, Any]) -> str:
         if self.mock or not self._publisher or not self._topic_path:
-            log.info(f"[MOCK PUBSUB] Publishing payload: {payload}")
+            log.info("[MOCK PUBSUB] Publishing action=%s", payload.get("action", "unknown"))
             return f"mock-{id(payload)}"
 
         data = json.dumps(payload).encode("utf-8")

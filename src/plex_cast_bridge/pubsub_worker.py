@@ -30,15 +30,20 @@ def _record_dead_letter(msg_id: str, payload: dict, exc: Exception):
         record = {
             "timestamp": int(time.time()),
             "message_id": msg_id,
-            "payload": payload,
-            "error": str(exc),
+            "payload": {
+                "action": payload.get("action"),
+                "speaker": payload.get("speaker"),
+                "device_id": payload.get("device_id"),
+                "query_present": isinstance(payload.get("query"), str),
+            },
+            "error_type": type(exc).__name__,
         }
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
         log.warning("Archived permanently failing message %s to %s", msg_id, target)
     except Exception as log_err:
-        log.error("Could not write to local dead letter log: %s", log_err)
+        log.error("Could not write to local dead letter log (error_type=%s)", type(log_err).__name__)
 
 
 log = logging.getLogger(__name__)
@@ -93,8 +98,8 @@ class PubSubWorker:
                     raise ValueError("Volume values require the volume action")
                 if action != "mute" and "mute" in data:
                     raise ValueError("Mute values require the mute action")
-            except (ValueError, UnicodeError):
-                log.exception("Discarding invalid Pub/Sub message %s", msg_id)
+            except (ValueError, UnicodeError) as exc:
+                log.warning("Discarding invalid Pub/Sub message %s (error_type=%s)", msg_id, type(exc).__name__)
                 message.ack()
                 return
             action = data["action"]

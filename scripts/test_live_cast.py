@@ -2,10 +2,12 @@
 """Exercise one explicitly authorized, individual Cast receiver via dashboard API."""
 
 import argparse
+import getpass
 import json
 import logging
 import math
 import os
+import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -272,7 +274,8 @@ def main(argv=None) -> int:
         "--device-uuid", required=True, help="exact Cast UUID from the private baseline"
     )
     parser.add_argument(
-        "--query", required=True, help="known library query; never printed or logged"
+        "--query-stdin", action="store_true",
+        help="read one query line from stdin without echoing it",
     )
     parser.add_argument(
         "--base-url", default="http://127.0.0.1:8000", help="local dashboard API URL"
@@ -288,11 +291,21 @@ def main(argv=None) -> int:
         default=4.0,
         help="seconds to allow audible playback during play/pause/resume/volume checks",
     )
-    args = parser.parse_args(argv)
+    args, unknown_args = parser.parse_known_args(argv)
+    if unknown_args:
+        parser.error("unexpected command-line arguments (values omitted); enter the query at the hidden prompt or use --query-stdin")
     if not args.allow_disruptive:
         parser.error("physical playback requires --allow-disruptive")
     if not math.isfinite(args.dwell_seconds) or args.dwell_seconds < 0:
         parser.error("--dwell-seconds must be a finite non-negative number")
+    if args.query_stdin:
+        query = input().rstrip("\r\n")
+    else:
+        if not sys.stdin.isatty():
+            parser.error("use --query-stdin when providing the query through a pipe")
+        query = getpass.getpass("Known library query (input hidden): ")
+    if not query:
+        parser.error("query must not be empty")
 
     settings = Settings()
     records = [
@@ -353,7 +366,7 @@ def main(argv=None) -> int:
         outcome = run_device_test(
             speaker=speaker,
             device_id=device_id,
-            query=args.query,
+            query=query,
             base_url=args.base_url,
             max_volume=settings.max_cast_volume,
             physical_idle_confirmed=args.confirm_physical_idle,
