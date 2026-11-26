@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.6.0...v0.6.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **release:** test exact candidate digest on Linux ([#84](https://github.com/andrewtryder/plex-cast-bridge/issues/84)) ([59006a1](https://github.com/andrewtryder/plex-cast-bridge/commit/59006a1c39e1a5528538206b82ae2461c9ba10f0))
+* **security:** address CodeQL findings ([#83](https://github.com/andrewtryder/plex-cast-bridge/issues/83)) ([c57ef1b](https://github.com/andrewtryder/plex-cast-bridge/commit/c57ef1bf494d77c79845d7ea2ae6573a919df75b))
+
 ## [0.6.0](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.5.0...v0.6.0) (2026-11-22)
 
 
