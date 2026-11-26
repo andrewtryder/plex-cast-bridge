@@ -213,6 +213,47 @@ jobs:
             --expected-version "$RELEASE_VERSION" \
             --expected-revision "$EXPECTED_SHA"
 
+      - name: Set up uv for candidate acceptance tests
+        if: ${{ inputs.mode == 'candidate' }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run Linux Docker acceptance matrix against exact candidate digest
+        if: ${{ inputs.mode == 'candidate' }}
+        env:
+          CANDIDATE_IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          PCB_TEST_DOCKER_IMAGE: "1"
+          PCB_TEST_UPGRADE_E2E: "1"
+          PCB_TEST_UPGRADE_TARGET: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          PCB_TEST_FIRST_TARGET: ghcr.io/andrewtryder/plex-cast-bridge@sha256:b0db066ed210255039515602dbe3759f697203f42b2b2a39214835dbc2b83422
+          PCB_TEST_SQLITE_ONLINE: "1"
+          PCB_TEST_SQLITE_IMAGE: plex-cast-bridge-config-drift-test
+          PCB_TEST_COMPOSE_RECREATE: "1"
+          PCB_TEST_EXPECTED_PYTHON: "3.15"
+          PCB_TEST_PREBUILT_IMAGE: "1"
+          PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
+        run: |
+          set -euo pipefail
+          docker pull "$CANDIDATE_IMAGE"
+          docker tag "$CANDIDATE_IMAGE" "$PCB_TEST_LOCAL_IMAGE"
+          docker image inspect "$PCB_TEST_LOCAL_IMAGE" >/dev/null
+          uv sync --all-extras --dev
+          uv run --dev pytest -q -m docker_integration --durations=20 --log-cli-level=WARNING
+
+      - name: Verify official legacy image upgrade to candidate digest
+        if: ${{ inputs.mode == 'candidate' }}
+        env:
+          CANDIDATE_IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          PCB_TEST_UPGRADE_E2E: "1"
+          PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
+          PCB_TEST_UPGRADE_TARGET: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          PCB_TEST_EXPECTED_PYTHON: "3.15"
+          PCB_TEST_PREBUILT_IMAGE: "1"
+          PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
+        run: |
+          uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
+
       - name: Record candidate summary and halt
         if: ${{ inputs.mode == 'candidate' }}
         env:
@@ -228,6 +269,7 @@ jobs:
           - **Candidate Tag:** \`ghcr.io/${GITHUB_REPOSITORY}:candidate-${VERSION}\`
           - **Immutable Digest:** \`${DIGEST}\`
           - **Platforms:** \`linux/amd64\`, \`linux/arm64\`
+          - **Automated acceptance:** Exact digest Docker matrix and legacy-image upgrade passed.
 
           ### Acceptance & Promotion Instructions:
           1. Use this exact immutable candidate image for live deployment acceptance testing on Proxmox LXC 112:
