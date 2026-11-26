@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import time
+import warnings
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -275,7 +276,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--query-stdin", action="store_true",
-        help="read one query line from stdin without echoing it",
+        help="read one query line from a non-terminal stdin pipe",
     )
     parser.add_argument(
         "--base-url", default="http://127.0.0.1:8000", help="local dashboard API URL"
@@ -299,11 +300,18 @@ def main(argv=None) -> int:
     if not math.isfinite(args.dwell_seconds) or args.dwell_seconds < 0:
         parser.error("--dwell-seconds must be a finite non-negative number")
     if args.query_stdin:
-        query = input().rstrip("\r\n")
+        if sys.stdin.isatty():
+            parser.error("--query-stdin requires piped input; use the hidden prompt for terminal input")
+        query = sys.stdin.readline().rstrip("\r\n")
     else:
         if not sys.stdin.isatty():
             parser.error("use --query-stdin when providing the query through a pipe")
-        query = getpass.getpass("Known library query (input hidden): ")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            try:
+                query = getpass.getpass("Known library query (input hidden): ")
+            except getpass.GetPassWarning:
+                parser.error("terminal cannot disable input echo; use --query-stdin with a non-tty pipe")
     if not query:
         parser.error("query must not be empty")
 
