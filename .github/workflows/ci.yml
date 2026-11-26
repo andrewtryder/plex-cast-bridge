@@ -41,9 +41,12 @@ jobs:
           pre-commit run --show-diff-on-failure --color=always --all-files
 
   test:
-    name: Test Suite (Python 3.14)
+    name: Test Suite (Python ${{ matrix.python-version }})
     needs: [lint]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.14", "3.15"]
 
     steps:
       - uses: actions/checkout@v7
@@ -54,8 +57,8 @@ jobs:
           enable-cache: true
           version: "latest"
 
-      - name: Set up Python 3.14
-        run: uv python install 3.14
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --all-extras --dev
@@ -166,13 +169,13 @@ jobs:
           PCB_TEST_PREBUILT_IMAGE: "1"
           PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
 
-      - name: Verify upgrade from official older image to Python 3.14 candidate
+      - name: Verify upgrade from official older image to Python 3.15 candidate
         run: uv run --dev pytest -q 'tests/test_upgrade_real_bridge.py::test_real_bridge_upgrade_preserves_plex_configuration[True]'
         env:
           PCB_TEST_UPGRADE_E2E: "1"
           PCB_TEST_START_IMAGE: ghcr.io/andrewtryder/plex-cast-bridge@sha256:a66f551562750ba50a11f2e4aeb20753e45ad44667375e2869bcbc15a8e5afbb
           PCB_TEST_UPGRADE_TARGET: ${{ env.PR_CANDIDATE_TARGET }}
-          PCB_TEST_EXPECTED_PYTHON: "3.14"
+          PCB_TEST_EXPECTED_PYTHON: "3.15"
           PCB_TEST_PREBUILT_IMAGE: "1"
           PCB_TEST_LOCAL_IMAGE: plex-cast-bridge-config-drift-test
 
