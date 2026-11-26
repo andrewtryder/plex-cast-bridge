@@ -2,7 +2,7 @@
 
 Covers:
 1. Genuine older-release to candidate upgrade (cross-version testing with real published image).
-2. Verification that the candidate runs candidate code and Python 3.14.
+2. Verification that the candidate runs candidate code and Python 3.15.
 3. Actual Docker Compose configuration resolution (deploy/docker-compose.yml, build override,
    and Portainer git-stack template).
 4. Actual Docker Compose lifecycle and recreation testing.
@@ -329,14 +329,14 @@ def _verify_synthetic_data(data_dir: Path, expected: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Real Older-Release to Candidate Upgrade & Python 3.14 Verification
+# Test 1: Real Older-Release to Candidate Upgrade & Python 3.15 Verification
 # ---------------------------------------------------------------------------
 def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
     """Upgrade from a real published older image to candidate image.
 
     Verifies:
     - Older image runs older Python (e.g. 3.12).
-    - Candidate image runs Python 3.14.
+    - Candidate image runs Python 3.15.
     - All synthetic data (.env, Plex, speakers, Google Home, settings, SQLite) is preserved.
     - Image rollback retains existing data.
     """
@@ -404,7 +404,7 @@ def test_real_older_image_to_candidate_upgrade_and_preservation(tmp_path: Path):
             check=True, capture_output=True,
         )
         ver_new = _wait_for_container_python(cid_new)
-        assert ver_new == "3.14", f"Expected candidate image to run Python 3.14, got {ver_new}"
+        assert ver_new == "3.15", f"Expected candidate image to run Python 3.15, got {ver_new}"
 
         # Verify candidate code is running
         code_check = subprocess.run(
