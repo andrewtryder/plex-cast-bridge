@@ -143,9 +143,9 @@ class SpeakerQueue(MediaStatusListener):
         self._saved_volume = float(volume)
         try:
             self._send_session_volume(max(0.0, min(float(self.default_volume), self.max_volume, 1.0)))
-        except Exception:
+        except Exception as exc:
             self._saved_volume = None
-            log.exception("Could not set playback volume on '%s'", self.cast.name)
+            log.error("Could not set playback volume on '%s' (error_type=%s)", self.cast.name, type(exc).__name__)
 
     def _send_session_volume(self, volume: float):
         # The queue lock is held here. Waiting for a Cast reply can deadlock the
@@ -162,8 +162,8 @@ class SpeakerQueue(MediaStatusListener):
             return
         try:
             self._send_session_volume(volume)
-        except Exception:
-            log.exception("Could not restore receiver volume on '%s'", self.cast.name)
+        except Exception as exc:
+            log.error("Could not restore receiver volume on '%s' (error_type=%s)", self.cast.name, type(exc).__name__)
         else:
             self._saved_volume = None
 
@@ -184,7 +184,7 @@ class SpeakerQueue(MediaStatusListener):
         try:
             self._stop_media()
         except Exception as exc:
-            log.debug("Media controller stop during invalidate on '%s' (ignored): %s", self.cast.name, exc)
+            log.debug("Media controller stop during invalidate on '%s' (ignored; error_type=%s)", self.cast.name, type(exc).__name__)
 
     def _stop_media(self):
         media = self.cast.media_controller
@@ -201,8 +201,8 @@ class SpeakerQueue(MediaStatusListener):
         if remove and item_id is not None:
             try:
                 self.cast.media_controller._send_command({"type": "QUEUE_REMOVE", "itemIds": [item_id]}, None)
-            except Exception:
-                log.exception("Could not remove stale receiver queue item on '%s'", self.cast.name)
+            except Exception as exc:
+                log.error("Could not remove stale receiver queue item on '%s' (error_type=%s)", self.cast.name, type(exc).__name__)
 
     def _schedule_native_next(self):
         if self._closed or self._native_pending or self._native_item_id is not None or not self.queue:
@@ -251,18 +251,18 @@ class SpeakerQueue(MediaStatusListener):
                           and getattr(self.cast.media_controller.status, "media_session_id", None) == media_session):
                         try:
                             self.cast.media_controller._send_command({"type": "QUEUE_REMOVE", "itemIds": [item_id]}, None)
-                        except Exception:
-                            log.exception("Could not remove stale receiver queue item on '%s'", self.cast.name)
+                        except Exception as exc:
+                            log.error("Could not remove stale receiver queue item on '%s' (error_type=%s)", self.cast.name, type(exc).__name__)
                     if stale:
                         self._schedule_native_next()
 
             try:
                 self.cast.media_controller.play_media(url, content_type, title=track.title, metadata=metadata,
                                                       stream_type="BUFFERED", enqueue=True, callback_function=inserted)
-            except Exception:
+            except Exception as exc:
                 self._native_pending = False
                 self._native_content_id = None
-                log.exception("Could not prepare receiver queue on '%s'", self.cast.name)
+                log.error("Could not prepare receiver queue on '%s' (error_type=%s)", self.cast.name, type(exc).__name__)
 
     def replace(self, tracks, repeat):
         with self.lock:
@@ -278,7 +278,7 @@ class SpeakerQueue(MediaStatusListener):
         media_list = getattr(track, "media", None) or []
         parts_list = (getattr(media_list[0], "parts", None) or []) if media_list else []
         if not parts_list:
-            log.warning("Skipping track '%s' with missing media parts", getattr(track, "title", "Unknown"))
+            log.warning("Skipping track with missing media parts")
             self._next()
             return
 
@@ -316,13 +316,7 @@ class SpeakerQueue(MediaStatusListener):
         if thumb:
             metadata["images"] = [{"url": thumb}]
 
-        log.info(
-            "Streaming track '%s' by '%s' to '%s' (Queue remaining: %d)",
-            track.title,
-            metadata["artist"],
-            self.cast.name,
-            len(self.queue),
-        )
+        log.info("Streaming track to '%s' (Queue remaining: %d)", self.cast.name, len(self.queue))
 
         try:
             self.cast.media_controller.play_media(
@@ -566,8 +560,8 @@ class SpeakerQueue(MediaStatusListener):
             try:
                 self._invalidate_native_next(remove=False)
                 self._next()
-            except Exception:
-                log.exception("Could not advance the Cast queue")
+            except Exception as exc:
+                log.error("Could not advance the Cast queue (error_type=%s)", type(exc).__name__)
 
     def load_media_failed(self, queue_item_id, error_code):
         log.error(

@@ -79,7 +79,7 @@ class SmartDJ:
             # Check exact normalized match or leading-article stripped match (e.g. "The Herbaliser" == "Herbaliser")
             alt_artist = re.sub(r"^(?:the|a)\s+", "", norm_artist)
             if norm_query in (norm_artist, alt_artist):
-                log.info("Fast-path exact artist match (0ms): '%s' -> mode='artist', target_artist='%s'", query, artist)
+                log.info("Fast-path exact artist match (0ms): mode='artist'")
                 return PlaybackIntent(mode="artist", target_artist=artist)
 
         return None
@@ -123,7 +123,6 @@ class SmartDJ:
             f"Listener request: {query}"
         )
 
-        last_error = None
         for model in CANDIDATE_MODELS:
             try:
                 response = self._client.models.generate_content(
@@ -135,6 +134,5 @@ class SmartDJ:
                     return PlaybackIntent.model_validate(response.parsed)
                 return PlaybackIntent.model_validate_json(response.text)
             except Exception as exc:
-                log.warning("Model %s failed (%s), trying fallback candidate...", model, exc)
-                last_error = exc
-        raise RuntimeError(f"All Gemini candidate models failed. Last error: {last_error}") from last_error
+                log.warning("Model %s failed (error_type=%s), trying fallback candidate...", model, type(exc).__name__)
+        raise RuntimeError("All Gemini candidate models failed") from None

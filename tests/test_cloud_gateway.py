@@ -228,7 +228,10 @@ def test_fulfillment_query(client, auth_headers):
     assert "playbackState" not in dev_status
 
 
-def test_fulfillment_execute_commands(client, auth_headers):
+def test_fulfillment_execute_commands(client, auth_headers, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
     published_messages = []
 
     def mock_publish(payload):
@@ -265,6 +268,7 @@ def test_fulfillment_execute_commands(client, auth_headers):
     assert published_messages[0]["action"] == "play"
     assert published_messages[0]["query"] == "Pink Floyd"
     assert published_messages[0]["speaker"] == "Kitchen"
+    assert "Pink Floyd" not in caplog.text
 
     cmd_next = {
         "requestId": "exec-req-2",
@@ -367,7 +371,10 @@ def test_volume_execute_rejects_malformed_parameters(client, auth_headers, comma
     assert published == []
 
 
-def test_custom_webhook_query(client):
+def test_custom_webhook_query(client, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
     published = []
     client.app.state.pubsub.publish_sync = lambda p: published.append(p) or "msg-hook-123"
 
@@ -393,6 +400,60 @@ def test_custom_webhook_query(client):
     assert data["speaker"] == "Office"
     assert len(published) == 1
     assert published[0]["action"] == "play"
+
+    private_query = "PRIVATE_WEBHOOK_QUERY_SENTINEL_2837"
+    res = client.post(
+        "/webhook/query",
+        headers={"X-API-Key": "test-webhook-key"},
+        json={"query": private_query},
+    )
+    assert res.status_code == 200
+    assert published[-1]["query"] == private_query
+    assert private_query not in caplog.text
+
+
+def test_mock_pubsub_does_not_log_private_query(caplog):
+    import logging
+    from cloud_gateway.pubsub_service import PubSubService
+
+    caplog.set_level(logging.DEBUG)
+    private_query = "PRIVATE_MOCK_QUERY_SENTINEL_3374"
+    service = PubSubService(project_id="test", topic_id="test", mock=True)
+    service.publish_sync({"action": "play", "query": private_query})
+
+    assert "Publishing action=play" in caplog.text
+    assert private_query not in caplog.text
+
+
+def test_execute_publish_error_does_not_log_private_query_or_exception(caplog, client, auth_headers):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    query_marker = "PRIVATE_EXECUTE_QUERY_SENTINEL_9143"
+    error_marker = "PRIVATE_EXCEPTION_SENTINEL_5260"
+    client.app.state.pubsub.publish_sync = lambda _payload: (_ for _ in ()).throw(RuntimeError(error_marker))
+    response = client.post(
+        "/fulfillment",
+        headers=auth_headers,
+        json={
+            "requestId": "private-query-error-test",
+            "inputs": [{
+                "intent": "action.devices.EXECUTE",
+                "payload": {"commands": [{
+                    "devices": [{"id": "plex-jukebox:Kitchen"}],
+                    "execution": [{
+                        "command": "action.devices.commands.appSearch",
+                        "params": {"query": query_marker},
+                    }],
+                }]},
+            }],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payload"]["commands"][0]["status"] == "ERROR"
+    assert query_marker not in caplog.text
+    assert error_marker not in caplog.text
 
 
 def test_oauth_security_controls(client):

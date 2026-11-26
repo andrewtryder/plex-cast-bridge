@@ -304,12 +304,64 @@ def test_physical_cast_helper_requires_disruptive_flag_before_connecting():
     root = Path(__file__).resolve().parents[1]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(root / "src"), str(root / "gcp-cloud-run/src")))}
     proc = subprocess.run(
-        [sys.executable, str(root / "scripts/test_live_cast.py"), "--device-uuid", "uuid", "--query", "private query"],
+        [sys.executable, str(root / "scripts/test_live_cast.py"), "--device-uuid", "uuid"],
         env=env, capture_output=True, text=True, check=False, timeout=20,
     )
     assert proc.returncode == 2
     assert "physical playback requires --allow-disruptive" in proc.stderr
     assert "private query" not in proc.stdout + proc.stderr
+
+    private_query = "PRIVATE_CLI_QUERY_SENTINEL_9021"
+    proc = subprocess.run(
+        [sys.executable, str(root / "scripts/test_live_cast.py"), "--device-uuid", "uuid", "--query", private_query],
+        env=env, capture_output=True, text=True, check=False, timeout=20,
+    )
+    assert proc.returncode == 2
+    assert private_query not in proc.stdout + proc.stderr
+
+
+def test_live_cast_query_stdin_refuses_terminal_input_without_echo(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from scripts import test_live_cast
+
+    read_line = MagicMock(return_value="PRIVATE_TTY_QUERY_SENTINEL_6503\n")
+    monkeypatch.setattr(test_live_cast.sys, "stdin", SimpleNamespace(isatty=lambda: True, readline=read_line))
+    hidden_prompt = MagicMock()
+    monkeypatch.setattr(test_live_cast.getpass, "getpass", hidden_prompt)
+
+    with pytest.raises(SystemExit) as caught:
+        test_live_cast.main([
+            "--allow-disruptive", "--device-uuid", "uuid", "--query-stdin"
+        ])
+
+    assert caught.value.code == 2
+    read_line.assert_not_called()
+    hidden_prompt.assert_not_called()
+
+
+def test_live_cast_hidden_prompt_fails_closed_when_echo_suppression_is_unavailable(monkeypatch, capsys):
+    import warnings
+    from types import SimpleNamespace
+
+    from scripts import test_live_cast
+
+    private_marker = "PRIVATE_PROMPT_FALLBACK_SENTINEL_1094"
+    monkeypatch.setattr(test_live_cast.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+
+    def unsupported_prompt(_prompt):
+        warnings.warn("terminal echo suppression unavailable", test_live_cast.getpass.GetPassWarning)
+        return private_marker
+
+    monkeypatch.setattr(test_live_cast.getpass, "getpass", unsupported_prompt)
+
+    with pytest.raises(SystemExit) as caught:
+        test_live_cast.main(["--allow-disruptive", "--device-uuid", "uuid"])
+
+    assert caught.value.code == 2
+    output = capsys.readouterr()
+    assert private_marker not in output.out + output.err
 
 
 def test_physical_volume_helper_requires_observed_success_and_live_connection():
@@ -793,6 +845,9 @@ def test_live_cast_main_requires_independent_dial_uuid_verification(monkeypatch)
     }
     monkeypatch.setattr(test_live_cast, "Settings", lambda: SimpleNamespace(max_cast_volume=0.85))
     monkeypatch.setattr(test_live_cast, "list_speaker_records", lambda: [record])
+    monkeypatch.setattr(test_live_cast.sys, "stdin", SimpleNamespace(
+        isatty=lambda: False, readline=lambda: "private query\n"
+    ))
 
     # Even if get_chromecast_from_host would echo the caller-supplied UUID, a mismatched
     # or unreachable DIAL response must fail before connecting.
@@ -805,7 +860,7 @@ def test_live_cast_main_requires_independent_dial_uuid_verification(monkeypatch)
         SimpleNamespace(uuid=UUID(mb_uuid), cast_type="group", model_name="Google Cast Group", friendly_name="Home"),
     ):
         monkeypatch.setattr(pychromecast.dial, "get_device_info", lambda *_a, _res=dial_result, **_k: _res)
-        rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query", "private query"])
+        rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query-stdin"])
         assert rc == 1
         connect_mock.assert_not_called()
 
@@ -833,7 +888,7 @@ def test_live_cast_main_requires_independent_dial_uuid_verification(monkeypatch)
         lambda **kwargs: called.append(kwargs["device_id"]) or [("baseline", "IDLE", 0.15)],
     )
 
-    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query", "private query"])
+    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query-stdin"])
     assert rc == 0
     assert called == ["plex-jukebox:Master Bedroom"]
     fake_cast.wait.assert_called_once()
@@ -859,10 +914,13 @@ def test_live_cast_main_rejects_catalog_group_by_model_before_dial(monkeypatch):
     }
     monkeypatch.setattr(test_live_cast, "Settings", lambda: SimpleNamespace(max_cast_volume=0.85))
     monkeypatch.setattr(test_live_cast, "list_speaker_records", lambda: [record])
+    monkeypatch.setattr(test_live_cast.sys, "stdin", SimpleNamespace(
+        isatty=lambda: False, readline=lambda: "private query\n"
+    ))
     dial_mock = MagicMock()
     monkeypatch.setattr(pychromecast.dial, "get_device_info", dial_mock)
 
-    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", group_uuid, "--query", "private query"])
+    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", group_uuid, "--query-stdin"])
     assert rc == 1
     dial_mock.assert_not_called()
 
@@ -891,12 +949,15 @@ def test_live_cast_main_rejects_disabled_or_hidden_speaker_before_dial(monkeypat
     }
     monkeypatch.setattr(test_live_cast, "Settings", lambda: SimpleNamespace(max_cast_volume=0.85))
     monkeypatch.setattr(test_live_cast, "list_speaker_records", lambda: [record])
+    monkeypatch.setattr(test_live_cast.sys, "stdin", SimpleNamespace(
+        isatty=lambda: False, readline=lambda: "private query\n"
+    ))
     dial_mock = MagicMock()
     connect_mock = MagicMock()
     monkeypatch.setattr(pychromecast.dial, "get_device_info", dial_mock)
     monkeypatch.setattr(pychromecast, "get_chromecast_from_host", connect_mock)
 
-    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query", "private query"])
+    rc = test_live_cast.main(["--allow-disruptive", "--device-uuid", mb_uuid, "--query-stdin"])
     assert rc == 1
     dial_mock.assert_not_called()
     connect_mock.assert_not_called()
