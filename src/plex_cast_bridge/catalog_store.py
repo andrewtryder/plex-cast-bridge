@@ -76,14 +76,33 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp_path, path)
 
 
+def sanitize_cloud_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    """Remove bridge-local cold-start preferences from every cloud catalog copy."""
+    local_keys = {
+        "voice_cold_start",
+        "voice_cold_start_enabled",
+        "voice_cold_start_selection",
+        "voice_cold_start_artist",
+    }
+    def strip_local_preferences(value):
+        if isinstance(value, dict):
+            return {
+                key: strip_local_preferences(item)
+                for key, item in value.items()
+                if key not in local_keys
+            }
+        if isinstance(value, list):
+            return [strip_local_preferences(item) for item in value]
+        return value
+
+    return strip_local_preferences(catalog)
+
+
 def _mirror_cloud_run_catalog(write_path: Path) -> None:
     if CLOUD_RUN_CATALOG.parent.exists():
         try:
             data = json.loads(write_path.read_text(encoding="utf-8"))
-            # Voice cold start is a local playback preference; Cloud Run only
-            # needs the Google Home speaker catalog it already consumes.
-            data.pop("voice_cold_start", None)
-            _atomic_write_json(CLOUD_RUN_CATALOG, data)
+            _atomic_write_json(CLOUD_RUN_CATALOG, sanitize_cloud_catalog(data))
         except Exception as exc:
             log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
 

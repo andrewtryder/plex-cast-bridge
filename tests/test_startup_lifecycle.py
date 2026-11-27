@@ -242,8 +242,8 @@ def test_pubsub_dispatch_gates_only_targeted_resume_to_cold_start(monkeypatch):
         def __init__(self, **kwargs):
             calls.append(("init", kwargs))
 
-        def resume(self, device_id):
-            calls.append(("resume", device_id))
+        def resume(self, device_id, message_id=None):
+            calls.append(("resume", device_id, message_id))
             return {"voice_cold_start": "test"}
 
     monkeypatch.setattr("plex_cast_bridge.voice_cold_start.VoiceColdStart", ColdStart)
@@ -260,8 +260,12 @@ def test_pubsub_dispatch_gates_only_targeted_resume_to_cold_start(monkeypatch):
             command_cls=None,
             transport_cls=None,
         )
-        result = await dispatch({"action": "resume", "device_id": "plex-jukebox:room"})
+        result = await dispatch({
+            "action": "resume",
+            "device_id": "plex-jukebox:room",
+            "_bridge_pubsub_message_id": "pubsub-id",
+        })
         assert result == {"voice_cold_start": "test"}
-        assert calls[-1] == ("resume", "plex-jukebox:room")
+        assert calls[-1] == ("resume", "plex-jukebox:room", "pubsub-id")
 
     asyncio.run(run())

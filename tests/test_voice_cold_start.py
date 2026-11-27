@@ -1,167 +1,311 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
 
-from plex_cast_bridge.voice_cold_start import CastSession, VoiceColdStart, inspect_cast_session
+from plex_cast_bridge import catalog_store
+from plex_cast_bridge.voice_cold_start import (
+    CastSession,
+    MEDIA_NAMESPACE,
+    PubSubMessageDeduper,
+    VoiceColdStart,
+    inspect_cast_session,
+)
+
+
+def receiver_response(*, app_id="CC1AD845", standby=True):
+    applications = [] if app_id is None else [{"appId": app_id, "sessionId": 1}]
+    return {"type": "RECEIVER_STATUS", "status": {"isStandBy": standby, "applications": applications}}
+
+
+def media_response(*, session_id=None, player_state="IDLE", content_id=None):
+    if session_id is None:
+        return {"type": "MEDIA_STATUS", "status": []}
+    return {
+        "type": "MEDIA_STATUS",
+        "status": [{
+            "mediaSessionId": session_id,
+            "playerState": player_state,
+            "media": {"contentId": content_id},
+        }],
+    }
 
 
 class FakeSpeaker:
-    def __init__(self, classification="idle"):
-        self.cast = SimpleNamespace(
-            socket_client=SimpleNamespace(is_connected=True),
-            status=SimpleNamespace(app_id="CC1AD845", is_stand_by=True),
-            media_controller=SimpleNamespace(
-                status=SimpleNamespace(media_session_id=None, player_state="UNKNOWN")
-            ),
-        )
-        self.cast.socket_client.receiver_controller = SimpleNamespace(
-            update_status=lambda callback_function: callback_function()
-        )
-        self.cast.media_controller.update_status = lambda callback_function: callback_function()
-        self.state = classification
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.generation = 0
         self.current = None
-        self.queue = []
+        self.queue = deque()
+        self.pending_load_generation = None
+        self.expected_content_id = None
+        self.active_media_session_id = None
+        self.armed = False
         self.replacements = []
         self.resumes = 0
+        self.receiver_payload = receiver_response()
+        self.media_payload = media_response()
+        self.receiver_success = True
+        self.media_success = True
+        self.receiver_callback_response = True
+        self.media_callback_response = True
+        self.media_update_calls = 0
+        self.cast = SimpleNamespace(
+            socket_client=SimpleNamespace(
+                is_connected=True,
+                app_namespaces=[MEDIA_NAMESPACE],
+                receiver_controller=None,
+            ),
+            status=SimpleNamespace(app_id="CC1AD845", is_stand_by=True),
+            media_controller=None,
+        )
 
-    def status(self):
-        return {"state": "UNKNOWN", "current_track": self.current, "queue_length": len(self.queue)}
+        def receiver_update(callback_function):
+            callback_function(
+                self.receiver_success,
+                self.receiver_payload if self.receiver_callback_response else None,
+            )
+
+        self.cast.socket_client.receiver_controller = SimpleNamespace(update_status=receiver_update)
+
+        def media_update(callback_function):
+            self.media_update_calls += 1
+            callback_function(
+                self.media_success,
+                self.media_payload if self.media_callback_response else None,
+            )
+
+        self.cast.media_controller = SimpleNamespace(
+            namespace=MEDIA_NAMESPACE,
+            status=SimpleNamespace(media_session_id=None, player_state="UNKNOWN"),
+            update_status=media_update,
+        )
 
     def replace(self, tracks, repeat=False):
         self.replacements.append((tracks, repeat))
+        self.generation += 1
 
     def resume(self):
         self.resumes += 1
 
 
-class FakePlex:
+class FakeLibrary:
     def __init__(self, tracks=None):
         self.tracks = tracks if tracks is not None else ["track"]
         self.calls = []
-        self.library = self
 
     def search(self, **kwargs):
         self.calls.append(kwargs)
         return self.tracks
 
 
-def coordinator(
-    monkeypatch, state="idle", selection="shuffle", enabled=True, tracks=None, get_device_error=None
-):
-    speaker = FakeSpeaker(state)
+class FakePlex:
+    def __init__(self, tracks=None):
+        self.library = FakeLibrary(tracks)
+        self.artists = []
+
+
+def coordinator(monkeypatch, state="idle", selection="shuffle", enabled=True, tracks=None,
+                get_device_error=None, duplicate_window=20.0, deduper=None):
+    speaker = FakeSpeaker()
     plex = FakePlex(tracks)
+    selected = {"plex": plex}
+    rows = [{
+        "google_home_device_id": "plex-jukebox:room",
+        "speaker_name": "Room",
+        "enabled": True,
+        "google_home_visible": True,
+        "voice_cold_start_enabled": enabled,
+        "voice_cold_start_selection": selection,
+        "voice_cold_start_artist": "DJ Shadow",
+    }]
+    monkeypatch.setattr(catalog_store, "list_speaker_records", lambda: rows)
     monkeypatch.setattr(
-        "plex_cast_bridge.voice_cold_start.list_speaker_records",
-        lambda: [
-            {
-                "google_home_device_id": "plex-jukebox:room",
-                "enabled": True,
-                "google_home_visible": True,
-                "voice_cold_start_enabled": enabled,
-                "voice_cold_start_selection": selection,
-                "voice_cold_start_artist": "DJ Shadow",
-            }
-        ],
+        "plex_cast_bridge.voice_cold_start.find_by_google_home_id",
+        lambda _rows, device_id: next((r for r in rows if r["google_home_device_id"] == device_id), None),
     )
 
-    def get_device(device_id):
+    def get_device(_device_id):
         if get_device_error:
             raise get_device_error
         return speaker
 
     cast = SimpleNamespace(get_device=get_device)
-    return VoiceColdStart(cast=cast, plex=plex), speaker, plex
+    service = VoiceColdStart(
+        cast=cast,
+        plex_provider=lambda: selected["plex"],
+        inspector=lambda _speaker: CastSession(
+            state,
+            True,
+            receiver_app_id="CC1AD845",
+            receiver_is_standby=True,
+            queue_generation=speaker.generation,
+        ),
+        message_deduper=deduper,
+        duplicate_window=duplicate_window,
+    )
+    return service, speaker, plex, selected
 
 
-def test_shuffle_uses_bounded_server_side_query_without_gemini(monkeypatch):
-    service, speaker, plex = coordinator(monkeypatch)
-    assert service.resume("plex-jukebox:room") == {
-        "voice_cold_start": "initiated",
-        "track_count": 1,
-    }
-    assert plex.calls == [{"libtype": "track", "sort": "random", "maxresults": 25}]
+def test_idle_shuffle_uses_bounded_server_side_random_query(monkeypatch):
+    service, speaker, plex, _ = coordinator(monkeypatch)
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "initiated"
+    assert plex.library.calls == [{"libtype": "track", "sort": "random", "maxresults": 25}]
     assert speaker.replacements[0][1] is False
 
 
-def test_preferred_artist_selection(monkeypatch):
-    service, _speaker, plex = coordinator(monkeypatch, selection="artist")
-    service.resume("plex-jukebox:room")
-    assert plex.calls == [{"artist": "DJ Shadow", "libtype": "track", "maxresults": 25}]
-
-
-def test_disabled_by_default_behavior_returns_to_existing_transport(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch, enabled=False)
+def test_disabled_policy_preserves_existing_transport_path(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch, enabled=False)
     assert service.resume("plex-jukebox:room") is None
-    assert speaker.replacements == []
+    assert not speaker.replacements
 
 
-@pytest.mark.parametrize(
-    "state", ["other_media_active", "other_app_active", "indeterminate", "disconnected"]
-)
-def test_non_idle_sessions_are_not_replaced(monkeypatch, state):
-    service, speaker, _plex = coordinator(monkeypatch)
-    service.inspector = lambda _speaker: CastSession(state, state != "disconnected")
-    assert service.resume("plex-jukebox:room")["voice_cold_start"].startswith("skipped_")
+@pytest.mark.parametrize("state", ["other_media_active", "other_media_paused", "other_app_active", "indeterminate", "disconnected"])
+def test_non_plex_states_are_never_replaced(monkeypatch, state):
+    service, speaker, _plex, _ = coordinator(monkeypatch, state=state)
+    result = service.resume("plex-jukebox:room")
+    assert result["voice_cold_start"].startswith("skipped_")
     assert not speaker.replacements
 
 
 @pytest.mark.parametrize("state", ["plex_paused", "plex_active"])
-def test_existing_plex_session_is_preserved(monkeypatch, state):
-    service, speaker, _plex = coordinator(monkeypatch)
-    service.inspector = lambda _speaker: CastSession(state, True)
+def test_owned_plex_sessions_are_preserved(monkeypatch, state):
+    service, speaker, _plex, _ = coordinator(monkeypatch, state=state)
     result = service.resume("plex-jukebox:room")
     assert result["voice_cold_start"] in {"resumed_existing", "already_active"}
     assert speaker.resumes == (1 if state == "plex_paused" else 0)
-    assert speaker.replacements == []
+    assert not speaker.replacements
 
 
-def test_empty_library_is_not_started(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch, tracks=[])
+def test_empty_library_skips_without_substitution(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch, tracks=[])
     assert service.resume("plex-jukebox:room")["voice_cold_start"] == "selection_empty"
     assert not speaker.replacements
 
 
-def test_revalidation_prevents_hijacking_new_session(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch)
-    calls = iter([CastSession("idle", True), CastSession("other_media_active", True)])
-    service.inspector = lambda _speaker: next(calls)
-    assert service.resume("plex-jukebox:room")["voice_cold_start"].startswith("revalidation_")
-    assert not speaker.replacements
+def test_unknown_or_failed_callback_cannot_authorize_idle():
+    speaker = FakeSpeaker()
+    speaker.receiver_success = False
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "indeterminate"
+    assert state.receiver_status_received is False
 
 
-def test_duplicate_delivery_is_suppressed(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch)
-    service.resume("plex-jukebox:room")
-    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "duplicate_suppressed"
+def test_media_callback_wrong_response_type_cannot_authorize_idle():
+    speaker = FakeSpeaker()
+    speaker.media_payload = {"type": "LOAD_FAILED", "status": []}
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "indeterminate"
+    assert state.media_status_received is False
+
+
+def test_callback_timeout_cannot_use_stale_cached_idle_status():
+    speaker = FakeSpeaker()
+    speaker.receiver_callback_response = False
+    speaker.media_callback_response = False
+    # Cached status looks idle, but neither fresh callback succeeded.
+    state = inspect_cast_session(speaker, timeout=0.001)
+    assert state.classification == "indeterminate"
+
+
+def test_disconnection_during_status_query_fails_closed():
+    speaker = FakeSpeaker()
+
+    def disconnect(callback_function):
+        speaker.cast.socket_client.is_connected = False
+        callback_function(False, None)
+
+    speaker.cast.media_controller.update_status = disconnect
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "disconnected"
+
+
+def test_status_inspection_does_not_launch_if_media_namespace_is_missing():
+    speaker = FakeSpeaker()
+    speaker.cast.socket_client.app_namespaces = []
+    launches = []
+    speaker.cast.socket_client.receiver_controller.launch_app = lambda *args, **kwargs: launches.append(args)
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "indeterminate"
+    assert speaker.media_update_calls == 0
+    assert launches == []
+
+
+def test_confirmed_default_receiver_standby_and_empty_media_is_idle():
+    speaker = FakeSpeaker()
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "idle"
+    assert state.receiver_status_received and state.media_status_received
+
+
+@pytest.mark.parametrize("player_state", ["PLAYING", "PAUSED"])
+def test_external_default_receiver_media_not_owned_by_stale_plex_queue(player_state):
+    speaker = FakeSpeaker()
+    speaker.current = object()
+    speaker.queue.append(object())
+    speaker.expected_content_id = "http://plex.invalid/old-track?token=secret"
+    speaker.active_media_session_id = 1
+    speaker.cast.status.is_stand_by = False
+    speaker.receiver_payload = receiver_response(standby=False)
+    speaker.media_payload = media_response(
+        session_id=91,
+        player_state=player_state,
+        content_id="https://other-app.invalid/media",
+    )
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == ("other_media_paused" if player_state == "PAUSED" else "other_media_active")
+
+
+def test_matching_expected_content_and_active_session_proves_plex_ownership():
+    speaker = FakeSpeaker()
+    speaker.current = object()
+    speaker.expected_content_id = "http://plex.invalid/current?token=secret"
+    speaker.active_media_session_id = 12
+    speaker.media_payload = media_response(
+        session_id=12,
+        player_state="PAUSED",
+        content_id=speaker.expected_content_id,
+    )
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "plex_paused"
+
+
+def test_no_session_with_stale_bridge_queue_is_indeterminate():
+    speaker = FakeSpeaker()
+    speaker.current = object()
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "indeterminate"
+
+
+def test_same_message_id_is_suppressed_across_coordinator_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr(catalog_store, "DATA_DIR", tmp_path)
+    deduper1 = PubSubMessageDeduper()
+    service, speaker, _plex, _ = coordinator(
+        monkeypatch, duplicate_window=0, deduper=deduper1
+    )
+    assert service.resume("plex-jukebox:room", "pubsub-message-1")["voice_cold_start"] == "initiated"
+    deduper2 = PubSubMessageDeduper()
+    service2, _speaker2, _plex2, _ = coordinator(
+        monkeypatch, duplicate_window=0, deduper=deduper2
+    )
+    assert service2.resume("plex-jukebox:room", "pubsub-message-1")["voice_cold_start"] == "duplicate_suppressed"
     assert len(speaker.replacements) == 1
 
 
-def test_uncertain_cast_timeout_is_not_raised_or_replayed(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch)
-    attempts = []
-
-    def timeout_after_send(_tracks, repeat=False):
-        attempts.append(("sent", repeat))
-        raise TimeoutError("acknowledgement lost")
-
-    speaker.replace = timeout_after_send
-    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "failed"
-    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "duplicate_suppressed"
-    assert len(attempts) == 1
-
-
-def test_concurrent_requests_replace_once(monkeypatch):
-    service, speaker, _plex = coordinator(monkeypatch)
+def test_distinct_concurrent_messages_start_at_most_once(monkeypatch, tmp_path):
+    service, speaker, _plex, _ = coordinator(
+        monkeypatch, deduper=PubSubMessageDeduper(tmp_path / "dedupe.json")
+    )
     barrier = threading.Barrier(3)
 
-    def call():
+    def run(message_id):
         barrier.wait()
-        service.resume("plex-jukebox:room")
+        service.resume("plex-jukebox:room", message_id)
 
-    threads = [threading.Thread(target=call) for _ in range(2)]
+    threads = [threading.Thread(target=run, args=(f"msg-{i}",)) for i in range(2)]
     for thread in threads:
         thread.start()
     barrier.wait()
@@ -170,56 +314,84 @@ def test_concurrent_requests_replace_once(monkeypatch):
     assert len(speaker.replacements) == 1
 
 
-def test_inspection_requires_fresh_positive_status_for_idle():
-    speaker = FakeSpeaker()
-    state = inspect_cast_session(speaker, timeout=0.01)
-    assert state.classification == "idle"
+def test_queue_generation_change_during_selection_prevents_replace(monkeypatch):
+    service, speaker, plex, _ = coordinator(monkeypatch)
+
+    def start_dashboard_playback(**_kwargs):
+        speaker.generation += 1
+        return ["track"]
+
+    plex.library.search = start_dashboard_playback
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "queue_changed"
+    assert not speaker.replacements
 
 
-def test_inspection_does_not_treat_disconnected_unknown_as_idle():
-    speaker = FakeSpeaker()
-    speaker.cast.socket_client.is_connected = False
-    assert inspect_cast_session(speaker).classification == "disconnected"
+def test_revalidation_prevents_external_sender_race(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch)
+    calls = iter([
+        CastSession("idle", True, queue_generation=0),
+        CastSession("other_media_active", True, queue_generation=0),
+    ])
+    service.inspector = lambda _speaker: next(calls)
+    assert service.resume("plex-jukebox:room")["voice_cold_start"].startswith("revalidation_")
+    assert not speaker.replacements
 
 
-def test_status_timeout_is_indeterminate():
-    speaker = FakeSpeaker()
-    speaker.cast.socket_client.receiver_controller.update_status = lambda callback_function: None
-    speaker.cast.media_controller.update_status = lambda callback_function: None
-    state = inspect_cast_session(speaker, timeout=0.001)
-    assert state.classification == "indeterminate"
+def test_preferred_artist_requires_unique_exact_match(monkeypatch):
+    service, speaker, plex, _ = coordinator(monkeypatch, selection="artist")
+    selected = SimpleNamespace(title="DJ Shadow", tracks=lambda **_kwargs: ["one", "two"])
+    plex.artists = [selected]
+    service._selection(plex, {"voice_cold_start_selection": "artist", "voice_cold_start_artist": "dj shadow"})
+    plex.artists.append(SimpleNamespace(title="DJ Shadow", tracks=lambda **_kwargs: ["wrong"]))
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "selection_failed"
+    assert not speaker.replacements
 
 
-def test_paused_plex_is_classified_from_session_and_bridge_queue():
-    speaker = FakeSpeaker()
-    speaker.current = {"rating_key": "3325", "title": "Stem"}
-    speaker.queue = ["next track"]
-    speaker.cast.media_controller.status.media_session_id = 1
-    speaker.cast.media_controller.status.player_state = "PAUSED"
-    state = inspect_cast_session(speaker, timeout=0.01)
-    assert state.classification == "plex_paused"
-    assert speaker.current["rating_key"] == "3325"
-    assert speaker.queue == ["next track"]
+def test_unavailable_plex_connection_skips(monkeypatch):
+    service, speaker, _plex, selected = coordinator(monkeypatch)
+    selected["plex"] = None
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "plex_unavailable"
+    assert not speaker.replacements
 
 
-def test_active_external_media_is_classified_as_non_plex():
-    speaker = FakeSpeaker()
-    speaker.cast.status.app_id = "OTHER_APP"
-    speaker.cast.status.is_stand_by = False
-    speaker.cast.media_controller.status.media_session_id = 7
-    speaker.cast.media_controller.status.player_state = "PLAYING"
-    assert inspect_cast_session(speaker, timeout=0.01).classification == "other_media_active"
+def test_coordinator_uses_plex_connection_connected_after_initialization(monkeypatch):
+    service, speaker, plex, selected = coordinator(monkeypatch, duplicate_window=0)
+    selected["plex"] = None
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "plex_unavailable"
+    selected["plex"] = plex
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "initiated"
+    assert len(plex.library.calls) == 1
+    assert len(speaker.replacements) == 1
 
 
-@pytest.mark.parametrize("error", [ValueError("disabled"), ValueError("hidden")])
-def test_cast_manager_authorization_errors_prevent_cold_start(monkeypatch, error):
-    service, _speaker, _plex = coordinator(monkeypatch, get_device_error=error)
-    with pytest.raises(ValueError):
-        service.resume("plex-jukebox:room")
+def test_coordinator_switches_servers_and_libraries_without_reconstruction(monkeypatch):
+    service, speaker, first_plex, selected = coordinator(monkeypatch, duplicate_window=0)
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "initiated"
+    second_plex = FakePlex(["from second server/library"])
+    selected["plex"] = second_plex
+    speaker.generation = 0
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "initiated"
+    assert len(first_plex.library.calls) == 1
+    assert len(second_plex.library.calls) == 1
+    assert speaker.replacements[-1][0] == ["from second server/library"]
 
 
-def test_deleted_artist_fails_without_unrelated_substitution(monkeypatch):
-    service, speaker, plex = coordinator(monkeypatch, selection="artist", tracks=[])
-    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "selection_empty"
-    assert plex.calls[0]["artist"] == "DJ Shadow"
+def test_disconnect_after_coordinator_initialization_skips(monkeypatch):
+    service, speaker, plex, selected = coordinator(monkeypatch)
+    selected["plex"] = None
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "plex_unavailable"
+    assert not plex.library.calls
+    assert not speaker.replacements
+
+
+def test_plex_connection_change_during_selection_discards_old_results(monkeypatch):
+    service, speaker, old_plex, selected = coordinator(monkeypatch)
+    replacement_plex = FakePlex(["new library track"])
+
+    def switch_connection(**_kwargs):
+        selected["plex"] = replacement_plex
+        return ["obsolete server track"]
+
+    old_plex.library.search = switch_connection
+    assert service.resume("plex-jukebox:room")["voice_cold_start"] == "plex_changed"
     assert not speaker.replacements

@@ -60,11 +60,31 @@ def test_callback_dispatches_device_id_and_acknowledges(subscriber, caplog):
     worker._callback(msg)
     assert done.wait(2)
     assert observed[0]["device_id"] == "plex-jukebox:b"
+    assert observed[0]["_bridge_pubsub_message_id"] == "m1"
     assert "Google Home command received action=play" in caplog.text
     assert "Google Home command completed action=play" in caplog.text
     assert "speaker='Twin'" in caplog.text
     assert "device_id='plex-jukebox:b'" in caplog.text
     assert "Private Artist Query" not in caplog.text
+    msg.ack.assert_called_once()
+    msg.nack.assert_not_called()
+
+
+def test_callback_propagates_message_id_only_internally_for_resume(subscriber):
+    observed = []
+
+    async def dispatch(payload):
+        observed.append(payload)
+
+    worker = subscriber(dispatch)
+    msg, done = message({"action": "resume", "device_id": "plex-jukebox:room"})
+    worker._callback(msg)
+    assert done.wait(2)
+    assert observed == [{
+        "action": "resume",
+        "device_id": "plex-jukebox:room",
+        "_bridge_pubsub_message_id": "m1",
+    }]
     msg.ack.assert_called_once()
     msg.nack.assert_not_called()
 

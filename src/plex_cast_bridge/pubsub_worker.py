@@ -114,7 +114,8 @@ class PubSubWorker:
                 speaker,
                 device_id,
             )
-            future = asyncio.run_coroutine_threadsafe(dispatch(data), loop)
+            dispatch_data = {**data, "_bridge_pubsub_message_id": msg_id}
+            future = asyncio.run_coroutine_threadsafe(dispatch(dispatch_data), loop)
             activity.record("Google Home", f"{action} received", speaker)
 
             def complete(result):

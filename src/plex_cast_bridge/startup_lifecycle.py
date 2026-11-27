@@ -154,9 +154,13 @@ def build_pubsub_dispatch(
             if cold_start is None:
                 cold_start = VoiceColdStart(
                     cast=app.state.cast,
-                    plex=getattr(app.state, "plex", None),
+                    plex_provider=lambda: getattr(app.state, "plex", None),
                 )
-            result = await run_in_threadpool(cold_start.resume, data["device_id"])
+            result = await run_in_threadpool(
+                cold_start.resume,
+                data["device_id"],
+                data.get("_bridge_pubsub_message_id"),
+            )
             if result is not None:
                 return result
         return await transport(

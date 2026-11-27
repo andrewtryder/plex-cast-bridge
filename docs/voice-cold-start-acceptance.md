@@ -35,7 +35,11 @@ result where expected.
 | Paused Plex track with queued items | Same track and queue resume; no replacement. |
 | Active Plex playback | Existing playback continues unchanged. |
 | Active media from another Cast application | Media remains untouched. |
+| External media playing or paused in Default Media Receiver, with a stale nonempty bridge queue | Treat media as external; do not resume, replace, stop, or otherwise interrupt it. |
 | Receiver disconnected, status times out, or state is uncertain | No fallback media is loaded; logs/activity identify a skipped state. |
+| Plex disconnected or switched during selection resolution | Discard the selection from the old connection; no media is loaded. |
+| Dashboard queue command or stop races selection resolution | Queue generation change wins; the cold-start request is skipped and the user's local command remains authoritative. |
+| Pub/Sub redelivery after restart or after the short duplicate window | The same message ID does not initiate a second cold start during the bounded 31-day dedupe retention. |
 | Policy disabled on confirmed idle speaker | Existing transport behavior remains; no cold-start selection is loaded. |
 | Missing artist or empty library | No unrelated music is substituted; outcome is a safe selection failure. |
 | Pause, stop, mute, or volume command while idle | No cold start is triggered. |
@@ -45,6 +49,15 @@ the friendly Google Home name. Confirm the per-speaker toggle and selection
 remain attached to the stable ID. Export a backup and verify the catalog entry
 is present. Confirm the Cloud Run catalog mirror contains no local cold-start
 preferences.
+
+The bridge serializes its own queue commands through the speaker queue lock and
+generation. Independent Cast senders cannot share that lock; a sender can still
+change receiver state in the small interval between final status validation and
+the Cast load. Include an external sender race in controlled testing where
+available, and treat it as a residual limitation if it cannot be made
+deterministic. Pub/Sub dedupe is local, bounded to 2,048 IDs and 31 days; after
+an ID expires or is evicted under sustained volume, a very late redelivery is
+not guaranteed to be suppressed.
 
 ## Rollback and evidence
 

@@ -138,7 +138,9 @@ def _push_catalog_now(force_sync: bool = True) -> dict[str, Any]:
         )
     # Reserve the version and read the snapshot without racing the pending marker.
     with _STATE_LOCK:
-        catalog = json.loads(cat_path.read_text(encoding="utf-8"))
+        catalog = store.sanitize_cloud_catalog(
+            json.loads(cat_path.read_text(encoding="utf-8"))
+        )
         version = int(load_sync_state().get("version") or 0) + 1
         save_sync_state({"version": version, "last_push_status": "pending", "last_catalog_upload": "pending"})
     body = json.dumps(
