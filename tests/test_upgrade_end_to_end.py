@@ -164,7 +164,11 @@ def test_failed_candidate_recovers_old_image_without_overwriting_newer_data(tmp_
     if os.getenv("DOCKER_HOST", "").startswith(("ssh:", "tcp:")):
         pytest.skip("bind mount test must run on the Docker daemon host")
     root = Path(__file__).resolve().parents[1]
-    target = os.environ["PCB_TEST_UPGRADE_TARGET"]
+    candidate = os.environ["PCB_TEST_UPGRADE_TARGET"]
+    # Exercise failed startup while upgrading the candidate back to the pinned
+    # older image. The older image lacks config_drift.py, which makes the
+    # synthetic startup/health service fail after writing its newer-data marker.
+    target = os.getenv("PCB_TEST_FIRST_TARGET", candidate)
     data = tmp_path / "data"
     data.mkdir(mode=0o777)
     data.chmod(0o777)
