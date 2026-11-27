@@ -582,6 +582,46 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       ghRow.style.gap = '0.4rem';
       ghRow.append(ghHint, ghLabelEl);
 
+      const coldStart = document.createElement('div');
+      coldStart.className = 'device-desc';
+      coldStart.style.maxWidth = '18rem';
+      const coldToggleLabel = document.createElement('label');
+      coldToggleLabel.className = 'switch';
+      const coldToggle = document.createElement('input');
+      coldToggle.type = 'checkbox';
+      coldToggle.setAttribute('role', 'switch');
+      coldToggle.checked = Boolean(d.voice_cold_start_enabled);
+      coldToggle.setAttribute('aria-label', `Enable voice cold start for ${d.name}`);
+      coldToggle.addEventListener('change', () => patchSpeaker(d, { voice_cold_start_enabled: coldToggle.checked }, coldToggle));
+      coldToggleLabel.appendChild(coldToggle);
+      const coldHead = document.createElement('div');
+      coldHead.style.display = 'flex';
+      coldHead.style.alignItems = 'center';
+      coldHead.style.justifyContent = 'space-between';
+      coldHead.append(document.createTextNode('Voice Cold Start'), coldToggleLabel);
+      const coldExplain = document.createElement('div');
+      coldExplain.textContent = 'When idle, resume can start this selection. Paused Plex sessions resume normally.';
+      const selection = document.createElement('select');
+      selection.className = 'field-select';
+      selection.setAttribute('aria-label', `Voice cold start selection for ${d.name}`);
+      selection.add(new Option('Shuffle music library', 'shuffle'));
+      selection.add(new Option('Preferred artist', 'artist'));
+      selection.value = d.voice_cold_start_selection || 'shuffle';
+      selection.addEventListener('change', () => patchSpeaker(d, { voice_cold_start_selection: selection.value }, selection));
+      const artist = document.createElement('input');
+      artist.className = 'field-select';
+      artist.placeholder = 'Preferred artist';
+      artist.value = d.voice_cold_start_artist || '';
+      artist.hidden = selection.value !== 'artist';
+      artist.setAttribute('aria-label', `Preferred artist for ${d.name}`);
+      artist.addEventListener('change', () => patchSpeaker(d, { voice_cold_start_artist: artist.value.trim() }, artist));
+      selection.addEventListener('change', () => { artist.hidden = selection.value !== 'artist'; });
+      const voiceHelp = document.createElement('div');
+      voiceHelp.textContent = `Try “Hey Google, resume ${ghLabel}.” Google may not route arbitrary artist or “play music” requests to this device.`;
+      const routingNote = document.createElement('div');
+      routingNote.textContent = 'A paused Plex session resumes as usual. This fallback only starts music after the bridge positively confirms the Cast receiver is idle.';
+      coldStart.append(coldHead, coldExplain, selection, artist, voiceHelp, routingNote);
+
       const forgetBtn = document.createElement('button');
       forgetBtn.type = 'button';
       forgetBtn.className = 'ghost-button';
@@ -589,7 +629,7 @@ import { readJson, errorDetail, deviceKind, iconForKind, roomLabel, isPlayingSta
       forgetBtn.title = 'Remove virtual Plex device from Google Home on next sync';
       forgetBtn.addEventListener('click', () => forgetSpeaker(d));
 
-      actions.append(playRow, ghRow, forgetBtn);
+      actions.append(playRow, ghRow, coldStart, forgetBtn);
       row.append(icon, text, actions);
       list.appendChild(row);
     });

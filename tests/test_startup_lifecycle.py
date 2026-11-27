@@ -233,3 +233,35 @@ def test_pubsub_dispatch_routes_play_and_transport():
         assert seen == ["play", "transport"]
 
     asyncio.run(run())
+
+
+def test_pubsub_dispatch_gates_only_targeted_resume_to_cold_start(monkeypatch):
+    calls = []
+
+    class ColdStart:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def resume(self, device_id):
+            calls.append(("resume", device_id))
+            return {"voice_cold_start": "test"}
+
+    monkeypatch.setattr("plex_cast_bridge.voice_cold_start.VoiceColdStart", ColdStart)
+    app = SimpleNamespace(state=SimpleNamespace(cast="cast", settings="settings", plex="plex"))
+
+    async def unexpected_transport(**_kwargs):
+        raise AssertionError("cold-start result should handle targeted resume")
+
+    async def run():
+        dispatch = build_pubsub_dispatch(
+            app,
+            play=None,
+            transport=unexpected_transport,
+            command_cls=None,
+            transport_cls=None,
+        )
+        result = await dispatch({"action": "resume", "device_id": "plex-jukebox:room"})
+        assert result == {"voice_cold_start": "test"}
+        assert calls[-1] == ("resume", "plex-jukebox:room")
+
+    asyncio.run(run())

@@ -49,6 +49,8 @@ Full steps, preflight checks, Portainer setup, and troubleshooting: **[docs/inst
 ![Dashboard](docs/setup/screenshots/dashboard.png)
 
 Google Home / Cloud Run voice control is **optional** and documented separately: **[docs/setup/SETUP_GUIDE.md](docs/setup/SETUP_GUIDE.md)**.
+Per-speaker voice cold start behavior and its Google routing limits are documented in **[docs/voice-cold-start.md](docs/voice-cold-start.md)**.
+The controlled candidate checklist is in **[docs/voice-cold-start-acceptance.md](docs/voice-cold-start-acceptance.md)**.
 
 ---
 
