@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.6.1...v0.7.0) (2026-11-28)
+
+
+### Features
+
+* **voice:** add opt-in Cast cold start ([0818975](https://github.com/andrewtryder/plex-cast-bridge/commit/08189750b7363919aedb61736c7eccf186fd0828))
+* **voice:** configurable voice cold start ([eeb8f41](https://github.com/andrewtryder/plex-cast-bridge/commit/eeb8f411564f5dae28a70772d9878d8510909bf4))
+
+
+### Bug Fixes
+
+* **cast:** require independent identity for queue sharing ([47bd55a](https://github.com/andrewtryder/plex-cast-bridge/commit/47bd55a5fba9fa1e636586644170a7c998aff4fd))
+* **cast:** share queues by verified identity ([dc3b568](https://github.com/andrewtryder/plex-cast-bridge/commit/dc3b568fe5a93fac8a43cfef849787208e40ba8b))
+* **voice:** consult group state for unknown members ([ceb2f9a](https://github.com/andrewtryder/plex-cast-bridge/commit/ceb2f9ad4aa6594e395f55a63f4eac32222b1c4c))
+* **voice:** guard cold start against Cast Group playback ([a083535](https://github.com/andrewtryder/plex-cast-bridge/commit/a083535a1d10a4b74cb4c229520559cd02d0413f))
+* **voice:** harden cold start pre-merge review ([7713d73](https://github.com/andrewtryder/plex-cast-bridge/commit/7713d739b36d62559895cc828c053e4b85b7f0cc))
+
+
+### Documentation
+
+* **research:** record playback roadmap and native receiver experiment ([c18754a](https://github.com/andrewtryder/plex-cast-bridge/commit/c18754af72c79fb1bfc0bd9726e21a327f54a02d))
+* simplify README and move technical details to reference ([3adde43](https://github.com/andrewtryder/plex-cast-bridge/commit/3adde430b899f769d59f617169c12d139f3c5619))
+
 ## [0.6.1](https://github.com/andrewtryder/plex-cast-bridge/compare/v0.6.0...v0.6.1) (2026-11-26)
 
 
