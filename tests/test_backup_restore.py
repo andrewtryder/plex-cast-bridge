@@ -39,6 +39,23 @@ def test_backup_and_restore_preview_rejects_traversal():
         assert res.status_code == 400
 
 
+def test_backup_export_includes_local_voice_cold_start_policy(tmp_path, monkeypatch):
+    import plex_cast_bridge.routes as routes
+
+    monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
+    (tmp_path / "catalog.json").write_text(json.dumps({
+        "speakers": [{"google_home_device_id": "plex-jukebox:room"}],
+        "voice_cold_start": {
+            "plex-jukebox:room": {"enabled": True, "selection": "artist", "artist": "DJ Shadow"}
+        },
+    }))
+    with TestClient(app) as client:
+        response = client.get("/api/backup")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        backup_catalog = json.loads(archive.read("catalog.json"))
+    assert backup_catalog["voice_cold_start"]["plex-jukebox:room"]["artist"] == "DJ Shadow"
+
+
 def test_restore_requires_confirm(tmp_path, monkeypatch):
     from plex_cast_bridge import catalog_store
     import plex_cast_bridge.routes as routes
@@ -50,6 +67,12 @@ def test_restore_requires_confirm(tmp_path, monkeypatch):
             "backup_meta.json": json.dumps(
                 {"schema_version": 1, "includes_secrets": False}
             ).encode(),
+            "catalog.json": json.dumps({
+                "speakers": [{"google_home_device_id": "plex-jukebox:room"}],
+                "voice_cold_start": {
+                    "plex-jukebox:room": {"enabled": True, "selection": "artist", "artist": "DJ Shadow"}
+                },
+            }).encode(),
             "app_settings.json": b'{"schema_version":1,"default_cast_volume":0.2,"max_cast_volume":0.5}\n',
         }
     )
@@ -68,6 +91,8 @@ def test_restore_requires_confirm(tmp_path, monkeypatch):
         assert ok.status_code == 200
         assert "app_settings.json" in ok.json()["restored"]
         assert (tmp_path / "app_settings.json").exists()
+        restored_catalog = json.loads((tmp_path / "catalog.json").read_text())
+        assert restored_catalog["voice_cold_start"]["plex-jukebox:room"]["artist"] == "DJ Shadow"
 
 
 def test_proxmox_upgrade_script_syntax_and_rollback_verification(tmp_path):

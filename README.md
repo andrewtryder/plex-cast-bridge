@@ -86,6 +86,7 @@ Already running Plex Cast Bridge? Use the [upgrade guide](docs/upgrading.md) to 
 | --- | --- |
 | [Docker & Portainer installation](docs/install-docker.md) | Install the app and get music playing |
 | [Google Home voice setup](docs/setup/SETUP_GUIDE.md) | Add optional voice control |
+| [Voice Cold Start](docs/voice-cold-start.md) | Configure safe, per-speaker resume behavior and understand Google routing limits |
 | [Music index and mixes](docs/music-index.md) | Create and save music mixes |
 | [Upgrading and backups](docs/upgrading.md) | Keep your installation up to date safely |
 | [Technical reference](docs/technical-reference.md) | Architecture, deployment, developer setup, and testing |

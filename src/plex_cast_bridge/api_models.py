@@ -26,6 +26,9 @@ class SpeakerPatch(BaseModel):
     google_home_visible: bool | None = None
     google_home_name: str | None = Field(default=None, min_length=1, max_length=80)
     room_hint: str | None = Field(default=None, max_length=80)
+    voice_cold_start_enabled: StrictBool | None = None
+    voice_cold_start_selection: Literal["shuffle", "artist"] | None = None
+    voice_cold_start_artist: str | None = Field(default=None, max_length=160)
 
 
 class Transport(BaseModel):

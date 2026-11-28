@@ -76,10 +76,33 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp_path, path)
 
 
+def sanitize_cloud_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    """Remove bridge-local cold-start preferences from every cloud catalog copy."""
+    local_keys = {
+        "voice_cold_start",
+        "voice_cold_start_enabled",
+        "voice_cold_start_selection",
+        "voice_cold_start_artist",
+    }
+    def strip_local_preferences(value):
+        if isinstance(value, dict):
+            return {
+                key: strip_local_preferences(item)
+                for key, item in value.items()
+                if key not in local_keys
+            }
+        if isinstance(value, list):
+            return [strip_local_preferences(item) for item in value]
+        return value
+
+    return strip_local_preferences(catalog)
+
+
 def _mirror_cloud_run_catalog(write_path: Path) -> None:
     if CLOUD_RUN_CATALOG.parent.exists():
         try:
-            shutil.copyfile(write_path, CLOUD_RUN_CATALOG)
+            data = json.loads(write_path.read_text(encoding="utf-8"))
+            _atomic_write_json(CLOUD_RUN_CATALOG, sanitize_cloud_catalog(data))
         except Exception as exc:
             log.warning("Could not sync catalog copy to Cloud Run path: %s", exc)
 
@@ -148,11 +171,19 @@ def load_disabled_speakers_from_catalog() -> set[str]:
 
 def list_speaker_records(*, include_removed: bool = False) -> list[dict[str, Any]]:
     data = load_catalog_data()
+    policies = data.get("voice_cold_start") or {}
+    if not isinstance(policies, dict):
+        policies = {}
     out = []
     for s in data.get("speakers") or []:
         if s.get("removed") and not include_removed:
             continue
-        out.append(s)
+        rec = dict(s)
+        policy = policies.get(rec.get("google_home_device_id") or rec.get("id"), {})
+        rec["voice_cold_start_enabled"] = bool(policy.get("enabled", False))
+        rec["voice_cold_start_selection"] = policy.get("selection") or "shuffle"
+        rec["voice_cold_start_artist"] = policy.get("artist") or ""
+        out.append(rec)
     return out
 
 
@@ -223,9 +254,42 @@ def update_speaker_record(google_home_device_id: str, patch: dict[str, Any]) -> 
             "needs_review",
             "removed",
         }
+        policy_keys = {
+            "voice_cold_start_enabled",
+            "voice_cold_start_selection",
+            "voice_cold_start_artist",
+        }
+        policy_patch = {key: value for key, value in patch.items() if key in policy_keys}
+        unknown = set(patch) - allowed - policy_keys
+        if unknown:
+            raise ValueError("Unsupported speaker setting")
         for key, value in patch.items():
             if key in allowed:
                 rec[key] = value
+        raw_policies = data.get("voice_cold_start") or {}
+        policies = dict(raw_policies) if isinstance(raw_policies, dict) else {}
+        stable_id = rec.get("google_home_device_id") or rec.get("id")
+        policy = dict(policies.get(stable_id) or {})
+        policy.update(
+            {
+                "enabled": bool(policy.get("enabled", False)),
+                "selection": policy.get("selection") or "shuffle",
+                "artist": policy.get("artist") or "",
+            }
+        )
+        if "voice_cold_start_enabled" in policy_patch:
+            policy["enabled"] = bool(policy_patch["voice_cold_start_enabled"])
+        if "voice_cold_start_selection" in policy_patch:
+            policy["selection"] = policy_patch["voice_cold_start_selection"]
+        if "voice_cold_start_artist" in policy_patch:
+            policy["artist"] = str(policy_patch["voice_cold_start_artist"] or "").strip()
+        if policy["selection"] not in {"shuffle", "artist"}:
+            raise ValueError("voice_cold_start_selection must be 'shuffle' or 'artist'")
+        if len(policy["artist"]) > 160:
+            raise ValueError("voice_cold_start_artist must be at most 160 characters")
+        if policy_patch or stable_id in policies:
+            policies[stable_id] = policy
+            data["voice_cold_start"] = policies
         if "google_home_name" in patch and patch["google_home_name"]:
             name = str(patch["google_home_name"]).strip()
             rec["google_home_name"] = name
@@ -234,10 +298,22 @@ def update_speaker_record(google_home_device_id: str, patch: dict[str, Any]) -> 
                 rec["nicknames"] = [name]
         if "room_hint" in patch:
             rec["roomHint"] = rec.get("room_hint")
-        speakers[found] = migrate_speaker_record(rec, previously_exposed=rec.get("google_home_visible", False))
+        speakers[found] = migrate_speaker_record(
+            rec, previously_exposed=rec.get("google_home_visible", False)
+        )
         data["speakers"] = speakers
+        rec["voice_cold_start_enabled"] = bool(policy["enabled"])
+        rec["voice_cold_start_selection"] = policy["selection"]
+        rec["voice_cold_start_artist"] = policy["artist"]
         save_catalog_data(data, sync_cloud=True)
-        return speakers[found]
+        return {
+            **speakers[found],
+            **{
+                "voice_cold_start_enabled": rec["voice_cold_start_enabled"],
+                "voice_cold_start_selection": rec["voice_cold_start_selection"],
+                "voice_cold_start_artist": rec["voice_cold_start_artist"],
+            },
+        }
 
 
 def forget_speaker(google_home_device_id: str) -> dict[str, Any]:

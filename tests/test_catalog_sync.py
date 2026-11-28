@@ -168,6 +168,70 @@ def test_failed_request_sync_is_not_reported_as_success(monkeypatch, tmp_path):
     assert result["last_error"] == "offline"
 
 
+def test_catalog_push_sanitizes_voice_policy_in_actual_http_body(monkeypatch, tmp_path):
+    from plex_cast_bridge import catalog_sync
+
+    monkeypatch.setattr(catalog_sync.store, "DATA_DIR", tmp_path)
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({
+        "artists": ["Public Artist"],
+        "voice_cold_start": {
+            "plex-jukebox:Bedroom": {
+                "enabled": True,
+                "selection": "artist",
+                "artist": "Private Preferred Artist",
+            }
+        },
+        "speakers": [{
+            "id": "plex-jukebox:Bedroom",
+            "voice_cold_start_enabled": True,
+            "voice_cold_start_selection": "artist",
+            "voice_cold_start_artist": "Private Preferred Artist",
+            "local_preferences": {
+                "voice_cold_start_artist": "Nested Private Artist",
+            },
+        }],
+    }))
+    monkeypatch.setattr(catalog_sync.store, "get_catalog_path", lambda **kwargs: catalog_path)
+    state = {
+        "cloud_gateway_url": "https://example.test",
+        "catalog_write_key": "write-key",
+        "version": 0,
+    }
+    monkeypatch.setattr(catalog_sync, "load_sync_state", lambda: state.copy())
+    monkeypatch.setattr(catalog_sync, "save_sync_state", lambda patch: state.update(patch) or state.copy())
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"meta": {"version": 1}, "request_sync": {"state": "succeeded"}}).encode()
+
+    def capture(req, timeout):
+        captured["request"] = req
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(catalog_sync.request, "urlopen", capture)
+    result = catalog_sync.push_catalog_now()
+
+    assert result["last_catalog_upload"] == "succeeded"
+    req = captured["request"]
+    payload = json.loads(req.data)
+    encoded = req.data.decode()
+    assert req.full_url == "https://example.test/internal/catalog"
+    assert "Private Preferred Artist" not in encoded
+    assert "voice_cold_start" not in payload["catalog"]
+    assert "voice_cold_start_artist" not in payload["catalog"]["speakers"][0]
+    assert "voice_cold_start_artist" not in payload["catalog"]["speakers"][0]["local_preferences"]
+    assert payload["catalog"]["artists"] == ["Public Artist"]
+
+
 def test_sync_does_not_relink_after_disconnect(client, auth_headers):
     store = client.app.state.catalog_store
     store.set_linked(True)

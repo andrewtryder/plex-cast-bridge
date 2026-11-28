@@ -34,6 +34,9 @@ def _public_speaker(rec: dict) -> dict:
         "port": rec.get("port") or 8009,
         "uuid": rec.get("cast_uuid") or rec.get("uuid") or "",
         "enabled": bool(rec.get("enabled", True)),
+        "voice_cold_start_enabled": bool(rec.get("voice_cold_start_enabled", False)),
+        "voice_cold_start_selection": rec.get("voice_cold_start_selection") or "shuffle",
+        "voice_cold_start_artist": rec.get("voice_cold_start_artist") or "",
         "google_home_visible": bool(rec.get("google_home_visible", False)),
         "google_home_name": rec.get("google_home_name") or rec.get("name") or "Plex",
         "availability": rec.get("availability") or "unknown",
@@ -95,7 +98,7 @@ async def refresh_speakers_endpoint(request: Request):
         discovered = state.cast.discover()
         result = _compat_routes().persist_discovered_speakers_to_catalog(discovered, state.cast)
         return {
-            "speakers": [_public_speaker(r) for r in result["speakers"] if not r.get("removed")],
+            "speakers": [_public_speaker(r) for r in list_speaker_records()],
             "summary": result.get("summary"),
             "changed": result.get("changed"),
         }

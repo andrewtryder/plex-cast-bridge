@@ -130,6 +130,12 @@ def build_pubsub_dispatch(
     command_cls: Any,
     transport_cls: Any,
 ) -> Callable[[dict[str, Any]], Awaitable[Any]]:
+    from starlette.concurrency import run_in_threadpool
+
+    from .voice_cold_start import VoiceColdStart
+
+    cold_start = None
+
     async def dispatch(data: dict[str, Any]):
         if data["action"] == "play":
             return await play(
@@ -143,6 +149,20 @@ def build_pubsub_dispatch(
                     device_id=data.get("device_id"),
                 ),
             )
+        if data.get("action") == "resume" and data.get("device_id"):
+            nonlocal cold_start
+            if cold_start is None:
+                cold_start = VoiceColdStart(
+                    cast=app.state.cast,
+                    plex_provider=lambda: getattr(app.state, "plex", None),
+                )
+            result = await run_in_threadpool(
+                cold_start.resume,
+                data["device_id"],
+                data.get("_bridge_pubsub_message_id"),
+            )
+            if result is not None:
+                return result
         return await transport(
             cast=app.state.cast,
             settings=app.state.settings,

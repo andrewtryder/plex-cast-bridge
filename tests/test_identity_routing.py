@@ -16,6 +16,7 @@ from plex_cast_bridge.api_models import Command, Transport
 from plex_cast_bridge.cast_manager import DIAL_IDENTITY_TIMEOUT, CastManager, SpeakerQueue
 from plex_cast_bridge.playback_service import play, transport
 from plex_cast_bridge.routes import router
+from plex_cast_bridge.voice_cold_start import CastSession, PubSubMessageDeduper, VoiceColdStart
 
 
 @pytest.mark.parametrize("payload", [{}, {"mute": None}, {"mute": 1}, {"mute": "true"}])
@@ -821,3 +822,262 @@ def test_connect_from_host_disconnects_both_casts_when_8009_retry_fails(monkeypa
     first.disconnect.assert_called_once()
     second.disconnect.assert_called_once()
     assert manager.speakers == {}
+
+
+@pytest.mark.parametrize("device_id_first", [False, True])
+def test_name_and_google_home_lookups_share_queue_for_same_cast_uuid(
+    tmp_path, monkeypatch, device_id_first
+):
+    path = _write_catalog(tmp_path, [_mb_record()])
+    manager = CastManager(catalog_path=path)
+    cast = _make_live_cast()
+    cast.uuid = UUID(MB_UUID)
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: cast)
+    monkeypatch.setattr(
+        pychromecast.dial,
+        "get_device_info",
+        lambda host, timeout=30: _dial_status(UUID(MB_UUID)),
+    )
+
+    discovered_info = SimpleNamespace(
+        host="192.168.88.126",
+        port=8009,
+        uuid=UUID(MB_UUID),
+        model_name="Google Nest Hub",
+        friendly_name="Master Bedroom display",
+    )
+    discovery_cast = SimpleNamespace(
+        uuid=UUID(MB_UUID), cast_info=discovered_info, disconnect=MagicMock()
+    )
+    browser = MagicMock()
+    monkeypatch.setattr(
+        pychromecast,
+        "get_chromecasts",
+        lambda **_kwargs: ([discovery_cast], browser),
+    )
+
+    if device_id_first:
+        by_device_id = manager.get_device("plex-jukebox:Master Bedroom")
+        by_name = manager.get("Master Bedroom display")
+    else:
+        by_name = manager.get("Master Bedroom display")
+        by_device_id = manager.get_device("plex-jukebox:Master Bedroom")
+
+    try:
+        assert by_name is by_device_id
+        assert by_name.cast is by_device_id.cast is cast
+        assert by_name.lock is by_device_id.lock
+        assert by_name.queue is by_device_id.queue
+        assert by_name.generation == by_device_id.generation
+        by_device_id.expected_content_id = "plex-content-id"
+        by_device_id.active_media_session_id = 9
+        assert by_name.expected_content_id == "plex-content-id"
+        assert by_name.active_media_session_id == 9
+    finally:
+        manager.close()
+
+
+def test_dashboard_stop_during_voice_selection_wins_shared_queue_generation(
+    tmp_path, monkeypatch
+):
+    path = _write_catalog(tmp_path, [_mb_record()])
+    manager = CastManager(catalog_path=path)
+    cast = _make_live_cast()
+    cast.uuid = UUID(MB_UUID)
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: cast)
+    monkeypatch.setattr(
+        pychromecast.dial,
+        "get_device_info",
+        lambda host, timeout=30: _dial_status(UUID(MB_UUID)),
+    )
+    queue = manager.get("Master Bedroom display")
+
+    catalog_rows = [{
+        "google_home_device_id": "plex-jukebox:Master Bedroom",
+        "speaker_name": "Master Bedroom display",
+        "voice_cold_start_enabled": True,
+    }]
+    monkeypatch.setattr(
+        "plex_cast_bridge.voice_cold_start.catalog_store.list_speaker_records",
+        lambda: catalog_rows,
+    )
+    monkeypatch.setattr(
+        "plex_cast_bridge.voice_cold_start.find_by_google_home_id",
+        lambda _rows, device_id: catalog_rows[0]
+        if device_id == "plex-jukebox:Master Bedroom"
+        else None,
+    )
+
+    selecting = threading.Event()
+    release_selection = threading.Event()
+
+    class BlockingLibrary:
+        def search(self, **_kwargs):
+            selecting.set()
+            assert release_selection.wait(timeout=3)
+            return [object()]
+
+    plex = SimpleNamespace(library=BlockingLibrary(), artists=[])
+    service = VoiceColdStart(
+        cast=manager,
+        plex_provider=lambda: plex,
+        inspector=lambda _speaker: CastSession(
+            "idle",
+            True,
+            receiver_app_id="CC1AD845",
+            receiver_is_standby=True,
+            queue_generation=queue.generation,
+        ),
+        message_deduper=PubSubMessageDeduper(tmp_path / "dedupe.json"),
+        duplicate_window=0,
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(service.resume("plex-jukebox:Master Bedroom"))
+    )
+    worker.start()
+    try:
+        assert selecting.wait(timeout=3)
+        initial_generation = queue.generation
+        # This is the dashboard's normal stop operation on the name lookup.
+        queue.stop()
+        assert queue.generation == initial_generation + 1
+    finally:
+        release_selection.set()
+        worker.join(timeout=3)
+        manager.close()
+
+    assert not worker.is_alive()
+    assert results[0]["voice_cold_start"] == "queue_changed"
+    assert queue.current is None
+    assert not queue.queue
+
+
+def test_name_catalog_ip_reassignment_cannot_verify_constructor_uuid(tmp_path, monkeypatch):
+    manager = CastManager(catalog_path=_write_catalog(tmp_path, [_mb_record()]))
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **_kwargs: ([], MagicMock()))
+    monkeypatch.setattr(
+        pychromecast.dial,
+        "get_device_info",
+        lambda host, timeout=30: _dial_status(UUID(KITCHEN_UUID), friendly_name="Kitchen"),
+    )
+    connect = MagicMock()
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", connect)
+
+    with pytest.raises(ValueError, match="Speaker not found"):
+        manager.get("Master Bedroom display")
+
+    connect.assert_not_called()
+    assert f"uuid:{MB_UUID}" not in manager.speakers
+
+
+def test_pychromecast_host_factory_uuid_is_only_constructor_input(monkeypatch):
+    captured = {}
+
+    class FakeChromecast:
+        def __init__(self, *, cast_info, **_kwargs):
+            captured["cast_info"] = cast_info
+            self.cast_info = cast_info
+
+        @property
+        def uuid(self):
+            return self.cast_info.uuid
+
+    monkeypatch.setattr(pychromecast, "Chromecast", FakeChromecast)
+    cast = pychromecast.get_chromecast_from_host(
+        ("192.168.88.126", 8009, UUID(MB_UUID), "Nest", "Master Bedroom")
+    )
+
+    # get_chromecast_from_host builds CastInfo from the supplied tuple, so
+    # cast.uuid merely echoes that input; it does not identify the receiver.
+    assert cast.uuid == UUID(MB_UUID)
+    assert captured["cast_info"].uuid == UUID(MB_UUID)
+
+
+def test_name_failed_independent_verification_never_shares_uuid_queue(tmp_path, monkeypatch):
+    manager = CastManager(catalog_path=_write_catalog(tmp_path, [_mb_record()]))
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **_kwargs: ([], MagicMock()))
+    monkeypatch.setattr(
+        pychromecast.dial,
+        "get_device_info",
+        lambda host, timeout=30: _dial_status(UUID(KITCHEN_UUID)),
+    )
+    with pytest.raises(ValueError, match="Speaker not found"):
+        manager.get("Master Bedroom display")
+    assert f"uuid:{MB_UUID}" not in manager.speakers
+    with pytest.raises(ValueError, match="Cast UUID"):
+        manager.get_device("plex-jukebox:Master Bedroom")
+    assert f"uuid:{MB_UUID}" not in manager.speakers
+
+
+def test_name_catalog_group_does_not_use_direct_dial_fallback(tmp_path, monkeypatch):
+    group = _mb_record(kind="group", model="Google Cast Group")
+    manager = CastManager(catalog_path=_write_catalog(tmp_path, [group]))
+    monkeypatch.setattr(pychromecast, "get_listed_chromecasts", lambda **_kwargs: ([], MagicMock()))
+    dial = MagicMock()
+    monkeypatch.setattr(pychromecast.dial, "get_device_info", dial)
+
+    with pytest.raises(ValueError, match="Speaker not found"):
+        manager.get("Master Bedroom display")
+    dial.assert_not_called()
+
+
+def test_ambiguous_name_rejected_even_with_cached_uuid_and_uuidless_candidate(tmp_path, monkeypatch):
+    record = _mb_record()
+    path = _write_catalog(tmp_path, [record])
+    manager = CastManager(catalog_path=path)
+    info = SimpleNamespace(
+        host="192.168.88.126", port=8009, uuid=UUID(MB_UUID),
+        model_name="Google Nest Hub", friendly_name="Master Bedroom display",
+    )
+    found = SimpleNamespace(uuid=UUID(MB_UUID), cast_info=info, disconnect=MagicMock())
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **_kwargs: ([found], MagicMock()))
+    cast = _make_live_cast()
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: cast)
+    queue = manager.get_device("plex-jukebox:Master Bedroom")
+    assert manager.speakers[f"uuid:{MB_UUID}"] is queue
+
+    path.write_text(json.dumps({"speakers": [
+        record,
+        _mb_record(
+            id="plex-jukebox:another-bedroom",
+            google_home_device_id="plex-jukebox:another-bedroom",
+            cast_uuid=None,
+            host="192.168.88.127",
+        ),
+    ]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Ambiguous speaker"):
+        manager.get("Master Bedroom display")
+    manager.close()
+
+
+def test_reconnect_invalidates_name_and_uuid_aliases(tmp_path, monkeypatch):
+    manager = CastManager(catalog_path=_write_catalog(tmp_path, [_mb_record()]))
+    monkeypatch.setattr(
+        pychromecast.dial,
+        "get_device_info",
+        lambda host, timeout=30: _dial_status(UUID(MB_UUID)),
+    )
+    info = SimpleNamespace(
+        host="192.168.88.126", port=8009, uuid=UUID(MB_UUID),
+        model_name="Google Nest Hub", friendly_name="Master Bedroom display",
+    )
+    found = SimpleNamespace(uuid=UUID(MB_UUID), cast_info=info, disconnect=MagicMock())
+    monkeypatch.setattr(pychromecast, "get_chromecasts", lambda **_kwargs: ([found], MagicMock()))
+    old_cast, new_cast = _make_live_cast(), _make_live_cast()
+    casts = iter([old_cast, new_cast])
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: next(casts))
+    name_queue = manager.get("Master Bedroom display")
+    assert manager.get_device("plex-jukebox:Master Bedroom") is name_queue
+
+    old_cast.socket_client.is_connected = False
+    replacement = manager.get_device("plex-jukebox:Master Bedroom")
+    try:
+        assert replacement is not name_queue
+        assert manager.speakers[f"uuid:{MB_UUID}"] is replacement
+        assert "Master Bedroom display" not in manager.speakers
+        old_cast.disconnect.assert_called_once()
+        assert manager.get("Master Bedroom display") is replacement
+        assert manager.speakers["Master Bedroom display"] is replacement
+    finally:
+        manager.close()
