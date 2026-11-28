@@ -1,8 +1,12 @@
 """Offline safety checks for the native Plex receiver hardware probe."""
 
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 import threading
 from unittest.mock import MagicMock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.experiments.native_plex_receiver_probe import (
     DEFAULT_MEDIA_RECEIVER_APP_ID,
