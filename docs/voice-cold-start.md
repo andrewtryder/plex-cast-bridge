@@ -33,7 +33,17 @@ An existing paused Plex queue resumes without replacement. Active Plex media
 is preserved. A session from another app, disconnected receiver, or uncertain
 receiver state is not replaced. Cold start only runs when fresh receiver and
 media status confirms the Default Media Receiver is in standby with no media
-session and the bridge queue is empty.
+session and the bridge queue is empty. The bridge also checks maintained Cast
+Group membership and group media status. Playing or paused group playback
+blocks a new selection even if the individual receiver reports idle. Missing,
+stale, disconnected, or incomplete group state is treated as uncertain and
+blocks cold start. An empty discovery result alone does not establish that no
+Cast Groups exist. The no-group case requires two stable, nonempty periodic Cast
+discoveries before it can be considered clear.
+
+A connected receiver that does not advertise the Google Cast media namespace
+remains uncertain. The bridge does not launch a receiver to inspect it, and an
+inactive namespace alone does not prove that no media application is active.
 
 ## Troubleshooting
 

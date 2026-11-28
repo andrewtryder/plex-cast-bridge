@@ -163,6 +163,14 @@ def test_disabled_policy_preserves_existing_transport_path(monkeypatch):
     assert not speaker.replacements
 
 
+def test_group_target_is_left_to_existing_transport_path(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch)
+    row = catalog_store.list_speaker_records()[0]
+    row["is_group"] = True
+    assert service.resume("plex-jukebox:room") is None
+    assert not speaker.replacements
+
+
 @pytest.mark.parametrize("state", ["other_media_active", "other_media_paused", "other_app_active", "indeterminate", "disconnected"])
 def test_non_plex_states_are_never_replaced(monkeypatch, state):
     service, speaker, _plex, _ = coordinator(monkeypatch, state=state)
@@ -239,6 +247,67 @@ def test_confirmed_default_receiver_standby_and_empty_media_is_idle():
     state = inspect_cast_session(speaker, timeout=0.01)
     assert state.classification == "idle"
     assert state.receiver_status_received and state.media_status_received
+
+
+@pytest.mark.parametrize("group_state", ["active"])
+@pytest.mark.parametrize("individual_state", ["IDLE", "UNKNOWN"])
+def test_group_activity_blocks_idle_and_unknown_member(group_state, individual_state):
+    speaker = FakeSpeaker()
+    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: group_state)
+    speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
+    if individual_state == "UNKNOWN":
+        speaker.media_payload = {"type": "MEDIA_STATUS", "status": []}
+    state = inspect_cast_session(speaker, timeout=0.01)
+    assert state.classification == "other_media_active"
+
+
+def test_stale_or_unavailable_group_state_is_indeterminate():
+    speaker = FakeSpeaker()
+    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: "unknown")
+    speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
+    assert inspect_cast_session(speaker, timeout=0.01).classification == "indeterminate"
+
+
+def test_confirmed_idle_without_group_conflict_remains_idle():
+    speaker = FakeSpeaker()
+    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: "clear")
+    speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
+    assert inspect_cast_session(speaker, timeout=0.01).classification == "idle"
+
+
+def test_group_starts_during_selection_blocks_load(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch)
+    current = {"group": "clear"}
+    speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
+    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: current["group"])
+    service.inspector = inspect_cast_session
+    select = service._selection
+
+    def select_with_group_start(plex, record):
+        tracks = select(plex, record)
+        current["group"] = "active"
+        return tracks
+
+    service._selection = select_with_group_start
+    result = service.resume("plex-jukebox:room")
+    assert result["voice_cold_start"] == "revalidation_other_media_active"
+    assert not speaker.replacements
+
+
+def test_final_group_check_blocks_race_after_status_revalidation(monkeypatch):
+    service, speaker, _plex, _ = coordinator(monkeypatch)
+    checks = {"count": 0}
+    speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
+
+    def classify(_uuid):
+        checks["count"] += 1
+        return "active" if checks["count"] >= 3 else "clear"
+
+    speaker.cast_group_state = SimpleNamespace(classify=classify)
+    service.inspector = inspect_cast_session
+    result = service.resume("plex-jukebox:room")
+    assert result["voice_cold_start"] == "group_active"
+    assert not speaker.replacements
 
 
 @pytest.mark.parametrize("player_state", ["PLAYING", "PAUSED"])

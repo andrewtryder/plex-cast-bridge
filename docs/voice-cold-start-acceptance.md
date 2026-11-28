@@ -35,6 +35,13 @@ result where expected.
 | Paused Plex track with queued items | Same track and queue resume; no replacement. |
 | Active Plex playback | Existing playback continues unchanged. |
 | Active media from another Cast application | Media remains untouched. |
+| Individual reports IDLE while its static Cast Group is playing | Cold start is skipped; group playback remains audible and unchanged. |
+| Individual reports UNKNOWN while its Cast Group is playing or paused | Cold start is skipped; no receiver is launched and group playback remains unchanged. |
+| Destination belongs to overlapping groups, with any group playing or paused | Cold start is skipped until every applicable group has fresh, connected idle status. |
+| Group playback begins while Plex selection resolves | Fresh revalidation prevents the cold-start load. |
+| Group membership is stale, unavailable, disconnected, or being rediscovered | Classification is indeterminate and no load occurs. |
+| Fresh membership and media state confirm no conflicting group session | Ordinary idle authorization may proceed. |
+| Empty or changing mDNS inventory | No-group status stays indeterminate until two stable, nonempty discovery passes. |
 | External media playing or paused in Default Media Receiver, with a stale nonempty bridge queue | Treat media as external; do not resume, replace, stop, or otherwise interrupt it. |
 | Receiver disconnected, status times out, or state is uncertain | No fallback media is loaded; logs/activity identify a skipped state. |
 | Plex disconnected or switched during selection resolution | Discard the selection from the old connection; no media is loaded. |
@@ -50,6 +57,17 @@ the friendly Google Home name. Confirm the per-speaker toggle and selection
 remain attached to the stable ID. Export a backup and verify the catalog entry
 is present. Confirm the Cloud Run catalog mirror contains no local cold-start
 preferences.
+
+Cast Group safety also needs physical verification before hardware acceptance:
+with a second Cast member present, exercise static and dynamic groups, individual
+IDLE and UNKNOWN reporting, active and paused group sessions, overlapping group
+membership, group creation/removal during selection, and group-controller
+disconnect/reconnection. Confirm no group member is interrupted. Include an
+audio-only Nest target and a group-targeted voice command. The current connected
+Nest diagnostic with an inactive media namespace remains `indeterminate`; there
+is not enough independent status evidence to authorize it as idle. Do not relax
+that rule unless a read-only receiver diagnostic and controlled hardware test
+establish a reliable no-media-application signal.
 
 The bridge serializes its own queue commands through the speaker queue lock and
 generation. Independent Cast senders cannot share that lock; a sender can still

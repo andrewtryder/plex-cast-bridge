@@ -16,6 +16,7 @@ from .cast_discovery import _discover_via_dnssd, extract_room_name
 from .local_speaker import LocalSpeaker
 from .speaker_queue import DEFAULT_CAST_VOLUME, SpeakerQueue
 from .speaker_registry import is_cast_group
+from .cast_group_state import CastGroupState
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +197,7 @@ class CastManager:
         self.last_discovered: list[dict] = []
         self.catalog_path = Path(catalog_path) if catalog_path else None
         self._discovery_lock = threading.Lock()
+        self.cast_group_state = CastGroupState()
 
     @staticmethod
     def _normalized_uuid(value: object) -> str | None:
@@ -375,6 +377,8 @@ class CastManager:
         )
         sq.connection_host = host_tuple[0]
         sq.connection_port = host_tuple[1]
+        sq.cast_group_state = self.cast_group_state
+        self.cast_group_state.register_member(getattr(cast, "uuid", None))
         if uuid_key:
             sq.verified_cast_uuid = verified
         self._cache_queue_aliases(name, sq, uuid_key)
@@ -393,6 +397,10 @@ class CastManager:
 
     def _discover_unlocked(self):
         discovered = []
+        group_casts = []
+        group_infos = []
+        inventory_uuids = set()
+        scan_complete = False
         seen_names = set()
         seen_uuids = set()
 
@@ -437,6 +445,36 @@ class CastManager:
             casts, browser = pychromecast.get_chromecasts(timeout=3)
             try:
                 for c in casts:
+                    if getattr(c, "uuid", None) is not None:
+                        inventory_uuids.add(str(c.uuid))
+                    if getattr(c.cast_info, "cast_type", None) == CAST_TYPE_GROUP:
+                        group_infos.append((
+                            c.cast_info.host,
+                            c.cast_info.port,
+                            c.cast_info.uuid,
+                            c.cast_info.model_name,
+                            c.cast_info.friendly_name,
+                        ))
+                        name = c.cast_info.friendly_name or "Google Cast Group"
+                        name_fold = name.casefold()
+                        dev_uuid = str(c.uuid or "").casefold()
+                        if (dev_uuid and dev_uuid not in seen_uuids) or (not dev_uuid and name_fold not in seen_names):
+                            seen_names.add(name_fold)
+                            if dev_uuid:
+                                seen_uuids.add(dev_uuid)
+                            discovered.append({
+                                "name": name,
+                                "room": extract_room_name(name),
+                                "model": c.cast_info.model_name or "Google Cast Group",
+                                "uuid": str(c.uuid),
+                                "host": c.cast_info.host,
+                                "port": c.cast_info.port,
+                                "kind": "group",
+                                "is_group": True,
+                                "enabled": not self.is_disabled(name),
+                            })
+                        continue
+                    self.cast_group_state.register_member(getattr(c, "uuid", None))
                     name = c.cast_info.friendly_name
                     name_fold = name.casefold()
                     dev_uuid = str(c.uuid or "").casefold()
@@ -453,6 +491,7 @@ class CastManager:
                             "port": c.cast_info.port,
                             "enabled": not self.is_disabled(name),
                         })
+                scan_complete = bool(casts)
             finally:
                 try:
                     browser.stop_discovery()
@@ -468,6 +507,26 @@ class CastManager:
                         log.debug("Cast cleanup after discovery failed: %s", exc)
         except Exception as exc:
             log.debug("pychromecast get_chromecasts error: %s", exc)
+        if scan_complete:
+            for info in group_infos:
+                group_cast = None
+                try:
+                    group_cast = pychromecast.get_chromecast_from_host(info)
+                    group_cast.wait(timeout=5)
+                    group_casts.append(group_cast)
+                except Exception as exc:
+                    scan_complete = False
+                    log.info("Could not maintain Cast Group status connection (%s)", type(exc).__name__)
+                    if group_cast is not None:
+                        try:
+                            group_cast.disconnect()
+                        except Exception:
+                            pass
+        self.cast_group_state.reconcile(
+            group_casts,
+            complete=scan_complete,
+            inventory_uuids=inventory_uuids,
+        )
 
         # 3. Known / catalog speaker merge & reachability probe
         for spk in self._get_catalog_speakers():
@@ -817,6 +876,7 @@ class CastManager:
             raise ValueError(f"Speaker not found: {name}")
 
     def close(self):
+        self.cast_group_state.close()
         unique_speakers = {id(speaker): speaker for speaker in self.speakers.values()}.values()
         for speaker in unique_speakers:
             if isinstance(speaker, LocalSpeaker):

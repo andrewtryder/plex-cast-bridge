@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import activity, catalog_store
-from .speaker_registry import find_by_google_home_id
+from .speaker_registry import find_by_google_home_id, is_cast_group
 
 log = logging.getLogger(__name__)
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
@@ -184,6 +184,23 @@ def inspect_cast_session(speaker, timeout: float = 4.0) -> CastSession:
         and media["content_id"] == queue.expected_content_id
     )
 
+    group_state = getattr(speaker, "cast_group_state", None)
+    group_uuid = getattr(cast, "uuid", None)
+    if group_state is not None:
+        group_classification = group_state.classify(group_uuid)
+        if group_classification == "active":
+            return CastSession(
+                "other_media_active", True, True, True, receiver["app_id"],
+                receiver["standby"], session_id, player_state,
+                media["content_id"], queue.generation,
+            )
+        if group_classification != "clear":
+            return CastSession(
+                "indeterminate", True, True, True, receiver["app_id"],
+                receiver["standby"], session_id, player_state,
+                media["content_id"], queue.generation,
+            )
+
     if session_id is not None:
         if player_state == "PAUSED":
             classification = "plex_paused" if owns_media else "other_media_paused"
@@ -313,6 +330,14 @@ class VoiceColdStart:
             log.info("Voice cold start disabled for device_id=%s", device_id)
             activity.record("Google Home", "voice cold start disabled")
             return None
+        if (
+            record.get("is_group")
+            or str(record.get("kind") or "").strip().casefold() == "group"
+            or is_cast_group(record.get("model"), record.get("speaker_name") or record.get("name"))
+        ):
+            log.info("Voice cold start skipped for Cast Group target device_id=%s", device_id)
+            activity.record("Google Home", "voice cold start skipped: group target", record.get("speaker_name"))
+            return None
         with self._guard:
             lock = self._locks.setdefault(device_id, threading.Lock())
         with lock:
@@ -394,6 +419,15 @@ class VoiceColdStart:
                     or getattr(receiver_status, "is_stand_by", None) != state.receiver_is_standby
                 ):
                     return {"voice_cold_start": "cast_state_changed"}
+                group_state = getattr(speaker, "cast_group_state", None)
+                if group_state is not None:
+                    group_classification = group_state.classify(
+                        getattr(speaker.cast, "uuid", None)
+                    )
+                    if group_classification != "clear":
+                        return {
+                            "voice_cold_start": f"group_{group_classification}"
+                        }
                 if self.plex_provider() is not plex:
                     return {"voice_cold_start": "plex_changed"}
                 # Reserve durable message identity immediately before the side
