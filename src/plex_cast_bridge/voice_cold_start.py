@@ -163,6 +163,22 @@ def inspect_cast_session(speaker, timeout: float = 4.0) -> CastSession:
 
     receiver = _fresh_receiver_response(receiver_result)
     media = _fresh_media_response(media_result)
+    group_state = getattr(speaker, "cast_group_state", None)
+    group_uuid = getattr(cast, "uuid", None)
+    if group_state is not None:
+        group_classification = group_state.classify(group_uuid)
+        if group_classification != "clear":
+            return CastSession(
+                "other_media_active" if group_classification == "active" else "indeterminate",
+                True,
+                receiver is not None,
+                media is not None,
+                receiver.get("app_id") if receiver else None,
+                receiver.get("standby") if receiver else None,
+                media.get("session_id") if media else None,
+                media.get("player_state", "UNKNOWN") if media else "UNKNOWN",
+                media.get("content_id") if media else None,
+            )
     if receiver is None or media is None:
         return CastSession(
             "indeterminate",
@@ -183,23 +199,6 @@ def inspect_cast_session(speaker, timeout: float = 4.0) -> CastSession:
         and queue.expected_content_id
         and media["content_id"] == queue.expected_content_id
     )
-
-    group_state = getattr(speaker, "cast_group_state", None)
-    group_uuid = getattr(cast, "uuid", None)
-    if group_state is not None:
-        group_classification = group_state.classify(group_uuid)
-        if group_classification == "active":
-            return CastSession(
-                "other_media_active", True, True, True, receiver["app_id"],
-                receiver["standby"], session_id, player_state,
-                media["content_id"], queue.generation,
-            )
-        if group_classification != "clear":
-            return CastSession(
-                "indeterminate", True, True, True, receiver["app_id"],
-                receiver["standby"], session_id, player_state,
-                media["content_id"], queue.generation,
-            )
 
     if session_id is not None:
         if player_state == "PAUSED":

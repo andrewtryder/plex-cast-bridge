@@ -253,12 +253,17 @@ def test_confirmed_default_receiver_standby_and_empty_media_is_idle():
 @pytest.mark.parametrize("individual_state", ["IDLE", "UNKNOWN"])
 def test_group_activity_blocks_idle_and_unknown_member(group_state, individual_state):
     speaker = FakeSpeaker()
-    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: group_state)
+    classified = []
+    speaker.cast_group_state = SimpleNamespace(classify=lambda _uuid: classified.append(_uuid) or group_state)
     speaker.cast.uuid = "10000000-0000-0000-0000-000000000001"
     if individual_state == "UNKNOWN":
-        speaker.media_payload = {"type": "MEDIA_STATUS", "status": []}
+        speaker.media_payload = {
+            "type": "MEDIA_STATUS",
+            "status": [{"mediaSessionId": 9, "playerState": "UNKNOWN"}],
+        }
     state = inspect_cast_session(speaker, timeout=0.01)
     assert state.classification == "other_media_active"
+    assert classified == [speaker.cast.uuid]
 
 
 def test_stale_or_unavailable_group_state_is_indeterminate():
