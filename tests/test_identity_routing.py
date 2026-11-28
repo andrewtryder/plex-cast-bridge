@@ -16,6 +16,7 @@ from plex_cast_bridge.api_models import Command, Transport
 from plex_cast_bridge.cast_manager import DIAL_IDENTITY_TIMEOUT, CastManager, SpeakerQueue
 from plex_cast_bridge.playback_service import play, transport
 from plex_cast_bridge.routes import router
+from plex_cast_bridge.voice_cold_start import CastSession, PubSubMessageDeduper, VoiceColdStart
 
 
 @pytest.mark.parametrize("payload", [{}, {"mute": None}, {"mute": 1}, {"mute": "true"}])
@@ -821,3 +822,122 @@ def test_connect_from_host_disconnects_both_casts_when_8009_retry_fails(monkeypa
     first.disconnect.assert_called_once()
     second.disconnect.assert_called_once()
     assert manager.speakers == {}
+
+
+@pytest.mark.parametrize("device_id_first", [False, True])
+def test_name_and_google_home_lookups_share_queue_for_same_cast_uuid(
+    tmp_path, monkeypatch, device_id_first
+):
+    path = _write_catalog(tmp_path, [_mb_record()])
+    manager = CastManager(catalog_path=path)
+    cast = _make_live_cast()
+    cast.uuid = UUID(MB_UUID)
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: cast)
+
+    discovered_info = SimpleNamespace(
+        host="192.168.88.126",
+        port=8009,
+        uuid=UUID(MB_UUID),
+        model_name="Google Nest Hub",
+        friendly_name="Master Bedroom display",
+    )
+    discovery_cast = SimpleNamespace(
+        uuid=UUID(MB_UUID), cast_info=discovered_info, disconnect=MagicMock()
+    )
+    browser = MagicMock()
+    monkeypatch.setattr(
+        pychromecast,
+        "get_chromecasts",
+        lambda **_kwargs: ([discovery_cast], browser),
+    )
+
+    if device_id_first:
+        by_device_id = manager.get_device("plex-jukebox:Master Bedroom")
+        by_name = manager.get("Master Bedroom display")
+    else:
+        by_name = manager.get("Master Bedroom display")
+        by_device_id = manager.get_device("plex-jukebox:Master Bedroom")
+
+    try:
+        assert by_name is by_device_id
+        assert by_name.cast is by_device_id.cast is cast
+        assert by_name.lock is by_device_id.lock
+        assert by_name.queue is by_device_id.queue
+        assert by_name.generation == by_device_id.generation
+        by_device_id.expected_content_id = "plex-content-id"
+        by_device_id.active_media_session_id = 9
+        assert by_name.expected_content_id == "plex-content-id"
+        assert by_name.active_media_session_id == 9
+    finally:
+        manager.close()
+
+
+def test_dashboard_stop_during_voice_selection_wins_shared_queue_generation(
+    tmp_path, monkeypatch
+):
+    path = _write_catalog(tmp_path, [_mb_record()])
+    manager = CastManager(catalog_path=path)
+    cast = _make_live_cast()
+    cast.uuid = UUID(MB_UUID)
+    monkeypatch.setattr(pychromecast, "get_chromecast_from_host", lambda _host: cast)
+    queue = manager.get("Master Bedroom display")
+
+    catalog_rows = [{
+        "google_home_device_id": "plex-jukebox:Master Bedroom",
+        "speaker_name": "Master Bedroom display",
+        "voice_cold_start_enabled": True,
+    }]
+    monkeypatch.setattr(
+        "plex_cast_bridge.voice_cold_start.catalog_store.list_speaker_records",
+        lambda: catalog_rows,
+    )
+    monkeypatch.setattr(
+        "plex_cast_bridge.voice_cold_start.find_by_google_home_id",
+        lambda _rows, device_id: catalog_rows[0]
+        if device_id == "plex-jukebox:Master Bedroom"
+        else None,
+    )
+
+    selecting = threading.Event()
+    release_selection = threading.Event()
+
+    class BlockingLibrary:
+        def search(self, **_kwargs):
+            selecting.set()
+            assert release_selection.wait(timeout=3)
+            return [object()]
+
+    plex = SimpleNamespace(library=BlockingLibrary(), artists=[])
+    service = VoiceColdStart(
+        cast=manager,
+        plex_provider=lambda: plex,
+        inspector=lambda _speaker: CastSession(
+            "idle",
+            True,
+            receiver_app_id="CC1AD845",
+            receiver_is_standby=True,
+            queue_generation=queue.generation,
+        ),
+        message_deduper=PubSubMessageDeduper(tmp_path / "dedupe.json"),
+        duplicate_window=0,
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(service.resume("plex-jukebox:Master Bedroom"))
+    )
+    worker.start()
+    try:
+        assert selecting.wait(timeout=3)
+        initial_generation = queue.generation
+        # This is the dashboard's normal stop operation on the name lookup.
+        queue.stop()
+        assert queue.generation == initial_generation + 1
+    finally:
+        release_selection.set()
+        worker.join(timeout=3)
+        manager.close()
+
+    assert not worker.is_alive()
+    assert results[0]["voice_cold_start"] == "queue_changed"
+    assert queue.current is None
+    assert not queue.queue

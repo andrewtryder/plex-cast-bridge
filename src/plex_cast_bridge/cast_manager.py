@@ -197,6 +197,33 @@ class CastManager:
         self.catalog_path = Path(catalog_path) if catalog_path else None
         self._discovery_lock = threading.Lock()
 
+    @staticmethod
+    def _uuid_cache_key(value: object) -> str | None:
+        parsed = _parse_uuid(value)
+        text = str(parsed) if parsed is not None else str(value or "").strip().casefold()
+        return f"uuid:{text}" if text else None
+
+    def _find_cached_uuid_queue(self, uuid: object):
+        with self.lock:
+            unique = {id(queue): queue for queue in self.speakers.values()}
+            return next(
+                (
+                    queue
+                    for queue in unique.values()
+                    if _uuids_match(
+                        getattr(getattr(queue, "cast", None), "uuid", None), uuid
+                    )
+                    and self._is_cast_connected(queue)
+                ),
+                None,
+            )
+
+    def _cache_queue_aliases(self, name: str, queue, uuid_key: str | None = None) -> None:
+        with self.lock:
+            self.speakers[name] = queue
+            if uuid_key:
+                self.speakers[uuid_key] = queue
+
     def _get_catalog_speakers(self) -> list[dict]:
         speakers = []
         if self.catalog_path and self.catalog_path.exists():
@@ -262,6 +289,12 @@ class CastManager:
         speaker = self.speakers.pop(name, None)
         if speaker is None:
             return
+        # Name and verified device-ID lookups can be aliases for one queue.
+        # Remove all aliases before closing it so no caller receives a closed
+        # queue after a reconnect.
+        for alias, cached in list(self.speakers.items()):
+            if cached is speaker:
+                self.speakers.pop(alias, None)
         if isinstance(speaker, LocalSpeaker):
             try:
                 speaker.stop()
@@ -305,12 +338,31 @@ class CastManager:
                 except Exception:
                     log.debug("Could not close failed Cast connection for '%s'", name, exc_info=True)
                 raise
+
+        expected_uuid = host_tuple[2] if len(host_tuple) > 2 else None
+        actual_uuid = getattr(cast, "uuid", None)
+        uuid_key = (
+            self._uuid_cache_key(expected_uuid)
+            if expected_uuid and actual_uuid and _uuids_match(expected_uuid, actual_uuid)
+            else None
+        )
+        if uuid_key:
+            with self.lock:
+                cached = self._find_cached_uuid_queue(expected_uuid)
+                if cached is not None and self._is_cast_connected(cached):
+                    self._cache_queue_aliases(name, cached, uuid_key)
+                    try:
+                        cast.disconnect()
+                    except Exception as exc:
+                        log.debug("Could not close duplicate Cast connection for '%s': %s", name, exc)
+                    return cached
+
         sq = SpeakerQueue(
             cast,
             default_volume=min(self.default_volume, self.max_volume),
             max_volume=self.max_volume,
         )
-        self.speakers[name] = sq
+        self._cache_queue_aliases(name, sq, uuid_key)
         return sq
 
     def discover(self):
@@ -508,7 +560,9 @@ class CastManager:
         uuid = str(parsed_uuid) if parsed_uuid is not None else raw_uuid.casefold()
         key = f"uuid:{uuid}"
         with self.lock:
-            cached = self.speakers.get(key)
+            cached = self.speakers.get(key) or self._find_cached_uuid_queue(uuid)
+            if cached is not None:
+                self.speakers[key] = cached
             if cached is not None:
                 if self._is_cast_connected(cached):
                     return cached
@@ -605,6 +659,27 @@ class CastManager:
                             seen_cand_hosts.add((host, port))
                             fallback_candidates.append(spk)
 
+            # Reuse a Google Home queue if it already represents the unique
+            # Cast UUID associated with this verified name/catalog candidate.
+            identities = {
+                self._uuid_cache_key(spk.get("uuid"))
+                for spk in fallback_candidates
+                if spk.get("uuid")
+            }
+            if len(identities) == 1:
+                identity_key = next(iter(identities))
+                identity = identity_key.removeprefix("uuid:")
+                cached = self.speakers.get(identity_key) or self._find_cached_uuid_queue(identity)
+                if (
+                    cached is not None
+                    and self._is_cast_connected(cached)
+                    and _uuids_match(
+                        getattr(getattr(cached, "cast", None), "uuid", None), identity
+                    )
+                ):
+                    self._cache_queue_aliases(name, cached, identity_key)
+                    return cached
+
             if len(fallback_candidates) > 1:
                 raise ValueError(f"Ambiguous speaker: {name}")
             for spk in fallback_candidates:
@@ -668,7 +743,8 @@ class CastManager:
             raise ValueError(f"Speaker not found: {name}")
 
     def close(self):
-        for speaker in self.speakers.values():
+        unique_speakers = {id(speaker): speaker for speaker in self.speakers.values()}.values()
+        for speaker in unique_speakers:
             if isinstance(speaker, LocalSpeaker):
                 speaker.stop()
                 continue

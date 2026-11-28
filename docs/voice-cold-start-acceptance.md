@@ -38,6 +38,7 @@ result where expected.
 | External media playing or paused in Default Media Receiver, with a stale nonempty bridge queue | Treat media as external; do not resume, replace, stop, or otherwise interrupt it. |
 | Receiver disconnected, status times out, or state is uncertain | No fallback media is loaded; logs/activity identify a skipped state. |
 | Plex disconnected or switched during selection resolution | Discard the selection from the old connection; no media is loaded. |
+| Dashboard name-based lookup and Google Home device-ID lookup target the same Cast UUID | Both operations use the same queue, lock, generation, and ownership state. |
 | Dashboard queue command or stop races selection resolution | Queue generation change wins; the cold-start request is skipped and the user's local command remains authoritative. |
 | Pub/Sub redelivery after restart or after the short duplicate window | The same message ID does not initiate a second cold start during the bounded 31-day dedupe retention. |
 | Policy disabled on confirmed idle speaker | Existing transport behavior remains; no cold-start selection is loaded. |
@@ -58,6 +59,58 @@ available, and treat it as a residual limitation if it cannot be made
 deterministic. Pub/Sub dedupe is local, bounded to 2,048 IDs and 31 days; after
 an ID expires or is evicted under sustained volume, a very late redelivery is
 not guaranteed to be suppressed.
+
+## Pub/Sub and persistent-state isolation
+
+Never run the candidate and the production bridge at the same time with the
+same Pub/Sub subscription. Either subscriber could acknowledge and consume the
+other subscriber's Google Home command.
+
+For local-only candidate checks, keep the candidate Pub/Sub listener disabled.
+Use a separate candidate data directory and a separately prepared copy of the
+required Plex authorization, speaker catalog, and local cold-start policy. Do
+not mount the production data directory read/write. Do not configure
+`CLOUD_GATEWAY_URL` or `CATALOG_WRITE_KEY` in the candidate environment, and
+remove those fields and pending push state from the candidate copy of
+`google_home_sync.json`. Do not use the candidate dashboard to link Google
+Home, pair accounts, or change the cloud speaker catalog. This keeps catalog
+uploads, reconciliation, sync bookkeeping, and persistent settings away from
+production while exercising local playback against the test speaker.
+
+End-to-end voice acceptance requires the existing cloud gateway to publish to
+the subscription the candidate consumes. If no separate pre-existing test
+subscription is available, conduct it only as an explicitly approved
+maintenance-window replacement:
+
+1. Record the live image digest, configuration, current health, and a verified
+   backup. Prepare the candidate's separate data directory and verify it does
+   not resolve to or overlap the production mount. Preconfigure its local
+   speaker policy while the Pub/Sub listener is disabled and cloud sync fields
+   are absent.
+2. Stop the live bridge and verify that it is no longer running and has closed
+   its subscription connection. Do not start the candidate before this check.
+3. Start the candidate as the sole subscriber to the existing subscription,
+   with the prepared separate data directory, the existing subscriber
+   credentials, Pub/Sub project/subscription identifiers, and cloud sync
+   disabled. Confirm candidate health before issuing any voice command.
+4. Run only the approved acceptance cases. Do not edit cloud catalog/link
+   settings or run first-time setup. Record command, bridge activity, Cast
+   ownership/session, and audible result.
+5. Stop the candidate before restarting production. Preserve candidate logs
+   and its test data separately; do not copy its catalog or sync state over the
+   production data directory. Restore the recorded production image and
+   original data mount, then verify health and subscription reconnection.
+6. If the candidate fails, stop it first and perform the same image-only
+   rollback with the untouched production data directory. Verify Cast playback
+   and bridge health before closing the maintenance window.
+
+This replacement procedure interrupts normal bridge service and changes which
+process consumes the production subscription. It requires explicit operator
+approval before any stop, start, or data-mount operation. Candidate local
+dedupe state is separate from production; after rollback, a redelivered command
+may not have the candidate's message ID in production dedupe storage. The
+classifier and queue ownership checks must still prevent action on active or
+uncertain playback.
 
 ## Rollback and evidence
 
