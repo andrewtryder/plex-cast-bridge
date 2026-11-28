@@ -198,10 +198,15 @@ class CastManager:
         self._discovery_lock = threading.Lock()
 
     @staticmethod
-    def _uuid_cache_key(value: object) -> str | None:
+    def _normalized_uuid(value: object) -> str | None:
         parsed = _parse_uuid(value)
         text = str(parsed) if parsed is not None else str(value or "").strip().casefold()
-        return f"uuid:{text}" if text else None
+        return text or None
+
+    @classmethod
+    def _uuid_cache_key(cls, value: object) -> str | None:
+        normalized = cls._normalized_uuid(value)
+        return f"uuid:{normalized}" if normalized else None
 
     def _find_cached_uuid_queue(self, uuid: object):
         with self.lock:
@@ -210,9 +215,8 @@ class CastManager:
                 (
                     queue
                     for queue in unique.values()
-                    if _uuids_match(
-                        getattr(getattr(queue, "cast", None), "uuid", None), uuid
-                    )
+                    if getattr(queue, "verified_cast_uuid", None)
+                    == self._normalized_uuid(uuid)
                     and self._is_cast_connected(queue)
                 ),
                 None,
@@ -310,7 +314,14 @@ class CastManager:
         except Exception as exc:
             log.debug("Cast disconnect during discard failed: %s", exc)
 
-    def _connect_from_host(self, name: str, host_tuple: tuple, *, timeout: float = 10):
+    def _connect_from_host(
+        self,
+        name: str,
+        host_tuple: tuple,
+        *,
+        timeout: float = 10,
+        verified_uuid: object | None = None,
+    ):
         """Open a host-based Cast connection that does not depend on discovery Zeroconf."""
         cast = pychromecast.get_chromecast_from_host(host_tuple)
         try:
@@ -340,15 +351,15 @@ class CastManager:
                 raise
 
         expected_uuid = host_tuple[2] if len(host_tuple) > 2 else None
-        actual_uuid = getattr(cast, "uuid", None)
+        verified = self._normalized_uuid(verified_uuid)
         uuid_key = (
-            self._uuid_cache_key(expected_uuid)
-            if expected_uuid and actual_uuid and _uuids_match(expected_uuid, actual_uuid)
+            self._uuid_cache_key(verified)
+            if verified and expected_uuid and _uuids_match(expected_uuid, verified)
             else None
         )
         if uuid_key:
             with self.lock:
-                cached = self._find_cached_uuid_queue(expected_uuid)
+                cached = self._find_cached_uuid_queue(verified)
                 if cached is not None and self._is_cast_connected(cached):
                     self._cache_queue_aliases(name, cached, uuid_key)
                     try:
@@ -362,6 +373,10 @@ class CastManager:
             default_volume=min(self.default_volume, self.max_volume),
             max_volume=self.max_volume,
         )
+        sq.connection_host = host_tuple[0]
+        sq.connection_port = host_tuple[1]
+        if uuid_key:
+            sq.verified_cast_uuid = verified
         self._cache_queue_aliases(name, sq, uuid_key)
         return sq
 
@@ -560,13 +575,22 @@ class CastManager:
         uuid = str(parsed_uuid) if parsed_uuid is not None else raw_uuid.casefold()
         key = f"uuid:{uuid}"
         with self.lock:
-            cached = self.speakers.get(key) or self._find_cached_uuid_queue(uuid)
-            if cached is not None:
-                self.speakers[key] = cached
-            if cached is not None:
+            cached = self.speakers.get(key)
+            verified_cached = (
+                cached is not None
+                and getattr(cached, "verified_cast_uuid", None)
+                == self._normalized_uuid(uuid)
+            )
+            if verified_cached:
                 if self._is_cast_connected(cached):
                     return cached
                 self._discard_speaker(key)
+            elif cached is not None:
+                # A name-only queue may use a catalog UUID supplied to
+                # get_chromecast_from_host(); that value is not proof of the
+                # receiver's network identity. Keep any name alias alive for
+                # its dashboard caller, but do not use it for device-ID work.
+                self.speakers.pop(key, None)
 
         host_tuple = None
         # Share the same discovery lock used by background/manual speaker scans.
@@ -616,11 +640,17 @@ class CastManager:
 
         with self.lock:
             cached = self.speakers.get(key)
-            if cached is not None:
+            if (
+                cached is not None
+                and getattr(cached, "verified_cast_uuid", None)
+                == self._normalized_uuid(uuid)
+            ):
                 if self._is_cast_connected(cached):
                     return cached
                 self._discard_speaker(key)
-            return self._connect_from_host(key, host_tuple)
+            elif cached is not None:
+                self.speakers.pop(key, None)
+            return self._connect_from_host(key, host_tuple, verified_uuid=uuid)
 
     def get(self, name):
         if not name:
@@ -633,13 +663,6 @@ class CastManager:
             # Check local test speaker sink
             if name.casefold() in ("test speaker", "mac speaker", "local speaker", "mac local"):
                 return self.speakers.setdefault("test speaker", LocalSpeaker(enable_playback=True))
-
-            cached = self.speakers.get(name)
-            if cached is not None:
-                if self._is_cast_connected(cached):
-                    return cached
-                log.warning("Cached Cast connection for '%s' is dead; reconnecting", name)
-                self._discard_speaker(name)
 
             candidate_names = [name.strip()]
 
@@ -659,30 +682,79 @@ class CastManager:
                             seen_cand_hosts.add((host, port))
                             fallback_candidates.append(spk)
 
-            # Reuse a Google Home queue if it already represents the unique
-            # Cast UUID associated with this verified name/catalog candidate.
-            identities = {
-                self._uuid_cache_key(spk.get("uuid"))
-                for spk in fallback_candidates
-                if spk.get("uuid")
-            }
-            if len(identities) == 1:
-                identity_key = next(iter(identities))
-                identity = identity_key.removeprefix("uuid:")
-                cached = self.speakers.get(identity_key) or self._find_cached_uuid_queue(identity)
-                if (
-                    cached is not None
-                    and self._is_cast_connected(cached)
-                    and _uuids_match(
-                        getattr(getattr(cached, "cast", None), "uuid", None), identity
-                    )
-                ):
-                    self._cache_queue_aliases(name, cached, identity_key)
-                    return cached
-
+            # Reject ambiguity before either name or UUID cache reuse. A
+            # UUID-less matching candidate is still a conflicting destination.
             if len(fallback_candidates) > 1:
                 raise ValueError(f"Ambiguous speaker: {name}")
+
+            cached = self.speakers.get(name)
+            if cached is not None:
+                if self._is_cast_connected(cached):
+                    return cached
+                log.warning("Cached Cast connection for '%s' is dead; reconnecting", name)
+                self._discard_speaker(name)
+
             for spk in fallback_candidates:
+                raw_uuid = spk.get("uuid")
+                parsed_uuid = _parse_uuid(raw_uuid)
+                if parsed_uuid is not None:
+                    identity = str(parsed_uuid)
+                    identity_key = self._uuid_cache_key(identity)
+                    cached = self.speakers.get(identity_key) or self._find_cached_uuid_queue(identity)
+                    if (
+                        cached is not None
+                        and getattr(cached, "verified_cast_uuid", None) == identity
+                        and self._is_cast_connected(cached)
+                    ):
+                        self._cache_queue_aliases(name, cached, identity_key)
+                        return cached
+
+                    # A catalog address is only a hint. Independently verify
+                    # its UUID through DIAL before creating a queue that can
+                    # be shared with the Google Home device-ID route. Groups
+                    # are resolved through mDNS below; direct DIAL fallback
+                    # remains restricted to individual speakers.
+                    if not _is_individual_speaker_record(spk):
+                        continue
+                    try:
+                        if spk.get("device_id"):
+                            verified_host = self._resolve_verified_catalog_host(
+                                spk["device_id"], identity
+                            )
+                        else:
+                            host = _validate_host(spk.get("host"))
+                            port = _validate_port(spk.get("port", 8009))
+                            if host is None or port is None:
+                                raise ValueError("Cast identity host is unavailable")
+                            reported_uuid, device_info = verify_host_cast_uuid(host, parsed_uuid)
+                            if str(reported_uuid) != identity:
+                                raise ValueError("Cast identity mismatch")
+                            model_name, friendly_name = resolve_dial_display_metadata(
+                                device_info,
+                                fallback_model=spk.get("model") or "Google Cast",
+                                fallback_name=spk.get("name") or name,
+                            )
+                            verified_host = (
+                                host,
+                                port,
+                                reported_uuid,
+                                model_name,
+                                friendly_name,
+                            )
+                    except ValueError as exc:
+                        log.info(
+                            "Name-based catalog identity not verified for %r (%s); trying mDNS",
+                            name,
+                            type(exc).__name__,
+                        )
+                        continue
+                    return self._connect_from_host(
+                        name, verified_host, verified_uuid=identity, timeout=8
+                    )
+
+                # Preserve legacy name-based lookup for records without a
+                # parseable UUID. Such queues are deliberately not aliased to
+                # a Google Home UUID cache key.
                 host = spk["host"]
                 port = spk.get("port", 8009)
                 log.info(
@@ -736,7 +808,9 @@ class CastManager:
                         host_tuple[0],
                         host_tuple[1],
                     )
-                    return self._connect_from_host(name, host_tuple)
+                    return self._connect_from_host(
+                        name, host_tuple, verified_uuid=host_tuple[2]
+                    )
             except Exception as exc:
                 log.debug("pychromecast get_listed_chromecasts error: %s", exc)
 
